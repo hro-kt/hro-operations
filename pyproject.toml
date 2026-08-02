@@ -1,0 +1,29 @@
+[tool.poetry]
+name = "hro-operations"
+version = "0.1.0"
+description = "開催日の前向きペーパー/実運用オーケストレーション。各サーバーで起動する常駐/実行スクリプト群。"
+authors = ["hro"]
+readme = "README.md"
+packages = [{ include = "hro_operations" }]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.13"
+# per-race E2E ドライバ(能力値→PL→資金配分)とモデル/特徴/最適化/資金管理を推移的に取り込む
+hro-backtest = { path = "../hro-backtest", develop = true }
+# paper 実行(締切/発売可否/実行直前ガード)と決済
+hro-buyer = { path = "../hro-buyer", develop = true }
+# DB オッズ/nl_ra 取得の実依存(任意 extras: postgres)
+psycopg = { version = ">=3.1", extras = ["binary"], optional = true }
+
+[tool.poetry.extras]
+postgres = ["psycopg"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.0"
+
+[tool.poetry.scripts]
+hro-ops = "hro_operations.__main__:main"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
