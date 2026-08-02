@@ -125,6 +125,11 @@ def _cmd_once(args) -> int:
     return 0
 
 
+def _cmd_agent(args) -> int:
+    from .agent import run_agent
+    return run_agent(args.server, interval=args.interval)
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     logging.basicConfig(
@@ -148,6 +153,12 @@ def main(argv: list[str] | None = None) -> int:
     p_once.add_argument("--race", nargs=6, required=True,
                         metavar=("YEAR", "MONTHDAY", "JYO", "KAIJI", "NICHIJI", "RACENUM"))
     p_once.set_defaults(func=_cmd_once)
+
+    p_agent = sub.add_parser("agent", help="ops_jobキューを処理する常駐エージェント(admin画面から実行される)")
+    p_agent.add_argument("--server", required=True, choices=("vm", "windows"),
+                         help="このサーバの役割(vm=特徴/day-runner/決済, windows=JV-Link sync/odds)")
+    p_agent.add_argument("--interval", type=float, default=5.0, help="キュー確認周期(秒)")
+    p_agent.set_defaults(func=_cmd_agent)
 
     args = parser.parse_args(argv)
     return args.func(args)
