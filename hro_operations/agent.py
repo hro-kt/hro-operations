@@ -58,9 +58,24 @@ def _b_productionize(a: dict):
     return (["bash", "scripts/productionize.sh"], os.path.join(_home(), "hro-operations"), env)
 
 
+def _daily_budget(ymd: str) -> int | None:
+    """admin UI で設定した日別予算(ops_daily_budget)。無ければ None(=run-day 既定)。"""
+    try:
+        import psycopg
+        with psycopg.connect(_conninfo()) as conn, conn.cursor() as cur:
+            cur.execute("SELECT amount FROM ops_daily_budget WHERE budget_key=%s", (ymd,))
+            row = cur.fetchone()
+        return int(row[0]) if row else None
+    except Exception:
+        return None
+
+
 def _b_trio_day(a: dict):
-    env = {"DATE": _ymd(a.get("date"), datetime.now(timezone.utc).strftime("%Y%m%d")),
-           "BANKROLL": str(_int(a.get("bankroll"), 100000))}
+    d = _ymd(a.get("date"), datetime.now(timezone.utc).strftime("%Y%m%d"))
+    env = {"DATE": d, "BANKROLL": str(_int(a.get("bankroll"), 100000))}
+    budget = _daily_budget(d)
+    if budget is not None:
+        env["DAILY_BUDGET"] = str(budget)   # UI設定の日別予算を実購入に反映
     return (["bash", "scripts/trio_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 

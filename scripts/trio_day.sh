@@ -23,6 +23,8 @@ SYNC="${SYNC:-$HOME/hro/hro-synchronizer}"
 MODELS="${MODELS:-$HOME/models}"
 DATE="${DATE:-$(TZ=Asia/Tokyo date +%Y%m%d)}"
 BANKROLL="${BANKROLL:-100000}"
+# 日次予算。admin UI で日別設定があれば agent が渡す。空なら run-day 既定(HRO_DAILY_BUDGET)。
+DAILY_BUDGET="${DAILY_BUDGET:-}"
 
 # ★productionize.sh と同一でなければ schema-hash 不一致で fail-fast する。必ず一致させる。
 export PROD="HRO_ABLATE_SED=1 HRO_ABLATE_RACESTRUCT=1 HRO_ABLATE_SEASON=1 HRO_ABLATE_TRIP=1 HRO_ABLATE_GROUNDLOSS=1 HRO_ABLATE_TYBODDS=1 HRO_ABLATE_PACE=1 HRO_ABLATE_TRAJ=1 HRO_ABLATE_SOS=1 HRO_ABLATE_PEDCOND=1 HRO_ABLATE_FIELDSHAPE=1"
@@ -41,11 +43,14 @@ nohup poetry run python -m hro_synchronizer.jrdb_tyb_loader poll --date "$DATE" 
 TYB_PID=$!
 echo "  TYB poll PID=$TYB_PID  (log: ~/tyb_poll_$DATE.log)  停止は: kill $TYB_PID"
 
-echo "=== [3/3] paper day-runner 起動 (trio, er_cal[1.7,2.0), 較正, 分数Kelly bankroll=$BANKROLL) ==="
+BUDGET_ARGS=()
+[ -n "$DAILY_BUDGET" ] && BUDGET_ARGS=(--daily-budget "$DAILY_BUDGET")
+echo "=== [3/3] paper day-runner 起動 (trio, er_cal[1.7,2.0), 較正, 分数Kelly bankroll=$BANKROLL, 日次予算=${DAILY_BUDGET:-既定}) ==="
 cd "$OPS"
 trap 'echo; echo "day-runner停止。TYB pollも止めます (kill $TYB_PID)"; kill '"$TYB_PID"' 2>/dev/null || true' EXIT
 env $PROD poetry run hro-ops run-day \
   --date "$DATE" \
   --win-model "$MODELS/win_prod.joblib" --place-model "$MODELS/place_prod.joblib" \
   --preset trio --calib "$MODELS/trio_calib.json" \
-  --bankroll "$BANKROLL" --kelly-fraction 0.25 --race-max 3000 --ticket-max 1000 --max-tickets 5
+  --bankroll "$BANKROLL" --kelly-fraction 0.25 --race-max 3000 --ticket-max 1000 --max-tickets 5 \
+  "${BUDGET_ARGS[@]}"
