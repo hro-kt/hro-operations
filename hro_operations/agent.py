@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -35,7 +36,8 @@ def _conninfo() -> str:
 
 
 def _home() -> str:
-    return os.environ.get("HRO_HOME", os.path.expanduser("~/hro"))
+    # 区切り混在を避けるため os.path.join で組む(Windowsは \ に揃う)。
+    return os.environ.get("HRO_HOME") or os.path.join(os.path.expanduser("~"), "hro")
 
 
 def _ymd(v, default: str = "") -> str:
@@ -91,8 +93,16 @@ def _b_settle(a: dict):
 
 
 def _b_sync_all(a: dict):
+    # UIの「日付」欄を sync の開始日(fromtime)として渡せる。日付を指定すると SYNC_SMART を切り
+    # 「その日以降のみ」を通常(option=1, サーバDL)で取得＝JVLinkのセットアップDVDダイアログを回避。
+    # 空欄なら SYNC_SMART(既定ON): 種別ごとに DB frontier−lookback から自動差分。
+    env = {}
+    d = a.get("date")
+    if d:
+        env["SYNC_FROM"] = _ymd(d) + "000000"
+        env["SYNC_SMART"] = "0"
     return (["poetry", "run", "hro-synchronizer", "sync-all"],
-            os.path.join(_home(), "hro-synchronizer"), {})
+            os.path.join(_home(), "hro-synchronizer"), env)
 
 
 def _b_run_odds(a: dict):
@@ -148,7 +158,7 @@ def _finish(conn, job_id, status: str, code) -> None:
     conn.commit()
 
 
-def _run_job(conn, server: str, job_id, kind: str, args: dict) -> None:
+def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float = 5.0) -> None:
     builder = _COMMANDS.get(server, {}).get(kind)
     if builder is None:
         _append_log(conn, job_id, f"[agent] 未対応の kind={kind!r} (server={server})\n")
@@ -161,58 +171,115 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict) -> None:
         _finish(conn, job_id, "failed", -1)
         return
 
-    env = {**os.environ, **extra_env}
-    _append_log(conn, job_id, f"[agent] $ {' '.join(cmd)}  (cwd={cwd})\n")
-    try:
-        proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True, bufsize=1,
-                                 start_new_session=True)  # プロセスグループ化(cancelで一括停止)
-    except Exception as e:
-        _append_log(conn, job_id, f"[agent] 起動失敗: {e}\n")
+    if cwd and not os.path.isdir(cwd):
+        hh = os.environ.get("HRO_HOME") or "(未設定→~/hro)"
+        _append_log(conn, job_id,
+                    f"[agent] 作業ディレクトリが存在しません: {cwd}\n"
+                    f"[agent] HRO_HOME={hh}。リポジトリ親(例 C:\\hro)を指すよう設定してください。\n")
         _finish(conn, job_id, "failed", -1)
         return
 
-    buf, last_flush = [], time.monotonic()
-    canceled = False
-    assert proc.stdout is not None
-    for line in proc.stdout:
-        buf.append(line)
-        if time.monotonic() - last_flush > 2.0 or len(buf) >= 40:
-            _append_log(conn, job_id, "".join(buf)); buf.clear(); last_flush = time.monotonic()
-            if _canceled(conn, job_id):
-                canceled = True
-                _append_log(conn, job_id, "[agent] cancel要求 → プロセスグループ停止\n")
+    env = {**os.environ, **extra_env}
+    _append_log(conn, job_id, f"[agent] $ {' '.join(cmd)}  (cwd={cwd})\n")
+
+    # 長時間ジョブ(trio_day/productionize 等)中も ops_agent.last_seen を別接続で更新し続ける。
+    # メイン conn はログのストリーミングで占有されるため、これが無いと実行中ずっと offline に誤表示。
+    import psycopg
+    stop_hb = threading.Event()
+
+    def _hb_loop() -> None:
+        hb = None
+        while not stop_hb.wait(interval):
+            try:
+                if hb is None or hb.closed:
+                    hb = psycopg.connect(_conninfo(), autocommit=True)
+                _heartbeat(hb, server, job_id)
+            except Exception:  # 接続断等は張り直して継続
                 try:
-                    import signal
-                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    if hb is not None:
+                        hb.close()
                 except Exception:
-                    proc.terminate()
-                break
-    if buf:
-        _append_log(conn, job_id, "".join(buf))
-    code = proc.wait()
-    _finish(conn, job_id, "canceled" if canceled else ("done" if code == 0 else "failed"), code)
+                    pass
+                hb = None
+        if hb is not None:
+            try:
+                hb.close()
+            except Exception:
+                pass
+
+    hb_thread = threading.Thread(target=_hb_loop, daemon=True)
+    hb_thread.start()
+    try:
+        try:
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT, text=True, bufsize=1,
+                                     start_new_session=True)  # プロセスグループ化(cancelで一括停止)
+        except Exception as e:
+            _append_log(conn, job_id, f"[agent] 起動失敗: {e}\n")
+            _finish(conn, job_id, "failed", -1)
+            return
+
+        buf, last_flush = [], time.monotonic()
+        canceled = False
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            buf.append(line)
+            if time.monotonic() - last_flush > 2.0 or len(buf) >= 40:
+                _append_log(conn, job_id, "".join(buf)); buf.clear(); last_flush = time.monotonic()
+                if _canceled(conn, job_id):
+                    canceled = True
+                    _append_log(conn, job_id, "[agent] cancel要求 → プロセスグループ停止\n")
+                    try:
+                        import signal
+                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                    except Exception:
+                        proc.terminate()
+                    break
+        if buf:
+            _append_log(conn, job_id, "".join(buf))
+        code = proc.wait()
+        _finish(conn, job_id, "canceled" if canceled else ("done" if code == 0 else "failed"), code)
+    finally:
+        stop_hb.set()
 
 
 def run_agent(server: str, interval: float = 5.0) -> int:
     import psycopg
     if server not in _COMMANDS:
         sys.exit(f"--server は {list(_COMMANDS)} のいずれか")
-    conn = psycopg.connect(_conninfo(), autocommit=False)
     print(f"agent 起動 server={server} 対応kind={list(_COMMANDS[server])} (Ctrl-Cで停止)", flush=True)
+    conn = None
     try:
         while True:
-            _heartbeat(conn, server, None)
-            row = _claim(conn, server)
-            if row is None:
-                time.sleep(interval); continue
-            job_id, kind, args = row
-            _heartbeat(conn, server, job_id)
-            print(f"  job#{job_id} kind={kind} 実行", flush=True)
-            _run_job(conn, server, job_id, kind, args)
-            print(f"  job#{job_id} 完了", flush=True)
+            try:
+                if conn is None or conn.closed:
+                    conn = psycopg.connect(_conninfo(), autocommit=False)
+                _heartbeat(conn, server, None)
+                row = _claim(conn, server)
+                if row is None:
+                    time.sleep(interval); continue
+                job_id, kind, args = row
+                _heartbeat(conn, server, job_id)
+                print(f"  job#{job_id} kind={kind} 実行", flush=True)
+                _run_job(conn, server, job_id, kind, args, interval)
+                print(f"  job#{job_id} 完了", flush=True)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:  # ジョブ失敗/DB切断でagentを落とさず、再接続して継続
+                print(f"agent loop error: {type(e).__name__}: {e}", flush=True)
+                try:
+                    if conn is not None and not conn.closed:
+                        conn.close()
+                except Exception:
+                    pass
+                conn = None
+                time.sleep(interval)
     except KeyboardInterrupt:
         print("agent 停止")
     finally:
-        conn.close()
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
     return 0
