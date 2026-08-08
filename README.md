@@ -22,14 +22,12 @@ Windows(JVLink機)                       Linux(計算機)
 
 ```bash
 cd hro-operations
-# VM(day-runner/決済/成品化 = run-day/list/once): 購入・最適化スタックも入れる
-poetry install -E betting           # psycopg + hro-backtest/hro-buyer とその推移的依存
-# Windows(JV-Link sync/odds の agent のみ): 軽量構成(buyer/backtest 不要)
-poetry install                      # psycopg のみ(betting なし)
+poetry install                      # psycopg + 依存(backtest/buyer とその推移的依存)
 ```
 
-`hro-ops agent`(sync/odds)は betting スタックを import しないので Windows は素の `poetry install` で可。
-`run-day`/`list`/`once` は betting が必要(未導入だと実行時に ModuleNotFoundError)。
+モノレポの兄弟(`../hro-backtest`,`../hro-buyer`)が同じ階層に存在する前提(path 依存)。
+Windows でも同様に配置して `poetry install`。`hro-ops agent`(sync/odds)は betting スタックを
+import しないが、依存としてはインストールされる。
 
 `.env`（または環境変数）に共有 DB の接続情報。学習時と同じ特徴スキーマで動かすため、
 no-SED 279 モデルなら **`HRO_ABLATE_SED=1` を付けて実行**（不一致なら load_models が fail-fast）。
