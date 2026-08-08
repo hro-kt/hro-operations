@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from hro_buyer.models import MODE_DRY_RUN, MODE_PAPER
-from hro_buyer.postgres import JST
-
-from .race_day import DayConfig, list_day, process_race, run_day
+# hro_buyer / race_day(=購入・最適化スタック)はトップレベルで import しない。
+# こうしないと `hro-ops agent`(Windowsのsync/odds用)が buyer 未導入環境で
+# ModuleNotFoundError になる。必要なコマンド内で遅延 import する。
+# 下記は hro_buyer.models / hro_buyer.postgres と値を一致させること。
+MODE_DRY_RUN = "dry_run"
+MODE_PAPER = "paper"
+JST = timezone(timedelta(hours=9))
 
 
 def _load_env() -> None:
@@ -70,7 +73,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--max-tickets", type=int, default=3, help="1レース最大点数(Kelly時)")
 
 
-def _cfg(args) -> DayConfig:
+def _cfg(args):
+    from .race_day import DayConfig
     date = args.date or _today()
     min_er, max_er, min_prob = args.min_er, args.max_er, args.min_prob
     bet_types, simultaneous = args.bet_types, args.simultaneous
@@ -107,11 +111,13 @@ def _cfg(args) -> DayConfig:
 
 
 def _cmd_run_day(args) -> int:
+    from .race_day import run_day
     run_day(_cfg(args), no_wait=args.no_wait)
     return 0
 
 
 def _cmd_list(args) -> int:
+    from .race_day import list_day
     list_day(_cfg(args))
     return 0
 
@@ -119,6 +125,7 @@ def _cmd_list(args) -> int:
 def _cmd_once(args) -> int:
     from hro_backtest import harness
 
+    from .race_day import process_race
     cfg = _cfg(args)
     win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
     process_race(cfg, win_b, place_b, tuple(args.race))
