@@ -12,11 +12,8 @@ python = ">=3.10,<3.13"
 hro-backtest = { path = "../hro-backtest", develop = true }
 # paper 実行(締切/発売可否/実行直前ガード)と決済
 hro-buyer = { path = "../hro-buyer", develop = true }
-# DB オッズ/nl_ra 取得の実依存(任意 extras: postgres)
-psycopg = { version = ">=3.1", extras = ["binary"], optional = true }
-
-[tool.poetry.extras]
-postgres = ["psycopg"]
+# DB接続の実依存。agent(ops_jobキュー)/day-runner とも常時使うため必須。
+psycopg = { version = ">=3.1", extras = ["binary"] }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"

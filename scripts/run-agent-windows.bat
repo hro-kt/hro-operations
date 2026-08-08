@@ -1,31 +1,35 @@
 @echo off
 rem ==========================================================================
-rem hro-ops Windows エージェント常駐用ラッパ。
-rem タスクスケジューラの「ログオン時」トリガでこの .bat を起動する。
-rem (JVLink はインタラクティブなデスクトップセッションが必要なため、
-rem  「ユーザーがログオンしている時のみ実行」= session 0 のサービスにはしない)
-rem 値は自分の環境に合わせて編集。パスワードを含むのでファイル権限に注意。
+rem hro-ops Windows agent (resident). Launch via Task Scheduler "at logon".
+rem JVLink needs an INTERACTIVE desktop session -> do NOT run as a session-0
+rem service. Keep this file ASCII-only to avoid console mojibake.
+rem Edit the CHANGE_ME values. This file holds a password -> restrict its ACL.
 rem ==========================================================================
 
-rem --- DB(VNet内マネージドPGへ到達できる値) ---
+rem --- Force UTF-8 console so Japanese log output is not garbled ---
+chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+
+rem --- DB (managed PG reachable over VNet) ---
 set POSTGRES_HOST=hro-db-prod1.postgres.database.azure.com
 set POSTGRES_PORT=5432
 set POSTGRES_DATABASE=hro
 set POSTGRES_USER=hrouser
-set POSTGRES_PASSWORD=＜PGパスワード＞
+set POSTGRES_PASSWORD=CHANGE_ME
 set POSTGRES_SSLMODE=require
 
-rem --- 各リポジトリの基点 / JRDB 取得 ---
+rem --- repo base / JRDB credentials ---
 set HRO_HOME=C:\hro
-set JRDB_USER=＜JRDB会員ID＞
-set JRDB_PWD=＜JRDBパスワード＞
+set JRDB_USER=CHANGE_ME
+set JRDB_PWD=CHANGE_ME
 
-rem --- スマート差分 sync の遡り日数(任意) ---
+rem --- smart-diff sync lookback days (optional) ---
 set SYNC_LOOKBACK_DAYS=7
 
 cd /d %HRO_HOME%\hro-operations
 :loop
 poetry run hro-ops agent --server windows --interval 5
-echo agent が終了しました。10秒後に再起動します...
+echo agent exited. restarting in 10s...
 timeout /t 10 /nobreak >nul
 goto loop
