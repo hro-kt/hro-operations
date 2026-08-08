@@ -8,12 +8,16 @@ packages = [{ include = "hro_operations" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-# per-race E2E ドライバ(能力値→PL→資金配分)とモデル/特徴/最適化/資金管理を推移的に取り込む
-hro-backtest = { path = "../hro-backtest", develop = true }
-# paper 実行(締切/発売可否/実行直前ガード)と決済
-hro-buyer = { path = "../hro-buyer", develop = true }
 # DB接続の実依存。agent(ops_jobキュー)/day-runner とも常時使うため必須。
 psycopg = { version = ">=3.1", extras = ["binary"] }
+# 購入・最適化スタック(run-day/list/once で使用)。agent(sync/odds)には不要なので任意 extra。
+# VM(day-runner/決済/成品化)は `poetry install -E betting`。
+# Windows(sync/odds の agent のみ)は `poetry install`(素)= 軽量構成。
+hro-backtest = { path = "../hro-backtest", develop = true, optional = true }
+hro-buyer = { path = "../hro-buyer", develop = true, optional = true }
+
+[tool.poetry.extras]
+betting = ["hro-backtest", "hro-buyer"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"

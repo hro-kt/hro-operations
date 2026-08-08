@@ -27,9 +27,21 @@ set JRDB_PWD=CHANGE_ME
 rem --- smart-diff sync lookback days (optional) ---
 set SYNC_LOOKBACK_DAYS=7
 
+rem --- Python from the venv (no poetry needed at runtime) ---
+rem In-project venv (recommended):
+rem   poetry config virtualenvs.in-project true  &&  poetry install
+rem Otherwise find it once with:  poetry env info --path  (+ \Scripts\python.exe)
+set PYEXE=%HRO_HOME%\hro-operations\.venv\Scripts\python.exe
+if not exist "%PYEXE%" (
+  echo [ERROR] venv python not found: %PYEXE%
+  echo Set PYEXE to your venv python. Get it via: poetry env info --path
+  pause
+  exit /b 1
+)
+
 cd /d %HRO_HOME%\hro-operations
 :loop
-poetry run hro-ops agent --server windows --interval 5
+"%PYEXE%" -m hro_operations agent --server windows --interval 5
 echo agent exited. restarting in 10s...
 timeout /t 10 /nobreak >nul
 goto loop
