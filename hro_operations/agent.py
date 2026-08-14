@@ -20,7 +20,14 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+
+_JST = timezone(timedelta(hours=9))
+
+
+def _today_jst() -> str:
+    """JRA暦は JST。既定日付は UTC でなく JST の当日にする(open前の未明でも正しい開催日)。"""
+    return datetime.now(_JST).strftime("%Y%m%d")
 
 _YMD = re.compile(r"^\d{8}$")
 
@@ -73,7 +80,7 @@ def _daily_budget(ymd: str) -> int | None:
 
 
 def _b_trio_day(a: dict):
-    d = _ymd(a.get("date"), datetime.now(timezone.utc).strftime("%Y%m%d"))
+    d = _ymd(a.get("date"), _today_jst())
     env = {"DATE": d, "BANKROLL": str(_int(a.get("bankroll"), 100000))}
     budget = _daily_budget(d)
     if budget is not None:
@@ -86,7 +93,7 @@ def _b_refresh(a: dict):
 
 
 def _b_settle(a: dict):
-    d = _ymd(a.get("date"), datetime.now(timezone.utc).strftime("%Y%m%d"))
+    d = _ymd(a.get("date"), _today_jst())
     results = f"results_{d}.jsonl"   # 安全な固定パターン(任意パス不可)
     return (["poetry", "run", "hro-buyer", "settle", "--results", results],
             os.path.join(_home(), "hro-operations"), {})
@@ -106,7 +113,7 @@ def _b_sync_all(a: dict):
 
 
 def _b_run_odds(a: dict):
-    d = _ymd(a.get("date"), datetime.now(timezone.utc).strftime("%Y%m%d"))
+    d = _ymd(a.get("date"), _today_jst())
     return (["poetry", "run", "hro-synchronizer", "--date", d, "run"],
             os.path.join(_home(), "hro-synchronizer"), {"ODDS_SPEC": "0B30"})
 
