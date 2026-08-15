@@ -98,7 +98,8 @@ def _b_refresh(a: dict):
 def _b_settle(a: dict):
     d = _ymd(a.get("date"), _today_jst())
     results = f"results_{d}.jsonl"   # 安全な固定パターン(任意パス不可)
-    return (["poetry", "run", "hro-buyer", "settle", "--results", results],
+    # --write で bet_settlements に記録(admin の損益/実績に反映)。
+    return (["poetry", "run", "hro-buyer", "settle", "--results", results, "--write"],
             os.path.join(_home(), "hro-operations"), {})
 
 
