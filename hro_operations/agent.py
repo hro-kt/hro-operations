@@ -99,8 +99,10 @@ def _b_settle(a: dict):
     d = _ymd(a.get("date"), _today_jst())
     results = f"results_{d}.jsonl"   # 安全な固定パターン(任意パス不可)
     # --write で bet_settlements に記録(admin の損益/実績に反映)。
-    return (["poetry", "run", "hro-buyer", "settle", "--results", results, "--write"],
-            os.path.join(_home(), "hro-operations"), {})
+    cmd = ["poetry", "run", "hro-buyer", "settle", "--results", results, "--write"]
+    if a.get("watch"):               # 常駐: 開催中は定期的に再決済(段階確定, 冪等)
+        cmd += ["--watch"]
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
 def _b_sync_all(a: dict):
