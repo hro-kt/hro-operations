@@ -134,7 +134,7 @@ def _cmd_once(args) -> int:
 
 def _cmd_agent(args) -> int:
     from .agent import run_agent
-    return run_agent(args.server, interval=args.interval)
+    return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -165,6 +165,8 @@ def main(argv: list[str] | None = None) -> int:
     p_agent.add_argument("--server", required=True, choices=("vm", "windows"),
                          help="このサーバの役割(vm=特徴/day-runner/決済, windows=JV-Link sync/odds)")
     p_agent.add_argument("--interval", type=float, default=5.0, help="キュー確認周期(秒)")
+    p_agent.add_argument("--concurrency", type=int, default=3,
+                         help="同時実行ジョブ数の上限(既定3。長時間trio_dayの裏でsettle等を回す)")
     p_agent.set_defaults(func=_cmd_agent)
 
     args = parser.parse_args(argv)

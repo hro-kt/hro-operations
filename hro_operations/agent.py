@@ -85,6 +85,9 @@ def _b_trio_day(a: dict):
     budget = _daily_budget(d)
     if budget is not None:
         env["DAILY_BUDGET"] = str(budget)   # UI設定の日別予算を実購入に反映
+    if a.get("dry_run"):                     # 発注指示だけ即時プレビュー(待たない/ガード最小)
+        env["MODE"] = "dry_run"
+        env["NOWAIT"] = "1"
     return (["bash", "scripts/trio_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 
@@ -250,26 +253,55 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
         stop_hb.set()
 
 
-def run_agent(server: str, interval: float = 5.0) -> int:
+def run_agent(server: str, interval: float = 5.0, concurrency: int = 3) -> int:
+    """上限つき並行実行。長時間ジョブ(trio_day)の裏で settle/refresh 等を回せるよう、
+    claim したジョブを専用接続のワーカースレッドで実行する(1サーバ最大 concurrency 本)。"""
     import psycopg
     if server not in _COMMANDS:
         sys.exit(f"--server は {list(_COMMANDS)} のいずれか")
-    print(f"agent 起動 server={server} 対応kind={list(_COMMANDS[server])} (Ctrl-Cで停止)", flush=True)
-    conn = None
+    concurrency = max(1, concurrency)
+    print(f"agent 起動 server={server} 並行数={concurrency} 対応kind={list(_COMMANDS[server])} (Ctrl-Cで停止)", flush=True)
+
+    slots = threading.Semaphore(concurrency)
+
+    def _worker(job_id, kind, args) -> None:
+        wconn = None
+        try:
+            wconn = psycopg.connect(_conninfo(), autocommit=False)  # ジョブごとに専用接続(スレッド安全)
+            print(f"  job#{job_id} kind={kind} 実行", flush=True)
+            _run_job(wconn, server, job_id, kind, args, interval)
+            print(f"  job#{job_id} 完了", flush=True)
+        except Exception as e:
+            print(f"  job#{job_id} 実行エラー: {type(e).__name__}: {e}", flush=True)
+            try:
+                if wconn is not None and not wconn.closed:
+                    _finish(wconn, job_id, "failed", -1)
+            except Exception:
+                pass
+        finally:
+            if wconn is not None:
+                try:
+                    wconn.close()
+                except Exception:
+                    pass
+            slots.release()
+
+    conn = None  # claim + agent heartbeat 用(メインスレッド専用)
     try:
         while True:
             try:
                 if conn is None or conn.closed:
                     conn = psycopg.connect(_conninfo(), autocommit=False)
                 _heartbeat(conn, server, None)
+                if not slots.acquire(blocking=False):  # 空きスロット無し → 待つ
+                    time.sleep(interval); continue
                 row = _claim(conn, server)
                 if row is None:
+                    slots.release()
                     time.sleep(interval); continue
                 job_id, kind, args = row
-                _heartbeat(conn, server, job_id)
-                print(f"  job#{job_id} kind={kind} 実行", flush=True)
-                _run_job(conn, server, job_id, kind, args, interval)
-                print(f"  job#{job_id} 完了", flush=True)
+                threading.Thread(target=_worker, args=(job_id, kind, args), daemon=True).start()
+                # 空きがあれば次周回で即 claim(queueを詰めて捌く)。heartbeat も毎周回。
             except KeyboardInterrupt:
                 raise
             except Exception as e:  # ジョブ失敗/DB切断でagentを落とさず、再接続して継続
