@@ -206,7 +206,10 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
             try:
                 if hb is None or hb.closed:
                     hb = psycopg.connect(_conninfo(), autocommit=True)
-                _heartbeat(hb, server, job_id)
+                _heartbeat(hb, server, job_id)   # agent(ops_agent.last_seen)
+                # ジョブ自体の生存も更新(無出力の長時間ジョブでも heartbeat_at が新しく保たれる)。
+                hb.execute("UPDATE ops_job SET heartbeat_at=now() WHERE id=%s AND status='running'",
+                           (job_id,))
             except Exception:  # 接続断等は張り直して継続
                 try:
                     if hb is not None:
