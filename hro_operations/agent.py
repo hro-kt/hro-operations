@@ -124,10 +124,18 @@ def _b_run_odds(a: dict):
             os.path.join(_home(), "hro-synchronizer"), {"ODDS_SPEC": "0B30"})
 
 
+def _b_tyb_poll(a: dict):
+    # 直前情報(TYB)を JRDB からHTTP取得して nl_jrdb_tyb へ。synchronizer が居る Windows で常駐。
+    d = _ymd(a.get("date"), _today_jst())
+    return (["poetry", "run", "python", "-m", "hro_synchronizer.jrdb_tyb_loader",
+             "poll", "--date", d, "--interval", "180"],
+            os.path.join(_home(), "hro-synchronizer"), {})
+
+
 _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
            "refresh": _b_refresh, "settle": _b_settle},
-    "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds},
+    "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds, "tyb_poll": _b_tyb_poll},
 }
 
 

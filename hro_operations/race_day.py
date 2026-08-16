@@ -31,6 +31,7 @@ from hro_buyer.postgres import (
     JST,
     PostgresConfig,
     PostgresDeadlineProvider,
+    PostgresResultSink,
     PostgresSaleProvider,
     deadline_from,
 )
@@ -162,30 +163,71 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> list
         db.close()
 
 
-def paper_buy(cfg: DayConfig, orders: list):
-    """発注候補を paper モードで実行(締切/発売可否/実行直前ガード)し結果を追記。"""
+class _MultiResultSink:
+    """複数の ResultSink に emit を配る(結果を JSONL=決済用 と DB=admin表示用 の両方へ)。"""
+
+    def __init__(self, sinks: list) -> None:
+        self._sinks = sinks
+
+    def emit(self, results: list) -> None:
+        for s in self._sinks:
+            s.emit(results)
+
+
+def _clear_race(cfg: DayConfig, race_id: str) -> None:
+    """当該レース×budget_key の bet_orders/bet_results を削除(④再実行の重複防止=冪等)。"""
+    import psycopg
     pg = PostgresConfig.from_env()
-    svc = BuyerService(
-        InMemoryOrderSource(orders),
-        config=BuyerConfig(mode=cfg.mode,
-                           bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else cfg.flat_amount),
-                           require_deadline=True),
-        result_sink=JsonlResultSink(cfg.results_path),
-        deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
-        sale_provider=PostgresSaleProvider(pg),
-    )
-    return svc.run()
+    with psycopg.connect(pg.conninfo) as conn, conn.cursor() as cur:
+        cur.execute("DELETE FROM bet_orders   WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
+        cur.execute("DELETE FROM bet_results  WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
+        conn.commit()
+
+
+def _persist_orders(cfg: DayConfig, orders: list) -> None:
+    """発注候補を bet_orders(+ decision_logs は空) へ記録(admin「購入指示」に反映)。"""
+    from hro_moneymanager.postgres import PostgresOrderSink
+    sink = PostgresOrderSink(PostgresConfig.from_env(), budget_key=cfg.date,
+                             decided_at=datetime.now(JST))
+    try:
+        sink.emit(orders, [])
+    finally:
+        close = getattr(sink, "close", None)
+        if callable(close):
+            close()
+
+
+def paper_buy(cfg: DayConfig, orders: list):
+    """発注候補を paper モードで実行(締切/発売可否/実行直前ガード)し、
+    結果を JSONL(決済用) と bet_results(admin表示用) の両方へ記録。"""
+    pg = PostgresConfig.from_env()
+    db_sink = PostgresResultSink(pg, budget_key=cfg.date)
+    try:
+        svc = BuyerService(
+            InMemoryOrderSource(orders),
+            config=BuyerConfig(mode=cfg.mode,
+                               bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else cfg.flat_amount),
+                               require_deadline=True),
+            result_sink=_MultiResultSink([JsonlResultSink(cfg.results_path), db_sink]),
+            deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
+            sale_provider=PostgresSaleProvider(pg),
+        )
+        return svc.run()
+    finally:
+        db_sink.close()
 
 
 def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
-    """1レース: 判断 → (発注があれば) paper 購入。"""
+    """1レース: 判断 → bet_orders 記録 → (発注があれば) paper 購入(bet_results)。"""
     race_id = "".join(race)
     orders = decide_orders(cfg, win_b, place_b, race)
+    _clear_race(cfg, race_id)  # 再実行/古い残骸を除去してから記録(冪等)
     if not orders:
-        log.info("%s: 発注なし(live odds未取得 or 条件を満たす複勝なし)", race_id)
+        log.info("%s: 発注なし(live odds未取得 or 条件を満たす候補なし)", race_id)
         return
-    res = paper_buy(cfg, orders)
-    log.info("%s: %d件発注 -> %s (intended=%d円) 追記=%s",
+    _persist_orders(cfg, orders)          # bet_orders(admin「購入指示」)
+    res = paper_buy(cfg, orders)          # 実行 → JSONL + bet_results
+    log.info("%s: %d件発注 -> %s (intended=%d円) DB+追記=%s",
              race_id, len(orders), res.count_by_status(), res.total_amount, cfg.results_path)
 
 

@@ -40,19 +40,25 @@ done
 echo "=== [1/3] component MV refresh (前日までのas-of履歴) ==="
 cd "$FEAT" && poetry run hro-features refresh
 
-echo "=== [2/3] 直前TYB poll をバックグラウンド起動 (date=$DATE) ==="
-cd "$SYNC"
-nohup poetry run python -m hro_synchronizer.jrdb_tyb_loader poll --date "$DATE" --interval 180 \
-  > "$HOME/tyb_poll_$DATE.log" 2>&1 &
-TYB_PID=$!
-echo "  TYB poll PID=$TYB_PID  (log: ~/tyb_poll_$DATE.log)  停止は: kill $TYB_PID"
+echo "=== [2/3] 直前TYB poll (date=$DATE) ==="
+TYB_PID=""
+if [ -d "$SYNC" ]; then
+  cd "$SYNC"
+  nohup poetry run python -m hro_synchronizer.jrdb_tyb_loader poll --date "$DATE" --interval 180 \
+    > "$HOME/tyb_poll_$DATE.log" 2>&1 &
+  TYB_PID=$!
+  echo "  TYB poll PID=$TYB_PID  (log: ~/tyb_poll_$DATE.log)"
+else
+  echo "  [warn] synchronizer が無い($SYNC)。このホストではTYB pollを起動しない"
+  echo "         (TYBはWindows側で poll する想定)。run-day はそのまま継続。"
+fi
 
 RUN_ARGS=(--mode "$MODE")
 [ -n "$NOWAIT" ] && RUN_ARGS+=(--no-wait)
 [ -n "$DAILY_BUDGET" ] && RUN_ARGS+=(--daily-budget "$DAILY_BUDGET")
 echo "=== [3/3] day-runner 起動 (mode=$MODE${NOWAIT:+ +no-wait} trio er_cal[1.7,2.0) 較正 分数Kelly bankroll=$BANKROLL 日次予算=${DAILY_BUDGET:-既定}) ==="
 cd "$OPS"
-trap 'echo; echo "day-runner停止。TYB pollも止めます (kill $TYB_PID)"; kill '"$TYB_PID"' 2>/dev/null || true' EXIT
+trap '[ -n "$TYB_PID" ] && { echo; echo "day-runner停止。TYB poll停止(kill $TYB_PID)"; kill "$TYB_PID" 2>/dev/null; } || true' EXIT
 env $PROD poetry run hro-ops run-day \
   --date "$DATE" \
   --win-model "$MODELS/win_prod.joblib" --place-model "$MODELS/place_prod.joblib" \
