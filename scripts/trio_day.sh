@@ -29,6 +29,8 @@ DAILY_BUDGET="${DAILY_BUDGET:-}"
 MODE="${MODE:-paper}"
 # 即時プレビュー: 非空なら T-30s を待たず全レースを今すぐ評価(dry-run確認向け)
 NOWAIT="${NOWAIT:-}"
+# オッズ源: live(既定=ts_sokuho) / confirmed(nl_o*=過去日の配管検証。締切無視で全レース処理)
+SOURCE="${SOURCE:-}"
 
 # ★productionize.sh と同一でなければ schema-hash 不一致で fail-fast する。必ず一致させる。
 export PROD="HRO_ABLATE_SED=1 HRO_ABLATE_RACESTRUCT=1 HRO_ABLATE_SEASON=1 HRO_ABLATE_TRIP=1 HRO_ABLATE_GROUNDLOSS=1 HRO_ABLATE_TYBODDS=1 HRO_ABLATE_PACE=1 HRO_ABLATE_TRAJ=1 HRO_ABLATE_SOS=1 HRO_ABLATE_PEDCOND=1 HRO_ABLATE_FIELDSHAPE=1"
@@ -55,6 +57,7 @@ fi
 
 RUN_ARGS=(--mode "$MODE")
 [ -n "$NOWAIT" ] && RUN_ARGS+=(--no-wait)
+[ -n "$SOURCE" ] && RUN_ARGS+=(--source "$SOURCE")
 [ -n "$DAILY_BUDGET" ] && RUN_ARGS+=(--daily-budget "$DAILY_BUDGET")
 echo "=== [3/3] day-runner 起動 (mode=$MODE${NOWAIT:+ +no-wait} trio er_cal[1.7,2.0) 較正 分数Kelly bankroll=$BANKROLL 日次予算=${DAILY_BUDGET:-既定}) ==="
 cd "$OPS"

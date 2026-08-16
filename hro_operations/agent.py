@@ -88,6 +88,8 @@ def _b_trio_day(a: dict):
     if a.get("dry_run"):                     # 発注指示だけ即時プレビュー(待たない/ガード最小)
         env["MODE"] = "dry_run"
         env["NOWAIT"] = "1"
+    if a.get("source") in ("live", "confirmed"):  # confirmed=過去日を確定オッズで配管検証
+        env["SOURCE"] = a["source"]
     return (["bash", "scripts/trio_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 

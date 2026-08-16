@@ -247,22 +247,28 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
              cfg.date, len(races), cfg.flat_amount, cfg.min_er, cfg.min_prob,
              cfg.lead_seconds, cfg.mode)
 
+    # source=confirmed は過去日の配管検証用: 締切/鮮度は無関係なので全レースを即処理する。
+    verify = (cfg.source == "confirmed")
+    if verify:
+        log.info("%s: 検証モード(source=confirmed) 締切を無視して全レース即処理", cfg.date)
+
     processed = 0
     for race, hasso in races:
         race_id = "".join(race)
-        deadline = deadline_from(race_id, hasso, cfg.lead_seconds)  # JST tz-aware
-        if deadline is None:
-            log.info("%s: 締切不明(hasso_time=%r) skip", race_id, hasso)
-            continue
-        wait = (deadline - datetime.now(JST)).total_seconds()
-        if wait < -cfg.grace_seconds:
-            log.info("%s: 締切を %.0fs 超過 skip", race_id, -wait)
-            continue
-        if wait > 0 and not no_wait:
-            log.info("%s: 発走%s の T-%ds(%s)まで %.0fs 待機",
-                     race_id, hasso, cfg.lead_seconds,
-                     deadline.strftime("%H:%M:%S"), wait)
-            time.sleep(wait)
+        if not verify:
+            deadline = deadline_from(race_id, hasso, cfg.lead_seconds)  # JST tz-aware
+            if deadline is None:
+                log.info("%s: 締切不明(hasso_time=%r) skip", race_id, hasso)
+                continue
+            wait = (deadline - datetime.now(JST)).total_seconds()
+            if wait < -cfg.grace_seconds:
+                log.info("%s: 締切を %.0fs 超過 skip", race_id, -wait)
+                continue
+            if wait > 0 and not no_wait:
+                log.info("%s: 発走%s の T-%ds(%s)まで %.0fs 待機",
+                         race_id, hasso, cfg.lead_seconds,
+                         deadline.strftime("%H:%M:%S"), wait)
+                time.sleep(wait)
         try:
             process_race(cfg, win_b, place_b, race)
             processed += 1
