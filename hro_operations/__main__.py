@@ -57,7 +57,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="締切をこれ秒超過なら見送り(既定180)")
     p.add_argument("--results", default=None, help="結果JSONL(既定 results_<date>.jsonl)")
     p.add_argument("--mode", choices=(MODE_PAPER, MODE_DRY_RUN), default=MODE_PAPER)
-    p.add_argument("--source", choices=("live", "confirmed"), default="live",
+    p.add_argument("--source", choices=("live", "confirmed", "replay"), default="live",
                    help="live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの配管検証用)")
     # --- trio運用(er_cal帯選別・較正・分数Kelly) ---
     p.add_argument("--preset", choices=("trio",), default=None,

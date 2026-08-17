@@ -75,8 +75,8 @@ class DayConfig:
 
 
 def _betting(cfg: DayConfig) -> BettingConfig:
-    # confirmed は鮮度概念なし=無制限。live は max_odds_age で締める。
-    age = float("inf") if cfg.source == "confirmed" else cfg.max_odds_age
+    # confirmed/replay は鮮度概念なし=無制限。live は max_odds_age で締める。
+    age = float("inf") if cfg.source in ("confirmed", "replay") else cfg.max_odds_age
     return BettingConfig(
         min_expected_return=cfg.min_er,
         max_expected_return=cfg.max_er,     # er_cal帯の上限(None=無し)
@@ -247,10 +247,10 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
              cfg.date, len(races), cfg.flat_amount, cfg.min_er, cfg.min_prob,
              cfg.lead_seconds, cfg.mode)
 
-    # source=confirmed は過去日の配管検証用: 締切/鮮度は無関係なので全レースを即処理する。
-    verify = (cfg.source == "confirmed")
+    # confirmed/replay は過去日の配管検証用: 締切/鮮度は無関係なので全レースを即処理する。
+    verify = cfg.source in ("confirmed", "replay")
     if verify:
-        log.info("%s: 検証モード(source=confirmed) 締切を無視して全レース即処理", cfg.date)
+        log.info("%s: 検証モード(source=%s) 締切を無視して全レース即処理", cfg.date, cfg.source)
 
     processed = 0
     for race, hasso in races:
