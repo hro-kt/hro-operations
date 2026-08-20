@@ -88,8 +88,11 @@ def _b_trio_day(a: dict):
     if a.get("dry_run"):                     # 発注指示だけ即時プレビュー(待たない/ガード最小)
         env["MODE"] = "dry_run"
         env["NOWAIT"] = "1"
-    if a.get("source") in ("live", "confirmed", "replay"):  # replay=保存済ライブで過去日検証
-        env["SOURCE"] = a["source"]
+    src = a.get("source")
+    if src in ("live", "confirmed", "replay"):  # replay=保存済ライブで過去日検証
+        env["SOURCE"] = src
+        if src in ("confirmed", "replay"):
+            env["SKIP_REFRESH"] = "1"  # 検証は既存MVで十分=全MV再構築を省いて高速化
     return (["bash", "scripts/trio_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 
@@ -134,10 +137,23 @@ def _b_tyb_poll(a: dict):
             os.path.join(_home(), "hro-synchronizer"), {})
 
 
+def _b_reparse(a: dict):
+    # jv_raw_records の配列レコード(確定オッズO1-O6/払戻HR)を構造化テーブルへ再展開(JVLink不要)。
+    # 引数なし=全期間・全種別。types/from/to で絞れる(make_date基準)。冪等。
+    types = str(a.get("types") or "O1,O2,O3,O4,O5,O6,HR")
+    cmd = ["poetry", "run", "hro-synchronizer", "reparse", "--types", types]
+    if a.get("from"):
+        cmd += ["--from", _ymd(a["from"])]
+    if a.get("to"):
+        cmd += ["--to", _ymd(a["to"])]
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), {})
+
+
 _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
            "refresh": _b_refresh, "settle": _b_settle},
-    "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds, "tyb_poll": _b_tyb_poll},
+    "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
+                "tyb_poll": _b_tyb_poll, "reparse": _b_reparse},
 }
 
 

@@ -40,7 +40,11 @@ for f in win_prod.joblib place_prod.joblib trio_calib.json; do
 done
 
 echo "=== [1/3] component MV refresh (前日までのas-of履歴) ==="
-cd "$FEAT" && poetry run hro-features refresh
+if [ -z "${SKIP_REFRESH:-}" ]; then
+  cd "$FEAT" && poetry run hro-features refresh
+else
+  echo "  skip(検証モード=既存MVで評価。全MV再構築を省略)"
+fi
 
 echo "=== [2/3] 直前TYB poll (date=$DATE) ==="
 TYB_PID=""
