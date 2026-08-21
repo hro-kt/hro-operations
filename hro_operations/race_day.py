@@ -145,19 +145,20 @@ def _calibrators(path: str | None) -> dict | None:
     return _CALIB_CACHE[path]
 
 
-def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> list:
-    """1レースの発注候補を live オッズで判断して返す(較正→er_cal帯選別→分数Kelly)。"""
+def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tuple[dict | None, list]:
+    """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
+    戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。"""
     db = FeatureDB(load_features_config())
     conn = opt_connect()
     try:
-        _abilities, orders = harness.orders_for_race(
+        abilities, orders = harness.orders_for_race(
             db, conn, win_b, place_b, race,
             betting=_betting(cfg), money=_money(cfg),
             sim=SimConfig(), kelly=KellyConfig(),
             source=cfg.source, simultaneous=cfg.simultaneous,
             prob_calibrators=_calibrators(cfg.calib_path),
         )
-        return orders
+        return abilities, orders
     finally:
         conn.close()
         db.close()
@@ -217,10 +218,28 @@ def paper_buy(cfg: DayConfig, orders: list):
         db_sink.close()
 
 
+def _persist_predictions(cfg: DayConfig, race: tuple[str, ...], win_b, abilities: dict) -> None:
+    """全馬の p_win/p_place を prediction_log へ記録(MLOps監視の土台)。ベストエフォート
+    (失敗しても発注は止めない)。source は cfg.source(live/replay/confirmed)を採用。"""
+    if not abilities or not abilities.get("runners"):
+        return
+    try:
+        import psycopg
+        from hro_backtest.predlog import build_pred_rows, upsert_predictions, model_version_of
+        rows = build_pred_rows(race, abilities, model_version_of(win_b.meta),
+                               cfg.source, datetime.now(JST))
+        pg = PostgresConfig.from_env()
+        with psycopg.connect(pg.conninfo) as conn:
+            upsert_predictions(conn, rows, commit=True)
+    except Exception as e:  # 監視ログの失敗は運用を止めない
+        log.warning("%s: prediction_log 記録に失敗(監視のみ影響): %s", "".join(race), e)
+
+
 def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
-    """1レース: 判断 → bet_orders 記録 → (発注があれば) paper 購入(bet_results)。"""
+    """1レース: 判断 → 予測ログ記録 → bet_orders 記録 → (発注があれば) paper 購入(bet_results)。"""
     race_id = "".join(race)
-    orders = decide_orders(cfg, win_b, place_b, race)
+    abilities, orders = decide_orders(cfg, win_b, place_b, race)
+    _persist_predictions(cfg, race, win_b, abilities)  # 全馬予測を監視用に保存(発注有無に関わらず)
     _clear_race(cfg, race_id)  # 再実行/古い残骸を除去してから記録(冪等)
     if not orders:
         log.info("%s: 発注なし(live odds未取得 or 条件を満たす候補なし)", race_id)

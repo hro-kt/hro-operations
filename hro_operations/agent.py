@@ -149,9 +149,20 @@ def _b_reparse(a: dict):
     return (cmd, os.path.join(_home(), "hro-synchronizer"), {})
 
 
+def _b_backfill(a: dict):
+    # 過去JRAをモデル採点し prediction_log へ(MLOps監視の土台)。学習と同一ablation envで実行。
+    env = {"FROM": _ymd(a.get("from")), "TO": _ymd(a.get("to"))}
+    if a.get("limit"):
+        env["LIMIT"] = str(_int(a.get("limit"), 0))
+    if a.get("source"):
+        env["SOURCE"] = str(a["source"])
+    return (["bash", "scripts/backfill_predictions.sh"],
+            os.path.join(_home(), "hro-operations"), env)
+
+
 _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
-           "refresh": _b_refresh, "settle": _b_settle},
+           "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
                 "tyb_poll": _b_tyb_poll, "reparse": _b_reparse},
 }
