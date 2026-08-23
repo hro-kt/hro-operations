@@ -61,6 +61,7 @@ class DayConfig:
     mode: str = MODE_PAPER
     bet_types: tuple[str, ...] = ("place",)
     source: str = "live"  # live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの検証用)
+    max_odds: float = 50.0  # オッズ上限。★trioは配当が数十〜数千倍なので 50 だと全弾き→trioは2000等に上げる
     # --- trio運用(er_cal帯選別・較正・分数Kelly) ---
     max_er: float | None = None       # 期待値の上限(帯選別)。trioは [min_er, max_er)=例[1.7,2.0)
     calib_path: str | None = None     # trio較正JSON(fit-trio-calib出力)。EV計算前に組合せ確率へ適用
@@ -81,6 +82,7 @@ def _betting(cfg: DayConfig) -> BettingConfig:
         min_expected_return=cfg.min_er,
         max_expected_return=cfg.max_er,     # er_cal帯の上限(None=無し)
         min_probability=cfg.min_prob,
+        max_odds=cfg.max_odds,              # ★trioは既定50だと全弾き。cfg(preset trio=2000)を反映
         max_odds_age_seconds=age,
         allowed_bet_types=tuple(cfg.bet_types),
     )

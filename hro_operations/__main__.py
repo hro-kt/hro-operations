@@ -63,6 +63,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--preset", choices=("trio",), default=None,
                    help="trio運用の推奨値を一括設定(bet-types=trio, min-er1.7, max-er2.0, min-prob0.0, simultaneous)")
     p.add_argument("--max-er", type=float, default=None, help="期待値上限(帯選別。例2.0で[min_er,2.0))")
+    p.add_argument("--max-odds", type=float, default=None,
+                   help="オッズ上限(既定: place=50 / preset trio=2000)。trioは配当が高いので50だと全弾き")
     p.add_argument("--calib", default=None, help="trio較正JSON(fit-trio-calib出力)。EV前に適用")
     p.add_argument("--simultaneous", action="store_true", help="レース内joint Kelly(trio推奨)")
     p.add_argument("--bankroll", type=int, default=0, help=">0で分数Kelly(0=flat)")
@@ -78,12 +80,16 @@ def _cfg(args):
     date = args.date or _today()
     min_er, max_er, min_prob = args.min_er, args.max_er, args.min_prob
     bet_types, simultaneous = args.bet_types, args.simultaneous
+    max_odds = args.max_odds
     if args.preset == "trio":  # デフォルトのままの項目だけ trio 推奨値に上書き(明示指定は尊重)
         bet_types = "trio"
         if args.min_er == 1.3:   min_er = 1.7
         if args.max_er is None:  max_er = 2.0
         if args.min_prob == 0.15: min_prob = 0.0
+        if max_odds is None:     max_odds = 2000.0   # ★trioは高配当。50だと全弾き→2000
         simultaneous = True
+    if max_odds is None:
+        max_odds = 50.0
     return DayConfig(
         date=date,
         win_model=args.win_model,
@@ -98,6 +104,7 @@ def _cfg(args):
         mode=args.mode,
         bet_types=tuple(x.strip() for x in bet_types.split(",") if x.strip()),
         source=args.source,
+        max_odds=max_odds,
         max_er=max_er,
         calib_path=args.calib,
         simultaneous=simultaneous,
