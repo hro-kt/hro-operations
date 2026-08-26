@@ -149,6 +149,21 @@ def _b_reparse(a: dict):
     return (cmd, os.path.join(_home(), "hro-synchronizer"), {})
 
 
+def _b_jrdb_load(a: dict):
+    # JRDB(KYI/CYB/KAB/SED)を [from,to] で取込。開催毎に回す(TYB以外は取得経路が無く停止していた)。
+    # 日付指定=その日/明示レンジ、無指定=直近3日(取りこぼし救済で広めに再取得。冪等)。
+    if a.get("from") and a.get("to"):
+        f, t = _ymd(a["from"]), _ymd(a["to"])
+    elif a.get("date"):
+        f = t = _ymd(a["date"])
+    else:
+        t = _today_jst()
+        f = (datetime.strptime(t, "%Y%m%d") - timedelta(days=3)).strftime("%Y%m%d")
+    cmd = ["poetry", "run", "python", "-m", "hro_synchronizer.jrdb_load_all",
+           "--from", f, "--to", t]
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), {})
+
+
 def _b_backfill(a: dict):
     # 過去JRAをモデル採点し prediction_log へ(MLOps監視の土台)。学習と同一ablation envで実行。
     env = {"FROM": _ymd(a.get("from")), "TO": _ymd(a.get("to"))}
@@ -164,7 +179,7 @@ _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
            "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
-                "tyb_poll": _b_tyb_poll, "reparse": _b_reparse},
+                "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load},
 }
 
 
