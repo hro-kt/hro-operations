@@ -73,6 +73,9 @@ class DayConfig:
     ticket_min_amount: int = 100      # 1点最低額
     ticket_max_amount: int = 5_000    # 1点最大額
     max_tickets_per_race: int = 3     # 1レース最大点数
+    # 券種別プラン(併用運用)。各 dict: {bet_types, min_er, max_er, min_prob, max_odds}。
+    # 空なら従来の単一設定(min_er/max_er/min_prob/bet_types)。例: trio帯[1.7,2.0] と wide er>=1.7&prob>=0.10 同時。
+    plans: tuple = ()
 
 
 def _betting(cfg: DayConfig) -> BettingConfig:
@@ -86,6 +89,24 @@ def _betting(cfg: DayConfig) -> BettingConfig:
         max_odds_age_seconds=age,
         allowed_bet_types=tuple(cfg.bet_types),
     )
+
+
+def _betting_plans(cfg: DayConfig) -> list:
+    """券種別プラン(cfg.plans)を BettingConfig のリストに。空なら単一設定を1件だけ。"""
+    if not cfg.plans:
+        return [_betting(cfg)]
+    age = float("inf") if cfg.source in ("confirmed", "replay") else cfg.max_odds_age
+    out = []
+    for p in cfg.plans:
+        out.append(BettingConfig(
+            min_expected_return=p.get("min_er", cfg.min_er),
+            max_expected_return=p.get("max_er", cfg.max_er),
+            min_probability=p.get("min_prob", cfg.min_prob),
+            max_odds=p.get("max_odds", cfg.max_odds),
+            max_odds_age_seconds=age,
+            allowed_bet_types=tuple(p["bet_types"]),
+        ))
+    return out
 
 
 def _money(cfg: DayConfig) -> MoneyManagerConfig:
@@ -153,9 +174,9 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
     db = FeatureDB(load_features_config())
     conn = opt_connect()
     try:
-        abilities, orders = harness.orders_for_race(
+        abilities, orders = harness.orders_for_race_multi(
             db, conn, win_b, place_b, race,
-            betting=_betting(cfg), money=_money(cfg),
+            bettings=_betting_plans(cfg), money=_money(cfg),
             sim=SimConfig(), kelly=KellyConfig(),
             source=cfg.source, simultaneous=cfg.simultaneous,
             prob_calibrators=_calibrators(cfg.calib_path),

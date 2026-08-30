@@ -93,6 +93,8 @@ def _b_trio_day(a: dict):
         env["SOURCE"] = src
         if src in ("confirmed", "replay"):
             env["SKIP_REFRESH"] = "1"  # 検証は既存MVで十分=全MV再構築を省いて高速化
+    if a.get("preset") in ("trio", "trio_wide"):
+        env["PRESET"] = a["preset"]          # trio_wide=trio帯 ＋ wide(er>=1.7&prob>=0.10)・flat 併用
     return (["bash", "scripts/trio_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 

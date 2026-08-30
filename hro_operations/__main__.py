@@ -60,8 +60,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--source", choices=("live", "confirmed", "replay"), default="live",
                    help="live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの配管検証用)")
     # --- trio運用(er_cal帯選別・較正・分数Kelly) ---
-    p.add_argument("--preset", choices=("trio",), default=None,
-                   help="trio運用の推奨値を一括設定(bet-types=trio, min-er1.7, max-er2.0, min-prob0.0, simultaneous)")
+    p.add_argument("--preset", choices=("trio", "trio_wide"), default=None,
+                   help="trio: bet-types=trio,er[1.7,2.0),prob0.0 / "
+                        "trio_wide: 券種別併用(trio帯[1.7,2.0] ＋ wide er>=1.7&prob>=0.10)・flat推奨")
     p.add_argument("--max-er", type=float, default=None, help="期待値上限(帯選別。例2.0で[min_er,2.0))")
     p.add_argument("--max-odds", type=float, default=None,
                    help="オッズ上限(既定: place=50 / preset trio=2000)。trioは配当が高いので50だと全弾き")
@@ -81,6 +82,8 @@ def _cfg(args):
     min_er, max_er, min_prob = args.min_er, args.max_er, args.min_prob
     bet_types, simultaneous = args.bet_types, args.simultaneous
     max_odds = args.max_odds
+    plans: tuple = ()
+    max_tickets = args.max_tickets
     if args.preset == "trio":  # デフォルトのままの項目だけ trio 推奨値に上書き(明示指定は尊重)
         bet_types = "trio"
         if args.min_er == 1.3:   min_er = 1.7
@@ -88,6 +91,16 @@ def _cfg(args):
         if args.min_prob == 0.15: min_prob = 0.0
         if max_odds is None:     max_odds = 2000.0   # ★trioは高配当。50だと全弾き→2000
         simultaneous = True
+    elif args.preset == "trio_wide":  # 券種別併用(OOS検証で残った条件)。flat推奨(--bankroll 0)
+        bet_types = "trio,wide"       # 表示/フォールバック用
+        simultaneous = True
+        if max_odds is None:     max_odds = 2000.0
+        plans = (
+            {"bet_types": ("trio",), "min_er": 1.7, "max_er": 2.0, "min_prob": 0.0, "max_odds": 2000.0},
+            {"bet_types": ("wide",), "min_er": 1.7, "max_er": None, "min_prob": 0.10, "max_odds": 2000.0},
+        )
+        if args.max_tickets == 3:  # flatで資格ある組を広めに買う(点数上限を緩める)
+            max_tickets = 30
     if max_odds is None:
         max_odds = 50.0
     return DayConfig(
@@ -113,7 +126,8 @@ def _cfg(args):
         daily_budget=args.daily_budget,
         race_max_amount=args.race_max,
         ticket_max_amount=args.ticket_max,
-        max_tickets_per_race=args.max_tickets,
+        max_tickets_per_race=max_tickets,
+        plans=plans,
     )
 
 

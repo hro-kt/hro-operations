@@ -23,6 +23,9 @@ SYNC="${SYNC:-$HOME/hro/hro-synchronizer}"
 MODELS="${MODELS:-$HOME/models}"
 DATE="${DATE:-$(TZ=Asia/Tokyo date +%Y%m%d)}"
 BANKROLL="${BANKROLL:-100000}"
+# 運用プリセット: trio(従来=帯[1.7,2.0]・分数Kelly) / trio_wide(併用=trio帯 ＋ wide er>=1.7&prob>=0.10・flat)
+PRESET="${PRESET:-trio}"
+[ "$PRESET" = "trio_wide" ] && BANKROLL=0   # trio_wide は flat(=bankroll 0)。OOS検証で flat>Kelly。
 # 日次予算。admin UI で日別設定があれば agent が渡す。空なら run-day 既定(HRO_DAILY_BUDGET)。
 DAILY_BUDGET="${DAILY_BUDGET:-}"
 # 実行モード: paper(既定, 実行直前ガードを通すが実投票なし) / dry_run(ガード最小, 発注指示だけ出す)
@@ -69,6 +72,6 @@ trap '[ -n "$TYB_PID" ] && { echo; echo "day-runner停止。TYB poll停止(kill 
 env $PROD poetry run hro-ops run-day \
   --date "$DATE" \
   --win-model "$MODELS/win_prod.joblib" --place-model "$MODELS/place_prod.joblib" \
-  --preset trio --calib "$MODELS/trio_calib.json" \
+  --preset "$PRESET" --calib "$MODELS/trio_calib.json" \
   --bankroll "$BANKROLL" --kelly-fraction 0.25 --race-max 3000 --ticket-max 1000 --max-tickets 5 \
   "${RUN_ARGS[@]}"
