@@ -74,6 +74,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--race-max", type=int, default=10_000, help="1レース購入上限(Kelly時)")
     p.add_argument("--ticket-max", type=int, default=5_000, help="1点最大額(Kelly時)")
     p.add_argument("--max-tickets", type=int, default=3, help="1レース最大点数(Kelly時)")
+    p.add_argument("--ev-lcb-z", type=float, default=0.0,
+                   help="EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化し、推定上振れ組の選別を抑える")
 
 
 def _cfg(args):
@@ -127,6 +129,7 @@ def _cfg(args):
         race_max_amount=args.race_max,
         ticket_max_amount=args.ticket_max,
         max_tickets_per_race=max_tickets,
+        ev_lcb_z=args.ev_lcb_z,
         plans=plans,
     )
 

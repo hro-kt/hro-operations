@@ -73,6 +73,7 @@ class DayConfig:
     ticket_min_amount: int = 100      # 1点最低額
     ticket_max_amount: int = 5_000    # 1点最大額
     max_tickets_per_race: int = 3     # 1レース最大点数
+    ev_lcb_z: float = 0.0             # EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化=勝者の呪い対策
     # 券種別プラン(併用運用)。各 dict: {bet_types, min_er, max_er, min_prob, max_odds}。
     # 空なら従来の単一設定(min_er/max_er/min_prob/bet_types)。例: trio帯[1.7,2.0] と wide er>=1.7&prob>=0.10 同時。
     plans: tuple = ()
@@ -88,6 +89,7 @@ def _betting(cfg: DayConfig) -> BettingConfig:
         max_odds=cfg.max_odds,              # ★trioは既定50だと全弾き。cfg(preset trio=2000)を反映
         max_odds_age_seconds=age,
         allowed_bet_types=tuple(cfg.bet_types),
+        ev_lcb_z=cfg.ev_lcb_z,
     )
 
 
@@ -105,6 +107,7 @@ def _betting_plans(cfg: DayConfig) -> list:
             max_odds=p.get("max_odds", cfg.max_odds),
             max_odds_age_seconds=age,
             allowed_bet_types=tuple(p["bet_types"]),
+            ev_lcb_z=p.get("ev_lcb_z", cfg.ev_lcb_z),
         ))
     return out
 
