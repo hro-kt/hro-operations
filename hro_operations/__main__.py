@@ -60,9 +60,10 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--source", choices=("live", "confirmed", "replay"), default="live",
                    help="live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの配管検証用)")
     # --- trio運用(er_cal帯選別・較正・分数Kelly) ---
-    p.add_argument("--preset", choices=("trio", "trio_wide"), default=None,
-                   help="trio: bet-types=trio,er[1.7,2.0),prob0.0 / "
-                        "trio_wide: 券種別併用(trio帯[1.7,2.0] ＋ wide er>=1.7&prob>=0.10)・flat推奨")
+    p.add_argument("--preset", choices=("trio", "trio_wide", "wide"), default=None,
+                   help="wide: 2窓OOSで唯一残った条件(wide er>=1.7 & prob>=0.10)・flat推奨【推奨】 / "
+                        "trio_wide: wideと同義(trio脚は2窓OOS 0.72/0.52で削除済) / "
+                        "trio: 【非推奨・検証用】er[1.7,2.0)帯は2窓OOSで0.72/0.52＝控除率以下")
     p.add_argument("--max-er", type=float, default=None, help="期待値上限(帯選別。例2.0で[min_er,2.0))")
     p.add_argument("--max-odds", type=float, default=None,
                    help="オッズ上限(既定: place=50 / preset trio=2000)。trioは配当が高いので50だと全弾き")
@@ -93,12 +94,16 @@ def _cfg(args):
         if args.min_prob == 0.15: min_prob = 0.0
         if max_odds is None:     max_odds = 2000.0   # ★trioは高配当。50だと全弾き→2000
         simultaneous = True
-    elif args.preset == "trio_wide":  # 券種別併用(OOS検証で残った条件)。flat推奨(--bankroll 0)
-        bet_types = "trio,wide"       # 表示/フォールバック用
+    elif args.preset in ("wide", "trio_wide"):
+        # 2窓OOS(2025/2026)で唯一 両窓とも ROI>1 だった条件のみ: wide er>=1.7 & prob>=0.10
+        #   wide er1.7/p0.10 : 2025 1.192(n425) / 2026 1.054(n258)
+        #   wide er2.0/p0.05 : 2025 1.022(n945) / 2026 1.084(n471)
+        # ★trio脚(er[1.7,2.0)帯)は 2025 0.722(n20061) / 2026 0.523(n7043) ＝控除率以下だったため削除。
+        #   prob フィルタが本体で、er だけでは wide も全滅する(er1.7/p0.00 は 0.698/0.442)。
+        bet_types = "wide"
         simultaneous = True
         if max_odds is None:     max_odds = 2000.0
         plans = (
-            {"bet_types": ("trio",), "min_er": 1.7, "max_er": 2.0, "min_prob": 0.0, "max_odds": 2000.0},
             {"bet_types": ("wide",), "min_er": 1.7, "max_er": None, "min_prob": 0.10, "max_odds": 2000.0},
         )
         if args.max_tickets == 3:  # flatで資格ある組を広めに買う(点数上限を緩める)
