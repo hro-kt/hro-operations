@@ -14,6 +14,12 @@
 
 学習時と同じ特徴スキーマで実行すること(例: no-SED 279 は環境変数 HRO_ABLATE_SED=1 を付ける)。
 決済は hro-buyer settle を使う: `hro-buyer settle --results results_YYYYMMDD.jsonl`
+(DB から: `hro-buyer settle --from-db --budget-key YYYYMMDD --write`)
+
+    # live(実弾)。レシピを ipat dry-vote で検証(verified=true)してから。最初は --manual-confirm 推奨
+    hro-ops run-day --strategy flow --flow-threshold <v> --mode live --confirm-live \
+        --ipat-recipe ~/ipat_recipe.json --max-amount-per-order 1000 --max-amount-per-day 20000 \
+        --manual-confirm --ipat-screenshot-dir ~/ipat_shots
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 # 下記は hro_buyer.models / hro_buyer.postgres と値を一致させること。
 MODE_DRY_RUN = "dry_run"
 MODE_PAPER = "paper"
+MODE_LIVE = "live"
 JST = timezone(timedelta(hours=9))
 
 
@@ -56,7 +63,19 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--grace-seconds", type=int, default=180,
                    help="締切をこれ秒超過なら見送り(既定180)")
     p.add_argument("--results", default=None, help="結果JSONL(既定 results_<date>.jsonl)")
-    p.add_argument("--mode", choices=(MODE_PAPER, MODE_DRY_RUN), default=MODE_PAPER)
+    p.add_argument("--mode", choices=(MODE_PAPER, MODE_DRY_RUN, MODE_LIVE), default=MODE_PAPER,
+                   help="paper=記録のみ(既定) / live=IPAT 実投票(--confirm-live と上限が必須)")
+    # --- live(IPAT 実投票)。多重ゲート: --confirm-live + 1件/1日上限 + レシピ verified(+任意で手動確認) ---
+    p.add_argument("--confirm-live", action="store_true", help="live の明示確認(無いと live は起動しない)")
+    p.add_argument("--ipat-recipe", default=None,
+                   help="IPAT 画面レシピ JSON(hro-buyer ipat show-recipe の雛形を dry-vote で検証したもの)")
+    p.add_argument("--ipat-no-headless", action="store_true", help="live: ブラウザを表示して実行")
+    p.add_argument("--ipat-screenshot-dir", default=None, help="live: 確認/受付/エラー画面のスクショ保存先")
+    p.add_argument("--manual-confirm", action="store_true",
+                   help="live: 確認画面ごとに端末で y を求める(半自動。最初はこれを推奨)")
+    p.add_argument("--max-amount-per-order", type=int, default=0, help="1件上限(円)。live 必須")
+    p.add_argument("--max-amount-per-day", type=int, default=0, help="1日上限(円)。live 必須")
+    p.add_argument("--max-amount-per-race", type=int, default=0, help="1レース上限(円)。0=無効")
     p.add_argument("--source", choices=("live", "confirmed", "replay"), default="live",
                    help="live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの配管検証用)")
     # --- trio運用(er_cal帯選別・較正・分数Kelly) ---
@@ -151,6 +170,14 @@ def _cfg(args):
         flow_lead_seconds=args.flow_lead_seconds,
         flow_minutes=args.flow_minutes,
         flow_source=args.flow_source,
+        confirm_live=args.confirm_live,
+        ipat_recipe=args.ipat_recipe,
+        ipat_headless=not args.ipat_no_headless,
+        ipat_screenshot_dir=args.ipat_screenshot_dir,
+        manual_confirm=args.manual_confirm,
+        max_amount_per_order=args.max_amount_per_order,
+        max_amount_per_day=args.max_amount_per_day,
+        max_amount_per_race=args.max_amount_per_race,
     )
 
 
@@ -169,10 +196,17 @@ def _cmd_list(args) -> int:
 def _cmd_once(args) -> int:
     from hro_backtest import harness
 
-    from .race_day import process_race
+    from .race_day import build_day_executor, process_race
     cfg = _cfg(args)
-    win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
-    process_race(cfg, win_b, place_b, tuple(args.race))
+    win_b = place_b = None
+    if cfg.strategy != "flow":
+        win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
+    executor = build_day_executor(cfg)
+    try:
+        process_race(cfg, win_b, place_b, tuple(args.race), executor)
+    finally:
+        if executor is not None:
+            executor.client.logout()
     return 0
 
 
@@ -186,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     parser = argparse.ArgumentParser(
-        prog="hro-ops", description="開催日の前向きペーパー運用(自動投票はしない)")
+        prog="hro-ops", description="開催日ランナー(paper=記録のみ / live=IPAT 実投票は多重ゲート)")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_run = sub.add_parser("run-day", help="当日全レースを T-lead に paper 発注(常駐)")

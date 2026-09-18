@@ -66,6 +66,34 @@ poetry run hro-buyer settle --results results_20260719.jsonl --write  # bet_sett
 ```
 `nl_hr`（払戻）と突合。idempotency_key 重複は自動排除。累積は hro-admin の損益/ROI パネルで確認。
 
+DB から直接決済することもできる(JSONL が手元に無いとき):
+
+```bash
+poetry run hro-buyer settle --from-db --budget-key $(date +%Y%m%d) --write
+```
+
+### ④ live(IPAT 実投票)への切替
+
+前向きペーパーで再現を確認してから。多重ゲートを全部通さないと起動しない:
+`--mode live --confirm-live` ＋ `--max-amount-per-order` ＋ `--max-amount-per-day` ＋
+実画面で検証済み(`"verified": true`)のレシピ。最初は `--manual-confirm`(確認画面ごとに端末で y)を推奨。
+
+```bash
+# レシピ整備(hro-buyer README「live」参照。お金は動かない)
+poetry run hro-buyer ipat show-recipe > ~/ipat_recipe.json
+poetry run hro-buyer ipat dry-vote --ipat-recipe ~/ipat_recipe.json --no-headless \
+    --race <16桁race_id> --bet-type place --selection 03 --amount 100
+
+# 開催日(1日1 IPAT セッション。起動時に DB の当日成立分を preload=再起動しても二度買わない)
+poetry run hro-ops run-day --strategy flow --flow-threshold <v> --mode live --confirm-live \
+    --ipat-recipe ~/ipat_recipe.json --max-amount-per-order 1000 --max-amount-per-day 20000 \
+    --manual-confirm --ipat-screenshot-dir ~/ipat_shots --flat-amount 100 --lead-seconds 45
+```
+
+`bet_results.status='unknown'`(送信したが受付確認不能)が出たらログに ★ が出る。IPAT 投票履歴で照合し、
+実際に成立していなければ該当行を手で直す(再送は自動では行わない)。
+
+
 ## 検証・運用の小技
 
 - **live スモークテスト**（poll-odds 稼働中に1レースだけ確認）:

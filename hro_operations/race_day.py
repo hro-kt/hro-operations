@@ -26,7 +26,7 @@ from hro_moneymanager.config import MoneyManagerConfig
 from hro_backtest import harness
 
 from hro_buyer.config import BuyerConfig
-from hro_buyer.models import MODE_PAPER
+from hro_buyer.models import COMMITTED_STATUSES, MODE_LIVE, MODE_PAPER
 from hro_buyer.postgres import (
     JST,
     PostgresConfig,
@@ -80,6 +80,15 @@ class DayConfig:
     flow_lead_seconds: int = 60      # 決定時点 = 発走 − これ秒(0B41 の格子は T−60s)
     flow_minutes: int = 6            # フロー起点 = 発走 − これ分
     flow_source: str = "ts"          # ts(公式時系列 0B41) | sokuho(自前10秒ポーリング)
+    # --- live(IPAT 実投票)。mode="live" のとき有効。多重ゲート: confirm_live + 1件/1日上限 + レシピ verified ---
+    confirm_live: bool = False
+    ipat_recipe: str | None = None      # レシピ JSON(hro-buyer ipat show-recipe の雛形を実画面で調整)
+    ipat_headless: bool = True
+    ipat_screenshot_dir: str | None = None
+    manual_confirm: bool = False        # 確認画面ごとに端末で y を求める(半自動)
+    max_amount_per_order: int = 0       # live 必須(>0)
+    max_amount_per_day: int = 0         # live 必須(>0)
+    max_amount_per_race: int = 0
     # 券種別プラン(併用運用)。各 dict: {bet_types, min_er, max_er, min_prob, max_odds}。
     # 空なら従来の単一設定(min_er/max_er/min_prob/bet_types)。例: trio帯[1.7,2.0] と wide er>=1.7&prob>=0.10 同時。
     plans: tuple = ()
@@ -229,7 +238,11 @@ def _clear_race(cfg: DayConfig, race_id: str) -> None:
     pg = PostgresConfig.from_env()
     with psycopg.connect(pg.conninfo) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM bet_orders   WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
-        cur.execute("DELETE FROM bet_results  WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
+        # live で成立(submitted/unknown)した行は監査記録なので絶対に消さない
+        # (再起動時の preload の元でもある)。それ以外(paper/dry_run/skipped/failed)は消して再記録。
+        cur.execute("DELETE FROM bet_results  WHERE race_id=%s AND budget_key=%s "
+                    "AND NOT (mode=%s AND status = ANY(%s))",
+                    (race_id, cfg.date, MODE_LIVE, sorted(COMMITTED_STATUSES)))
         conn.commit()
 
 
@@ -246,17 +259,51 @@ def _persist_orders(cfg: DayConfig, orders: list) -> None:
             close()
 
 
-def paper_buy(cfg: DayConfig, orders: list):
-    """発注候補を paper モードで実行(締切/発売可否/実行直前ガード)し、
+def _buyer_config(cfg: DayConfig) -> BuyerConfig:
+    return BuyerConfig(
+        mode=cfg.mode,
+        bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else cfg.flat_amount),
+        require_deadline=True,
+        confirm_live=cfg.confirm_live,
+        max_amount_per_order=cfg.max_amount_per_order,
+        max_amount_per_day=cfg.max_amount_per_day,
+        max_amount_per_race=cfg.max_amount_per_race,
+    )
+
+
+def build_day_executor(cfg: DayConfig):
+    """開催日を通して使う executor を作る(live のみ。paper/dry_run は None=レース毎に自動構築)。
+
+    live は 1 日 1 つの executor を共有する: IPAT セッション(ログイン)を維持し、1日上限・冪等を
+    レース跨ぎで数える。起動時に DB の当日成立分(submitted/unknown)を preload するので、
+    途中で落ちて再起動しても同じ買い目を二度買わない。
+    """
+    if cfg.mode != MODE_LIVE:
+        return None
+    from hro_buyer.__main__ import build_live_executor
+    pg = PostgresConfig.from_env()
+    return build_live_executor(
+        _buyer_config(cfg),
+        deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
+        sale_provider=PostgresSaleProvider(pg),
+        recipe_path=cfg.ipat_recipe, headless=cfg.ipat_headless,
+        screenshot_dir=cfg.ipat_screenshot_dir, manual_confirm=cfg.manual_confirm,
+        preload_budget_key=cfg.date,
+    )
+
+
+def execute_orders(cfg: DayConfig, orders: list, executor=None):
+    """発注候補を実行(締切/発売可否/実行直前ガード → paper は記録のみ / live は IPAT 投票)し、
     結果を JSONL(決済用) と bet_results(admin表示用) の両方へ記録。"""
+    if cfg.mode == MODE_LIVE and executor is None:
+        raise ValueError("live には build_day_executor で作った executor が必要です")
     pg = PostgresConfig.from_env()
     db_sink = PostgresResultSink(pg, budget_key=cfg.date)
     try:
         svc = BuyerService(
             InMemoryOrderSource(orders),
-            config=BuyerConfig(mode=cfg.mode,
-                               bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else cfg.flat_amount),
-                               require_deadline=True),
+            config=_buyer_config(cfg),
+            executor=executor,
             result_sink=_MultiResultSink([JsonlResultSink(cfg.results_path), db_sink]),
             deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
             sale_provider=PostgresSaleProvider(pg),
@@ -264,6 +311,9 @@ def paper_buy(cfg: DayConfig, orders: list):
         return svc.run()
     finally:
         db_sink.close()
+
+
+paper_buy = execute_orders   # 後方互換(旧名)
 
 
 def _persist_predictions(cfg: DayConfig, race: tuple[str, ...], win_b, abilities: dict) -> None:
@@ -283,8 +333,9 @@ def _persist_predictions(cfg: DayConfig, race: tuple[str, ...], win_b, abilities
         log.warning("%s: prediction_log 記録に失敗(監視のみ影響): %s", "".join(race), e)
 
 
-def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
-    """1レース: 判断 → 予測ログ記録 → bet_orders 記録 → (発注があれば) paper 購入(bet_results)。"""
+def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor=None) -> None:
+    """1レース: 判断 → 予測ログ記録 → bet_orders 記録 → (発注があれば) 購入実行(bet_results)。
+    executor は live のとき build_day_executor で作った日次共有 executor(paper は None)。"""
     race_id = "".join(race)
     abilities, orders = decide_orders(cfg, win_b, place_b, race)
     if abilities is not None:
@@ -294,9 +345,13 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
         log.info("%s: 発注なし(live odds未取得 or 条件を満たす候補なし)", race_id)
         return
     _persist_orders(cfg, orders)          # bet_orders(admin「購入指示」)
-    res = paper_buy(cfg, orders)          # 実行 → JSONL + bet_results
+    res = execute_orders(cfg, orders, executor)   # 実行 → JSONL + bet_results
     log.info("%s: %d件発注 -> %s (intended=%d円) DB+追記=%s",
              race_id, len(orders), res.count_by_status(), res.total_amount, cfg.results_path)
+    for r in res.results:
+        if r.status == "unknown":
+            log.error("%s: ★受付確認不能(unknown) %s/%s %d円 → IPAT 投票履歴で手動照合。再送はしない",
+                      race_id, r.bet_type, r.selection_id, r.amount)
 
 
 def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
@@ -327,6 +382,25 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     if verify:
         log.info("%s: 検証モード(source=%s) 締切を無視して全レース即処理", cfg.date, cfg.source)
 
+    executor = build_day_executor(cfg)   # live のみ(IPAT ログイン + 当日成立分 preload)
+    if executor is not None:
+        log.warning("%s: ★★ LIVE(実弾) mode: 1件上限%d円 / 1日上限%d円 / 手動確認=%s / recipe=%s",
+                    cfg.date, cfg.max_amount_per_order, cfg.max_amount_per_day,
+                    cfg.manual_confirm, cfg.ipat_recipe or "(既定=未検証)")
+    processed = 0
+    try:
+        processed = _run_races(cfg, races, win_b, place_b, executor, verify=verify, no_wait=no_wait)
+    finally:
+        if executor is not None:
+            try:
+                executor.client.logout()
+            except Exception as e:  # ログアウト失敗は集計を妨げない
+                log.warning("IPAT logout failed: %s", e)
+    log.info("%s: 完了 (%d/%d レース処理)", cfg.date, processed, len(races))
+    return processed
+
+
+def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool, no_wait: bool) -> int:
     processed = 0
     for race, hasso in races:
         race_id = "".join(race)
@@ -345,11 +419,10 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
                          deadline.strftime("%H:%M:%S"), wait)
                 time.sleep(wait)
         try:
-            process_race(cfg, win_b, place_b, race)
+            process_race(cfg, win_b, place_b, race, executor)
             processed += 1
         except Exception:  # 1レースの失敗で開催日全体を止めない
             log.exception("%s: 処理失敗(継続)", race_id)
-    log.info("%s: 完了 (%d/%d レース処理)", cfg.date, processed, len(races))
     return processed
 
 
