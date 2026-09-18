@@ -44,8 +44,8 @@ def _today() -> str:
 
 
 def _add_common(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--win-model", required=True, help="単勝モデル(target=y_win)")
-    p.add_argument("--place-model", required=True, help="複勝モデル(target=y_fukusyo)")
+    p.add_argument("--win-model", default="", help="単勝モデル(target=y_win)。--strategy flow では不要")
+    p.add_argument("--place-model", default="", help="複勝モデル(target=y_fukusyo)。--strategy flow では不要")
     p.add_argument("--date", default=None, help="YYYYMMDD(省略時は当日JST)")
     p.add_argument("--min-er", type=float, default=1.3, help="期待値下限(既定1.3)")
     p.add_argument("--min-prob", type=float, default=0.15, help="確率下限(既定0.15)")
@@ -75,6 +75,16 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--race-max", type=int, default=10_000, help="1レース購入上限(Kelly時)")
     p.add_argument("--ticket-max", type=int, default=5_000, help="1点最大額(Kelly時)")
     p.add_argument("--max-tickets", type=int, default=3, help="1レース最大点数(Kelly時)")
+    p.add_argument("--strategy", choices=("model", "flow"), default="model",
+                   help="flow: モデルを使わず締切直前の単勝プール資金移動で複勝を選ぶ"
+                        "(検証 ROI 1.174 P(ROI<=1)=0.001 8/8ヶ月, docs/2026-09_flow_signal.md)")
+    p.add_argument("--flow-threshold", type=float, default=0.0,
+                   help="flow スコアの絶対閾値(fit 期間の分位から決めた値)")
+    p.add_argument("--flow-lead-seconds", type=int, default=60,
+                   help="決定時点=発走−これ秒(既定60。0B41 のスナップショット格子に合わせる)")
+    p.add_argument("--flow-minutes", type=int, default=6, help="フロー起点=発走−これ分")
+    p.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts",
+                   help="ts=公式時系列(0B41, 検証に使った経路) / sokuho=自前10秒ポーリング")
     p.add_argument("--ev-lcb-z", type=float, default=0.0,
                    help="EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化し、推定上振れ組の選別を抑える")
 
@@ -136,6 +146,11 @@ def _cfg(args):
         max_tickets_per_race=max_tickets,
         ev_lcb_z=args.ev_lcb_z,
         plans=plans,
+        strategy=args.strategy,
+        flow_threshold=args.flow_threshold,
+        flow_lead_seconds=args.flow_lead_seconds,
+        flow_minutes=args.flow_minutes,
+        flow_source=args.flow_source,
     )
 
 

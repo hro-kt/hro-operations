@@ -74,6 +74,12 @@ class DayConfig:
     ticket_max_amount: int = 5_000    # 1点最大額
     max_tickets_per_race: int = 3     # 1レース最大点数
     ev_lcb_z: float = 0.0             # EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化=勝者の呪い対策
+    # flow シグナル運用(モデル非使用)。strategy="flow" で有効化。
+    strategy: str = "model"          # model | flow
+    flow_threshold: float = 0.0      # fit 期間の分位から決めた絶対閾値
+    flow_lead_seconds: int = 60      # 決定時点 = 発走 − これ秒(0B41 の格子は T−60s)
+    flow_minutes: int = 6            # フロー起点 = 発走 − これ分
+    flow_source: str = "ts"          # ts(公式時系列 0B41) | sokuho(自前10秒ポーリング)
     # 券種別プラン(併用運用)。各 dict: {bet_types, min_er, max_er, min_prob, max_odds}。
     # 空なら従来の単一設定(min_er/max_er/min_prob/bet_types)。例: trio帯[1.7,2.0] と wide er>=1.7&prob>=0.10 同時。
     plans: tuple = ()
@@ -173,7 +179,23 @@ def _calibrators(path: str | None) -> dict | None:
 
 def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tuple[dict | None, list]:
     """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
-    戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。"""
+    戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。
+
+    strategy="flow" のときはモデルを使わず、締切直前の単勝プール資金移動で選ぶ
+    (検証: 複勝 ROI 1.174, P(ROI<=1)=0.001, 8/8ヶ月。docs/2026-09_flow_signal.md)。
+    abilities は None を返す(確率を推定しないので prediction_log には残らない)。
+    """
+    if cfg.strategy == "flow":
+        from .flow_signal import FlowConfig, flow_orders
+        db = FeatureDB(load_features_config())
+        try:
+            fc = FlowConfig(lead_seconds=cfg.flow_lead_seconds, flow_minutes=cfg.flow_minutes,
+                            threshold=cfg.flow_threshold, source=cfg.flow_source,
+                            max_odds=cfg.max_odds or 0.0)
+            return None, flow_orders(db, race, fc, cfg.flat_amount,
+                                     f"flow@{cfg.flow_source}:{cfg.flow_threshold:+.4f}")
+        finally:
+            db.close()
     db = FeatureDB(load_features_config())
     conn = opt_connect()
     try:
@@ -265,7 +287,8 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
     """1レース: 判断 → 予測ログ記録 → bet_orders 記録 → (発注があれば) paper 購入(bet_results)。"""
     race_id = "".join(race)
     abilities, orders = decide_orders(cfg, win_b, place_b, race)
-    _persist_predictions(cfg, race, win_b, abilities)  # 全馬予測を監視用に保存(発注有無に関わらず)
+    if abilities is not None:
+        _persist_predictions(cfg, race, win_b, abilities)  # 全馬予測を監視用に保存(発注有無に関わらず)
     _clear_race(cfg, race_id)  # 再実行/古い残骸を除去してから記録(冪等)
     if not orders:
         log.info("%s: 発注なし(live odds未取得 or 条件を満たす候補なし)", race_id)
@@ -278,7 +301,9 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> None:
 
 def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     """開催日を通す。no_wait=True なら待機せず全レースを即処理(当日途中起動/検証用)。"""
-    win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
+    win_b = place_b = None
+    if cfg.strategy != "flow":        # flow はモデルを使わない
+        win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
     db = FeatureDB(load_features_config())
     try:
         races = day_races(db, cfg.date)
@@ -288,9 +313,14 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
         log.warning("%s: 対象レースなし。nl_ra に当日 JRA レースが無い"
                     "(synchronizer の当日同期を確認)", cfg.date)
         return 0
-    log.info("%s: %d レース | flat¥%d place | min_er>=%.2f min_prob>=%.2f | T-%ds | mode=%s",
-             cfg.date, len(races), cfg.flat_amount, cfg.min_er, cfg.min_prob,
-             cfg.lead_seconds, cfg.mode)
+    if cfg.strategy == "flow":
+        log.info("%s: %d レース | flow flat¥%d place | 閾値%+.4f | T-%ds起点T-%dm src=%s | mode=%s",
+                 cfg.date, len(races), cfg.flat_amount, cfg.flow_threshold,
+                 cfg.flow_lead_seconds, cfg.flow_minutes, cfg.flow_source, cfg.mode)
+    else:
+        log.info("%s: %d レース | flat¥%d place | min_er>=%.2f min_prob>=%.2f | T-%ds | mode=%s",
+                 cfg.date, len(races), cfg.flat_amount, cfg.min_er, cfg.min_prob,
+                 cfg.lead_seconds, cfg.mode)
 
     # confirmed/replay は過去日の配管検証用: 締切/鮮度は無関係なので全レースを即処理する。
     verify = cfg.source in ("confirmed", "replay")
