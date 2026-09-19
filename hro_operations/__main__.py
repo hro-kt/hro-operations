@@ -245,6 +245,8 @@ def _cmd_flow_debug(args) -> int:
         return 1
     print(f"  スナップショット: {snap['snaps']}本 / {snap['horses']}頭 / {snap['rows']}行")
     print(f"    期間: {snap['first_ts']} 〜 {snap['last_ts']}")
+    if snap.get("raw_min"):
+        print(f"    発表時刻(生): {snap['raw_min']} 〜 {snap['raw_max']}  ※MMDDHHMI の8桁を想定")
     sc = d["scores"]
     if not sc:
         print("  ✗ スコアを計算できない(決定時点より前、または起点より前のスナップが無い)")

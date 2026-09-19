@@ -41,3 +41,11 @@ def test_jra_times_are_pinned_to_jst(name, sql):
     import re as _re
     bare = _re.findall(r"to_timestamp\([^)]*\)(?!\s*::timestamp)", sql)
     assert not bare, bare
+
+
+def test_sokuho_uses_publish_time_not_fetch_time():
+    """速報側の基準を observed_at(自分が取り込んだ時刻)にすると、同じスナップを何度も読む
+    10秒ポーリングでは上書きで時刻がずれ、公式時系列と別のスナップを掴む(実際に食い違った)。
+    両者とも JRA の発表時刻(hasso_time)を基準にすること。"""
+    assert "observed_at AS ts" not in _SQL_SOKUHO
+    assert "t.hasso_time" in _SQL_SOKUHO and "AT TIME ZONE 'Asia/Tokyo'" in _SQL_SOKUHO

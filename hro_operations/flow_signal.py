@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 # 学習不要。ts_o1 / ts_sokuho_o1 のどちらからでも同じ量が作れる。
 _SRC = {
     "ts": ("ts_o1", "hasso_time"),            # 公式時系列(0B41)。発表時刻の格子
-    "sokuho": ("ts_sokuho_o1", "observed_at"),  # 自前10秒ポーリング(0B30)
+    "sokuho": ("ts_sokuho_o1", "hasso_time"),   # 自前10秒ポーリング(0B30)。基準は発表時刻
 }
 
 
@@ -90,9 +90,12 @@ WITH ra AS (
     AND hasso_time ~ '^[0-9]{4}$'
 ),
 snap AS (
-  SELECT t.umaban, t.tan_odds, t.fuku_odds_low, t.observed_at AS ts
+  SELECT t.umaban, t.tan_odds, t.fuku_odds_low,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts
   FROM ts_sokuho_o1 t
-  WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+  WHERE t.hasso_time ~ '^[0-9]{8}$'
+    AND (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
       = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
 ),
 -- PostgreSQL は UNION の**前**に ORDER BY を書けない(構文エラー)。DISTINCT ON は
@@ -164,7 +167,8 @@ SELECT count(*) AS rows,
        min((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
           AT TIME ZONE 'Asia/Tokyo')) AS first_ts,
        max((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
-          AT TIME ZONE 'Asia/Tokyo')) AS last_ts
+          AT TIME ZONE 'Asia/Tokyo')) AS last_ts,
+       min(t.hasso_time) AS raw_min, max(t.hasso_time) AS raw_max
 FROM ts_o1 t
 WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
     = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
@@ -174,8 +178,11 @@ _SQL_DIAG_SOKUHO = """
 SELECT count(*) AS rows,
        count(DISTINCT t.hasso_time) AS snaps,
        count(DISTINCT t.umaban) AS horses,
-       min(t.observed_at) AS first_ts,
-       max(t.observed_at) AS last_ts
+       min((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+            AT TIME ZONE 'Asia/Tokyo')) AS first_ts,
+       max((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+            AT TIME ZONE 'Asia/Tokyo')) AS last_ts,
+       min(t.hasso_time) AS raw_min, max(t.hasso_time) AS raw_max
 FROM ts_sokuho_o1 t
 WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
     = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
