@@ -23,6 +23,11 @@ from datetime import timedelta
 
 log = logging.getLogger(__name__)
 
+# ★時刻の扱い: nl_ra.hasso_time(発走 HHMM)も ts_o1.hasso_time(スナップ MMDDHHMI)も **JST**。
+#   to_timestamp はセッションのタイムゾーンで解釈するので、セッションが UTC だと 9 時間ずれる。
+#   スナップ同士の比較なら同じだけずれて相殺されるが、observed_at(実時刻)と比べると破綻する
+#   (実際に「取得の余裕 32,325秒」のような値が出た)。必ず AT TIME ZONE 'Asia/Tokyo' で固定する。
+
 # 学習不要。ts_o1 / ts_sokuho_o1 のどちらからでも同じ量が作れる。
 _SRC = {
     "ts": ("ts_o1", "hasso_time"),            # 公式時系列(0B41)。発表時刻の格子
@@ -46,13 +51,15 @@ def _logit(x: float, lo: float = 1e-6) -> float:
 
 _SQL_TS = """
 WITH ra AS (
-  SELECT to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
   FROM nl_ra
   WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
     AND hasso_time ~ '^[0-9]{4}$'
 ),
 snap AS (
-  SELECT t.umaban, t.tan_odds, t.fuku_odds_low, to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI') AS ts
+  SELECT t.umaban, t.tan_odds, t.fuku_odds_low, (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts
   FROM ts_o1 t
   WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
       = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
@@ -76,7 +83,8 @@ SELECT umaban, tan_odds, fuku_odds_low, ts, 'early' AS which FROM early
 
 _SQL_SOKUHO = """
 WITH ra AS (
-  SELECT to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
   FROM nl_ra
   WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
     AND hasso_time ~ '^[0-9]{4}$'
@@ -153,8 +161,10 @@ _SQL_DIAG_TS = """
 SELECT count(*) AS rows,
        count(DISTINCT t.hasso_time) AS snaps,
        count(DISTINCT t.umaban) AS horses,
-       min(to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')) AS first_ts,
-       max(to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')) AS last_ts
+       min((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo')) AS first_ts,
+       max((to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo')) AS last_ts
 FROM ts_o1 t
 WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
     = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
@@ -173,7 +183,8 @@ WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
 
 _SQL_POST = """
 SELECT hasso_time,
-       to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+       (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
 FROM nl_ra
 WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
 """
@@ -182,14 +193,16 @@ WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(
 _SQL_COVERAGE = """
 WITH ra AS (
   SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num, hasso_time,
-         to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
   FROM nl_ra
   WHERE year=%(y)s AND month_day=%(m)s AND hasso_time ~ '^[0-9]{4}$'
     AND jyo_cd IN ('01','02','03','04','05','06','07','08','09','10')
 ),
 sn AS (
   SELECT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num,
-         to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI') AS ts,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts,
          t.observed_at
   FROM ts_o1 t
   WHERE t.year=%(y)s AND t.month_day=%(m)s

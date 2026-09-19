@@ -307,6 +307,11 @@ def _cmd_flow_coverage(args) -> int:
               f"{'有' if r['has_early'] else '無'}   {margin_s}")
     total = len(rows)
     print(f"\n  間に合った {ok}/{total} / 取得が遅れた {late} / スナップ無し {missing}")
+    margins = [r["fetch_margin_sec"] for r in rows if r["fetch_margin_sec"] is not None]
+    if margins and (max(margins) - min(margins)) > 3600:
+        print("  ★ 取得の余裕がレース間で大きく違います。1回の一括取得で全レース分をまとめて"
+              "入れた可能性が高い(＝当日の逐次取得になっていない)。")
+        print("     本番は fetch-timeseries-odds --repeat-seconds 60 を開催中ずっと回すこと。")
     if missing:
         print("  ✗ スナップ無し: Windows の fetch-timeseries-odds(0B41)が動いていない可能性")
     if late:
