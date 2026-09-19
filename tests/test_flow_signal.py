@@ -77,3 +77,26 @@ def test_reason_survives_missing_timestamp():
     orders = flow_orders(FakeDB(rows), RACE, FlowConfig(threshold=0.0), 100, "flow_tan")
     assert [o.selection_id for o in orders] == ["01"]
     assert "late=None" in orders[0].reason
+
+
+def test_flow_diagnose_collects_post_snapshots_and_scores():
+    """発注が出ない理由(発走時刻・スナップ・スコア)を1回で切り分けられること。"""
+    from hro_operations.flow_signal import flow_diagnose
+
+    rows_by_sql = {}
+
+    class DiagDB:
+        def query(self, sql, params):
+            if "FROM nl_ra" in sql:
+                return [{"hasso_time": "1510", "post": "2026-09-19T15:10:00+09:00"}]
+            if "count(*)" in sql:
+                return [{"rows": 100, "snaps": 50, "horses": 2,
+                         "first_ts": "a", "last_ts": "b"}]
+            return [_row("01", "20", "15", "late"), _row("02", "30", "20", "late"),
+                    _row("01", "30", "15", "early"), _row("02", "30", "20", "early")]
+
+    d = flow_diagnose(DiagDB(), RACE, FlowConfig(threshold=0.0))
+    assert d["post"]["hasso_time"] == "1510"
+    assert d["snapshots"]["snaps"] == 50
+    assert set(d["scores"]) == {"01", "02"}
+    assert d["n_above"] == 1           # 01 だけが閾値超え

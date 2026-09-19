@@ -148,6 +148,59 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     return out
 
 
+_SQL_DIAG_TS = """
+SELECT count(*) AS rows,
+       count(DISTINCT t.hasso_time) AS snaps,
+       count(DISTINCT t.umaban) AS horses,
+       min(to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')) AS first_ts,
+       max(to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')) AS last_ts
+FROM ts_o1 t
+WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+    = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+"""
+
+_SQL_DIAG_SOKUHO = """
+SELECT count(*) AS rows,
+       count(DISTINCT t.hasso_time) AS snaps,
+       count(DISTINCT t.umaban) AS horses,
+       min(t.observed_at) AS first_ts,
+       max(t.observed_at) AS last_ts
+FROM ts_sokuho_o1 t
+WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+    = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+"""
+
+_SQL_POST = """
+SELECT hasso_time,
+       to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+FROM nl_ra
+WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+"""
+
+
+def flow_diagnose(db, race: tuple[str, ...], cfg: FlowConfig) -> dict:
+    """なぜ発注が出ないのかを切り分けるための材料を集める(発注はしない)。
+
+    見るのは3点: (1) 発走時刻が nl_ra に在るか (2) オッズのスナップショットが
+    何時から何時まで何本在るか (3) 各馬のスコアと閾値。
+    """
+    y, m, j, k, n, r = race
+    key = {"y": y, "m": m, "j": j, "k": k, "n": n, "r": r}
+    post = db.query(_SQL_POST, key)
+    diag = db.query(_SQL_DIAG_TS if cfg.source == "ts" else _SQL_DIAG_SOKUHO, key)
+    scores = flow_scores(db, race, cfg)
+    return {
+        "race_id": "".join(race),
+        "post": post[0] if post else None,
+        "snapshots": diag[0] if diag else None,
+        "scores": scores,
+        "cutoff_late_seconds": cfg.lead_seconds,
+        "cutoff_early_minutes": cfg.flow_minutes,
+        "threshold": cfg.threshold,
+        "n_above": sum(1 for d in scores.values() if d["score"] >= cfg.threshold),
+    }
+
+
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
     """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
     from hro_moneymanager.models import BetOrder

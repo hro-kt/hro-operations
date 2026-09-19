@@ -210,6 +210,57 @@ def _cmd_once(args) -> int:
     return 0
 
 
+def _cmd_flow_debug(args) -> int:
+    """なぜ flow の発注が出ないのかを切り分ける(発注はしない)。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, flow_diagnose
+
+    rid = args.race_id
+    if len(rid) != 16 or not rid.isdigit():
+        print("--race-id は16桁 YYYYMMDDJJKKNNRR を指定してください"); return 2
+    race = (rid[0:4], rid[4:8], rid[8:10], rid[10:12], rid[12:14], rid[14:16])
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                     threshold=args.flow_threshold, source=args.flow_source,
+                     max_odds=args.max_odds or 0.0)
+    db = FeatureDB(load_features_config())
+    try:
+        d = flow_diagnose(db, race, cfg)
+    finally:
+        db.close()
+
+    print(f"=== flow 診断 {d['race_id']} (src={cfg.source}) ===")
+    post = d["post"]
+    if not post:
+        print("  ✗ nl_ra にこのレースが無い(当日同期 sync-all を確認)")
+        return 1
+    print(f"  発走: {post['hasso_time']} ({post['post']})")
+    print(f"  決定時点: 発走-{cfg.lead_seconds}秒 / フロー起点: 発走-{cfg.flow_minutes}分")
+    snap = d["snapshots"] or {}
+    if not snap or not snap.get("rows"):
+        print("  ✗ オッズのスナップショットが1本も無い")
+        print("    → Windows の fetch-timeseries-odds(0B41)が動いているか、"
+              "JVRTOpen エラーで止まっていないかを確認")
+        return 1
+    print(f"  スナップショット: {snap['snaps']}本 / {snap['horses']}頭 / {snap['rows']}行")
+    print(f"    期間: {snap['first_ts']} 〜 {snap['last_ts']}")
+    sc = d["scores"]
+    if not sc:
+        print("  ✗ スコアを計算できない(決定時点より前、または起点より前のスナップが無い)")
+        print("    上の『期間』が決定時点をまたいでいるか確認してください")
+        return 1
+    print(f"  閾値 {cfg.threshold:+.4f} を超えた馬: {d['n_above']}/{len(sc)}")
+    for um, v in sorted(sc.items(), key=lambda kv: -kv[1]["score"]):
+        mark = "★" if v["score"] >= cfg.threshold else "  "
+        print(f"    {mark} {um}番 score={v['score']:+.4f} 複勝={v['fuku_odds']:.1f} "
+              f"単勝={v['tan_odds']:.1f}")
+    if d["n_above"] == 0:
+        print("  → 発注なしは正常(この条件では買う馬がいない)。"
+              "全レースで0なら閾値が高すぎる可能性があります。")
+    return 0
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -228,6 +279,15 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--no-wait", action="store_true",
                        help="待機せず残りレースを即処理(当日途中起動/検証用)")
     p_run.set_defaults(func=_cmd_run_day)
+
+    p_fd = sub.add_parser("flow-debug", help="flow の発注が出ない理由を切り分ける(発注しない)")
+    p_fd.add_argument("--race-id", required=True, help="16桁 YYYYMMDDJJKKNNRR")
+    p_fd.add_argument("--flow-threshold", type=float, default=0.0)
+    p_fd.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_fd.add_argument("--flow-minutes", type=int, default=6)
+    p_fd.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_fd.add_argument("--max-odds", type=float, default=None)
+    p_fd.set_defaults(func=_cmd_flow_debug)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)
