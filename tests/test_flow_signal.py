@@ -83,17 +83,16 @@ def test_flow_diagnose_collects_post_snapshots_and_scores():
     """発注が出ない理由(発走時刻・スナップ・スコア)を1回で切り分けられること。"""
     from hro_operations.flow_signal import flow_diagnose
 
-    rows_by_sql = {}
-
     class DiagDB:
         def query(self, sql, params):
-            if "FROM nl_ra" in sql:
-                return [{"hasso_time": "1510", "post": "2026-09-19T15:10:00+09:00"}]
+            # スコア用SQLにも ra CTE(FROM nl_ra)が入るので、判定順を間違えない
+            if "UNION ALL" in sql:
+                return [_row("01", "20", "15", "late"), _row("02", "30", "20", "late"),
+                        _row("01", "30", "15", "early"), _row("02", "30", "20", "early")]
             if "count(*)" in sql:
                 return [{"rows": 100, "snaps": 50, "horses": 2,
                          "first_ts": "a", "last_ts": "b"}]
-            return [_row("01", "20", "15", "late"), _row("02", "30", "20", "late"),
-                    _row("01", "30", "15", "early"), _row("02", "30", "20", "early")]
+            return [{"hasso_time": "1510", "post": "2026-09-19T15:10:00+09:00"}]
 
     d = flow_diagnose(DiagDB(), RACE, FlowConfig(threshold=0.0))
     assert d["post"]["hasso_time"] == "1510"
