@@ -58,6 +58,10 @@ class DayConfig:
     max_odds_age: float = 60.0  # live 鮮度上限(秒)。poll-odds は10s周期なので余裕
     lead_seconds: int = 30  # 発走時刻 − これ秒 に発注(T-30s)
     grace_seconds: int = 180  # 締切をこれ秒超過していたら見送り(遅延起動の取りこぼし防止)
+    # ★発売締切は発走時刻ちょうどではない。IPAT の画面実測では **発走の1分前**
+    #   (中山10R 発走15:05 / 締切15:04、阪神10R 発走14:50 / 締切14:49)。
+    #   ここを0にすると「まだ買える」と誤判定して締切後に投票しようとする。
+    deadline_lead_seconds: int = 60
     mode: str = MODE_PAPER
     bet_types: tuple[str, ...] = ("place",)
     source: str = "live"  # live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの検証用)
@@ -284,7 +288,7 @@ def build_day_executor(cfg: DayConfig):
     pg = PostgresConfig.from_env()
     return build_live_executor(
         _buyer_config(cfg),
-        deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
+        deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=cfg.deadline_lead_seconds),
         sale_provider=PostgresSaleProvider(pg),
         recipe_path=cfg.ipat_recipe, headless=cfg.ipat_headless,
         screenshot_dir=cfg.ipat_screenshot_dir, manual_confirm=cfg.manual_confirm,
@@ -305,7 +309,7 @@ def execute_orders(cfg: DayConfig, orders: list, executor=None):
             config=_buyer_config(cfg),
             executor=executor,
             result_sink=_MultiResultSink([JsonlResultSink(cfg.results_path), db_sink]),
-            deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=0),
+            deadline_provider=PostgresDeadlineProvider(pg, lead_seconds=cfg.deadline_lead_seconds),
             sale_provider=PostgresSaleProvider(pg),
         )
         return svc.run()

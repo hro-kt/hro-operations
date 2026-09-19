@@ -60,6 +60,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--bet-types", default="place", help="対象券種(カンマ区切り, 既定 place)")
     p.add_argument("--lead-seconds", type=int, default=30, help="発走−これ秒に発注(既定30=T-30s)")
     p.add_argument("--max-odds-age", type=float, default=60.0, help="live鮮度上限(秒, 既定60)")
+    p.add_argument("--deadline-lead-seconds", type=int, default=60,
+                   help="発売締切=発走時刻−これ秒(実測: 発走の1分前が締切)。"
+                        "0 にすると締切後に投票しようとするので下げないこと")
     p.add_argument("--grace-seconds", type=int, default=180,
                    help="締切をこれ秒超過なら見送り(既定180)")
     p.add_argument("--results", default=None, help="結果JSONL(既定 results_<date>.jsonl)")
@@ -150,6 +153,7 @@ def _cfg(args):
         max_odds_age=args.max_odds_age,
         lead_seconds=args.lead_seconds,
         grace_seconds=args.grace_seconds,
+        deadline_lead_seconds=args.deadline_lead_seconds,
         mode=args.mode,
         bet_types=tuple(x.strip() for x in bet_types.split(",") if x.strip()),
         source=args.source,
