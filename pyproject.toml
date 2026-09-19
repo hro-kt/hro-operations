@@ -17,6 +17,9 @@ psycopg = { version = ">=3.1", extras = ["binary"] }
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
+# 本物の PostgreSQL パーサ。DB に繋がなくても SQL の構文誤りを検出できる
+# (本番で `syntax error at or near "UNION"` を出したため)。
+pglast = ">=6.0"
 
 [tool.poetry.scripts]
 hro-ops = "hro_operations.__main__:main"

@@ -51,19 +51,26 @@ WITH ra AS (
     AND hasso_time ~ '^[0-9]{4}$'
 ),
 snap AS (
-  SELECT t.umaban, t.tan_odds, t.fuku_odds_low,
-         to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI') AS ts
+  SELECT t.umaban, t.tan_odds, t.fuku_odds_low, to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI') AS ts
   FROM ts_o1 t
   WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
       = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+),
+-- PostgreSQL は UNION の**前**に ORDER BY を書けない(構文エラー)。DISTINCT ON は
+-- ORDER BY と組で意味を持つので、枝ごとに CTE へ切り出す。
+late AS (
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s)
+  ORDER BY umaban, ts DESC
+),
+early AS (
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s)
+  ORDER BY umaban, ts DESC
 )
-SELECT * FROM (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts, 'late' AS which
-  FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s) ORDER BY umaban, ts DESC
-  UNION ALL
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts, 'early'
-  FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s) ORDER BY umaban, ts DESC
-) x
+SELECT umaban, tan_odds, fuku_odds_low, ts, 'late' AS which FROM late
+UNION ALL
+SELECT umaban, tan_odds, fuku_odds_low, ts, 'early' AS which FROM early
 """
 
 _SQL_SOKUHO = """
@@ -78,15 +85,31 @@ snap AS (
   FROM ts_sokuho_o1 t
   WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
       = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+),
+-- PostgreSQL は UNION の**前**に ORDER BY を書けない(構文エラー)。DISTINCT ON は
+-- ORDER BY と組で意味を持つので、枝ごとに CTE へ切り出す。
+late AS (
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s)
+  ORDER BY umaban, ts DESC
+),
+early AS (
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s)
+  ORDER BY umaban, ts DESC
 )
-SELECT * FROM (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts, 'late' AS which
-  FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s) ORDER BY umaban, ts DESC
-  UNION ALL
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts, 'early'
-  FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s) ORDER BY umaban, ts DESC
-) x
+SELECT umaban, tan_odds, fuku_odds_low, ts, 'late' AS which FROM late
+UNION ALL
+SELECT umaban, tan_odds, fuku_odds_low, ts, 'early' AS which FROM early
 """
+
+
+def _hhmmss(v) -> str:
+    """理由文用の時刻表記。ts が NULL や文字列でも落とさない(発注を止めないため)。"""
+    try:
+        return v.strftime("%H:%M:%S")
+    except Exception:
+        return str(v)
 
 
 def _num(v) -> float | None:
@@ -147,7 +170,8 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             expected_return=0.0, edge=0.0, kelly_fraction=0.0,
             model_version=model_version,
             reason=(f"flow_tan={d['score']:+.4f}>={cfg.threshold:+.4f} "
-                    f"late={d['ts_late']:%H:%M:%S} early={d['ts_early']:%H:%M:%S} src={cfg.source}"),
+                    f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
+                    f"src={cfg.source}"),
         ))
     log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, src=%s)",
              race_id, len(orders), len(sc), cfg.threshold, cfg.source)
