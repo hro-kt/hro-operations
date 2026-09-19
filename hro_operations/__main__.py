@@ -261,6 +261,60 @@ def _cmd_flow_debug(args) -> int:
     return 0
 
 
+_JYO = {"01": "札幌", "02": "函館", "03": "福島", "04": "新潟", "05": "東京",
+        "06": "中山", "07": "中京", "08": "京都", "09": "阪神", "10": "小倉"}
+
+
+def _cmd_flow_coverage(args) -> int:
+    """開催日の全レースで、決定時点(T-lead)のオッズが間に合って取れているかを確認する。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, flow_coverage
+
+    date = args.date or _today()
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes)
+    db = FeatureDB(load_features_config())
+    try:
+        rows = flow_coverage(db, date, cfg)
+    finally:
+        db.close()
+    if not rows:
+        print(f"{date}: nl_ra に JRA のレースがありません(当日同期を確認)")
+        return 1
+
+    print(f"=== {date} 直前オッズ({cfg.lead_seconds}秒前)の取得状況 ===")
+    print("  場    R  発走   スナップ  決定時点との差  起点  取得の余裕")
+    ok = late = missing = 0
+    for r in rows:
+        lead = r["late_lead_sec"]
+        margin = r["fetch_margin_sec"]
+        if lead is None:
+            missing += 1
+            mark, lead_s, margin_s = "✗", "なし", "-"
+        else:
+            lead_s = f"{lead:6.0f}秒前"
+            if margin is None:
+                mark, margin_s = "?", "不明"
+            elif margin >= 0:
+                ok += 1
+                mark, margin_s = "○", f"{margin:6.0f}秒"
+            else:
+                late += 1
+                mark, margin_s = "△", f"{-margin:6.0f}秒遅い"
+        print(f"  {mark} {_JYO.get(r['jyo_cd'], r['jyo_cd'])} {int(r['race_num']):2d}R "
+              f"{r['hasso_time']}  {r['snaps']:6d}  {lead_s:>12}  "
+              f"{'有' if r['has_early'] else '無'}   {margin_s}")
+    total = len(rows)
+    print(f"\n  間に合った {ok}/{total} / 取得が遅れた {late} / スナップ無し {missing}")
+    if missing:
+        print("  ✗ スナップ無し: Windows の fetch-timeseries-odds(0B41)が動いていない可能性")
+    if late:
+        print("  △ 取得が遅れた: 取り込み自体は出来ているが**決定時点より後**。"
+              "検証はできても当日の発注には使えない。取得周期を短くするか判断を早める")
+    return 0 if (ok == total) else 1
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -288,6 +342,13 @@ def main(argv: list[str] | None = None) -> int:
     p_fd.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
     p_fd.add_argument("--max-odds", type=float, default=None)
     p_fd.set_defaults(func=_cmd_flow_debug)
+
+    p_fc = sub.add_parser("flow-coverage",
+                          help="直前オッズが締切に間に合って取れているかを開催日単位で確認")
+    p_fc.add_argument("--date", default=None, help="YYYYMMDD(既定 当日)")
+    p_fc.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_fc.add_argument("--flow-minutes", type=int, default=6)
+    p_fc.set_defaults(func=_cmd_flow_coverage)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)

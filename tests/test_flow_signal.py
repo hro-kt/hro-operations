@@ -99,3 +99,37 @@ def test_flow_diagnose_collects_post_snapshots_and_scores():
     assert d["snapshots"]["snaps"] == 50
     assert set(d["scores"]) == {"01", "02"}
     assert d["n_above"] == 1           # 01 だけが閾値超え
+
+
+def test_flow_coverage_separates_snapshot_time_from_fetch_time():
+    """「T-60秒のスナップが在る」と「締切前に取り込めていた」は別物。両方見えること。"""
+    from datetime import datetime, timedelta, timezone
+
+    from hro_operations.flow_signal import flow_coverage
+
+    post = datetime(2026, 9, 19, 15, 4, tzinfo=timezone.utc)
+
+    class CovDB:
+        def query(self, sql, params):
+            return [
+                # 間に合っている: T-60s のスナップを T-120s に取得
+                {"jyo_cd": "06", "race_num": "10", "hasso_time": "1504", "post": post,
+                 "snaps": 300, "late_ts": post - timedelta(seconds=60),
+                 "early_ts": post - timedelta(minutes=6),
+                 "late_fetched_at": post - timedelta(seconds=120)},
+                # 遅れている: 取り込みが決定時点の後(検証はできるが発注には使えない)
+                {"jyo_cd": "09", "race_num": "11", "hasso_time": "1545", "post": post,
+                 "snaps": 300, "late_ts": post - timedelta(seconds=60),
+                 "early_ts": None,
+                 "late_fetched_at": post - timedelta(seconds=10)},
+                # スナップ自体が無い
+                {"jyo_cd": "09", "race_num": "12", "hasso_time": "1620", "post": post,
+                 "snaps": 0, "late_ts": None, "early_ts": None, "late_fetched_at": None},
+            ]
+
+    rows = flow_coverage(CovDB(), "20260919", FlowConfig())
+    assert rows[0]["late_lead_sec"] == 60 and rows[0]["fetch_margin_sec"] == 60
+    assert rows[0]["has_early"] is True
+    assert rows[1]["fetch_margin_sec"] == -50      # 決定時点より後に取り込んだ
+    assert rows[1]["has_early"] is False
+    assert rows[2]["late_lead_sec"] is None and rows[2]["fetch_margin_sec"] is None

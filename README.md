@@ -59,6 +59,25 @@ poetry run hro-ops run-day --win-model $D/win_prod.joblib --place-model $D/place
 `run-day` は当日全レースを発走時刻順に処理し、各レースの **発走−30秒**まで待機して発注判断する常駐ループ。
 1レースの失敗は握りつぶして継続。結果は `results_YYYYMMDD.jsonl` に追記。
 
+### ②-c Linux（当日、直前オッズが間に合っているかの確認）
+
+flow シグナルは**発走60秒前のオッズ**で判断する。「その時刻のスナップが在る」ことと
+「締切前に DB へ取り込めていた」ことは別物なので、両方を開催日単位で確認する。
+
+```bash
+poetry run hro-ops flow-coverage --date $(date +%Y%m%d)
+```
+
+- `○` 間に合った（取り込みが決定時点より前）
+- `△` スナップは在るが**取り込みが決定時点より後**。検証には使えるが当日の発注には使えない
+- `✗` スナップ自体が無い（Windows の `fetch-timeseries-odds --specs 0B41` を確認）
+
+1レースだけ詳しく見るときは `flow-debug`:
+
+```bash
+poetry run hro-ops flow-debug --race-id 2026091906040510 --flow-threshold <閾値>
+```
+
 ### ③ Linux（開催後、決済）
 ```bash
 poetry run hro-buyer settle --results results_20260719.jsonl          # 損益/ROI 表示

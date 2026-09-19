@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
+from datetime import timedelta
 
 log = logging.getLogger(__name__)
 
@@ -176,6 +177,60 @@ SELECT hasso_time,
 FROM nl_ra
 WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
 """
+
+
+_SQL_COVERAGE = """
+WITH ra AS (
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num, hasso_time,
+         to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI') AS post
+  FROM nl_ra
+  WHERE year=%(y)s AND month_day=%(m)s AND hasso_time ~ '^[0-9]{4}$'
+    AND jyo_cd IN ('01','02','03','04','05','06','07','08','09','10')
+),
+sn AS (
+  SELECT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num,
+         to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI') AS ts,
+         t.observed_at
+  FROM ts_o1 t
+  WHERE t.year=%(y)s AND t.month_day=%(m)s
+)
+SELECT ra.jyo_cd, ra.race_num, ra.hasso_time, ra.post,
+       count(sn.ts) AS snaps,
+       max(sn.ts) FILTER (WHERE sn.ts <= ra.post - make_interval(secs => %(lead)s)) AS late_ts,
+       max(sn.ts) FILTER (WHERE sn.ts <= ra.post - make_interval(mins => %(flow)s)) AS early_ts,
+       max(sn.observed_at) FILTER (WHERE sn.ts <= ra.post - make_interval(secs => %(lead)s))
+         AS late_fetched_at
+FROM ra
+LEFT JOIN sn USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
+GROUP BY ra.jyo_cd, ra.race_num, ra.hasso_time, ra.post
+ORDER BY ra.jyo_cd, ra.race_num
+"""
+
+
+def flow_coverage(db, date: str, cfg: FlowConfig) -> list[dict]:
+    """開催日の全レースについて、決定時点(T−lead)のオッズが**間に合って**取れているかを見る。
+
+    2つは別物なので両方返す:
+      - スナップショットの時刻(hasso_time)が T−lead 以前にあるか … 信号を作れるか
+      - その行を**いつ取得したか**(observed_at)が T−lead より前か … 締切前に使えたか
+        (後から取り込んだ場合、検証はできても当日の発注には間に合っていない)
+    """
+    rows = db.query(_SQL_COVERAGE, {"y": date[:4], "m": date[4:8],
+                                    "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
+    out = []
+    for r in rows:
+        post, late_ts, fetched = r["post"], r["late_ts"], r["late_fetched_at"]
+        decide_at = post - timedelta(seconds=cfg.lead_seconds) if post else None
+        out.append({
+            "jyo_cd": r["jyo_cd"], "race_num": r["race_num"], "hasso_time": r["hasso_time"],
+            "post": post, "snaps": r["snaps"],
+            "late_lead_sec": (post - late_ts).total_seconds() if (post and late_ts) else None,
+            "has_early": r["early_ts"] is not None,
+            # 取得が決定時点に間に合っていたか(正の秒数なら余裕、負なら間に合っていない)
+            "fetch_margin_sec": ((decide_at - fetched).total_seconds()
+                                 if (decide_at and fetched) else None),
+        })
+    return out
 
 
 def flow_diagnose(db, race: tuple[str, ...], cfg: FlowConfig) -> dict:
