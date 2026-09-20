@@ -358,8 +358,40 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor
                       race_id, r.bet_type, r.selection_id, r.amount)
 
 
+class TimingError(ValueError):
+    """発注時刻と締切の関係が破綻している(1件も通らない設定)。"""
+
+
+def check_timing(cfg: DayConfig) -> None:
+    """発注時刻が締切より後になっていないかを**開始前に**弾く。
+
+    ★これを黙って通すと最悪の壊れ方をする: run-day は T-lead_seconds まで待って発注するが、
+    ガード(_GuardedExecutor._deadline_reason)は T-deadline_lead_seconds を過ぎた発注を
+    past voting deadline で捨てる。つまり「正常に1日走りきって、1件も買えていない」に
+    なる。開催日は取り返しがつかないので、走り出す前に落とす。
+    """
+    if cfg.source in ("confirmed", "replay"):
+        return                                  # 過去日の配管検証。締切は無関係
+    if cfg.lead_seconds <= cfg.deadline_lead_seconds:
+        raise TimingError(
+            f"発注時刻 T-{cfg.lead_seconds}s が締切 T-{cfg.deadline_lead_seconds}s 以降です。"
+            f"この設定では全件が past voting deadline で捨てられ、1件も投票できません。"
+            f"--lead-seconds を {cfg.deadline_lead_seconds} より大きくしてください"
+            f"(例 {cfg.deadline_lead_seconds + 30})。"
+        )
+    if cfg.strategy == "flow" and cfg.flow_lead_seconds >= cfg.lead_seconds:
+        raise TimingError(
+            f"判断に使うスナップショット T-{cfg.flow_lead_seconds}s は、発注時刻 "
+            f"T-{cfg.lead_seconds}s の時点ではまだ存在しません。"
+            f"--flow-lead-seconds > --lead-seconds になるようにしてください"
+            f"(締切 T-{cfg.deadline_lead_seconds}s も跨げないので、"
+            f"flow-lead > lead > {cfg.deadline_lead_seconds} が必要)。"
+        )
+
+
 def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     """開催日を通す。no_wait=True なら待機せず全レースを即処理(当日途中起動/検証用)。"""
+    check_timing(cfg)
     win_b = place_b = None
     if cfg.strategy != "flow":        # flow はモデルを使わない
         win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)

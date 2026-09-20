@@ -184,37 +184,128 @@ def _float(v, default: float) -> float:
         return default
 
 
-def _b_flow_day(a: dict):
-    """flow 戦略の day-runner(モデル不使用)。paper が既定。live は多重ゲートを UI 側の明示で開ける。
+def _flow_day_params(a: dict) -> dict:
+    """UI の flow 設定を解決して1箇所に畳む(VM/Windows のビルダで共用)。
 
-    live に必要なもの: confirm_live=true、上限(max_amount_per_order/max_amount_per_day)、
-    実画面で検証済みレシピ(~/ipat_recipe.json)。無ければ run-day 側が起動を拒否する。
+    ★タイミングの拘束: 決定時点 > 実行時刻 > 締切(既定60秒)。
+    判断に使うスナップショット(T-flow_lead)は実行時刻の時点で存在していなければならず、
+    発注(T-act)は締切より前でなければガードに捨てられる。ここで弾かないと
+    「1日走りきって0件」という最悪の壊れ方をするので、投入時点で落とす。
     """
     d = _ymd(a.get("date"), _today_jst())
-    env = {
-        "DATE": d,
-        "FLOW_THRESHOLD": str(_float(a.get("threshold"), 0.2802)),
-        "FLOW_SOURCE": "sokuho" if a.get("source") == "sokuho" else "ts",
-        "FLOW_LEAD": str(_int(a.get("lead_seconds"), 60)),
-        "FLOW_MIN": str(_int(a.get("flow_minutes"), 6)),
-        "LEAD_SECONDS": str(_int(a.get("act_lead_seconds"), 30)),
-        "FLAT_AMOUNT": str(_int(a.get("flat_amount"), 100)),
-        "MODE": "live" if a.get("mode") == "live" else "paper",
+    p = {
+        "date": d,
+        "threshold": _float(a.get("threshold"), 0.2802),
+        # 既定は「締切30秒前に投票開始」で実際に使える組。発表時刻は分刻みなので、
+        # 発走-90s の時点で存在する最新スナップは 発走-120s のもの。ts(0B41)は
+        # 発走近傍が 0/60/360秒しか無く 120 を指定しても 360 に落ちるため sokuho を既定にする。
+        "source": "ts" if a.get("source") == "ts" else "sokuho",
+        "flow_lead": _int(a.get("lead_seconds"), 120),
+        "flow_min": _int(a.get("flow_minutes"), 6),
+        "act_lead": 0,          # 下で締切基準から解決する
+        "act_before_deadline": _int(a.get("act_before_deadline_seconds"), 0),
+        "deadline_lead": _int(a.get("deadline_lead_seconds"), 60),
+        "flat_amount": _int(a.get("flat_amount"), 100),
+        "mode": "live" if a.get("mode") == "live" else "paper",
+        "no_wait": bool(a.get("no_wait")),
     }
-    if a.get("no_wait"):
-        env["NOWAIT"] = "1"
-    if env["MODE"] == "live":
+    # 運用上の基準は「投票締切の何秒前に投票を開始するか」。発走基準へ変換する。
+    #   締切 = 発走 - deadline_lead(実測60秒)  →  実行 = 締切 - act_before_deadline
+    # act_lead_seconds(発走基準)が明示されていればそちらを優先する(旧UI/CLI互換)。
+    if a.get("act_lead_seconds") is not None:
+        p["act_lead"] = _int(a.get("act_lead_seconds"), 30)
+    else:
+        p["act_lead"] = p["deadline_lead"] + (p["act_before_deadline"] or 30)
+
+    # paper は「その設定なら何を選んだか」を記録する計測走行なので止めない(警告のみ)。
+    # live は1件も通らないまま開催日を使い切るのが最悪なので、投入時点で落とす。
+    p["timing_problem"] = _flow_timing_problem(p)
+    if p["mode"] == "live":
+        if p["timing_problem"]:
+            raise ValueError(p["timing_problem"])
         if not a.get("confirm_live"):
             raise ValueError("live には confirm_live=true が必要です")
-        env["CONFIRM_LIVE"] = "1"
-        env["MAX_PER_ORDER"] = str(_int(a.get("max_amount_per_order"), 0))
-        env["MAX_PER_DAY"] = str(_int(a.get("max_amount_per_day"), 0))
-        if env["MAX_PER_ORDER"] == "0" or env["MAX_PER_DAY"] == "0":
+        p["max_per_order"] = _int(a.get("max_amount_per_order"), 0)
+        p["max_per_day"] = _int(a.get("max_amount_per_day"), 0)
+        if not p["max_per_order"] or not p["max_per_day"]:
             raise ValueError("live には 1件上限と1日上限(>0)が必要です")
+    # 閾値 0.2802 は (ts / 発走-60s / 6分 / 分位0.95) で取った絶対値。信号源やリードを
+    # 変えるとスケールが変わる(ts と sokuho は順位相関 0.993 だが傾き 1.245)。流用不可。
+    if abs(p["threshold"] - 0.2802) < 1e-9 and (p["source"], p["flow_lead"]) != ("ts", 60):
+        p["threshold_note"] = (
+            f"閾値 0.2802 は (ts / 発走-60s) で取った値です。現在の設定 "
+            f"({p['source']} / 発走-{p['flow_lead']}s) では取り直しが必要です: "
+            f"hro-ops flow-threshold --flow-source {p['source']} "
+            f"--flow-lead-seconds {p['flow_lead']} --flow-minutes {p['flow_min']}")
     budget = _daily_budget(d)
     if budget is not None:
-        env["DAILY_BUDGET"] = str(budget)
+        p["daily_budget"] = budget
+    return p
+
+
+def _flow_timing_problem(p: dict) -> str | None:
+    """決定時点 > 実行時刻 > 締切 が崩れていれば理由を返す(成立していれば None)。"""
+    if p["no_wait"]:
+        return None                       # 締切を待たない即時プレビュー
+    if p["act_lead"] <= p["deadline_lead"]:
+        return (f"実行時刻 T-{p['act_lead']}s が締切 T-{p['deadline_lead']}s 以降です。"
+                f"この設定では全件が締切超過で捨てられます"
+                f"({p['deadline_lead']} より大きい値にしてください)")
+    if p["flow_lead"] <= p["act_lead"]:
+        return (f"決定時点 T-{p['flow_lead']}s のスナップショットは、実行時刻 "
+                f"T-{p['act_lead']}s にはまだ存在しません(決定時点 > 実行時刻 が必要)")
+    return None
+
+
+def _b_flow_day(a: dict):
+    """flow 戦略の day-runner(VM)。モデル不使用。paper が既定。
+
+    live に必要なもの: confirm_live=true、上限(1件/1日)、実画面で検証済みレシピ
+    (~/ipat_recipe.json)。無ければ flow_day.sh / run-day 側が起動を拒否する。
+    """
+    p = _flow_day_params(a)
+    env = {
+        "DATE": p["date"], "FLOW_THRESHOLD": str(p["threshold"]),
+        "FLOW_SOURCE": p["source"], "FLOW_LEAD": str(p["flow_lead"]),
+        "FLOW_MIN": str(p["flow_min"]), "LEAD_SECONDS": str(p["act_lead"]),
+        "FLAT_AMOUNT": str(p["flat_amount"]), "MODE": p["mode"],
+    }
+    if p["no_wait"]:
+        env["NOWAIT"] = "1"
+    if p["mode"] == "live":
+        env["CONFIRM_LIVE"] = "1"
+        env["MAX_PER_ORDER"] = str(p["max_per_order"])
+        env["MAX_PER_DAY"] = str(p["max_per_day"])
+    if "daily_budget" in p:
+        env["DAILY_BUDGET"] = str(p["daily_budget"])
     return (["bash", "scripts/flow_day.sh"], os.path.join(_home(), "hro-operations"), env)
+
+
+def _b_flow_day_windows(a: dict):
+    """flow 戦略の day-runner(Windows)。IPAT を実績のある機械から叩く経路。
+
+    ★bash に依存しないよう run-day を直接起動する。JV-Link は使わないので、
+    32ビット venv(hro-synchronizer)とは**別の64ビット venv**で動かすこと
+    (run-day も hro-buyer も psycopg を直接 import する)。
+    """
+    p = _flow_day_params(a)
+    cmd = ["poetry", "run", "hro-ops", "run-day", "--date", p["date"], "--strategy", "flow",
+           "--flow-threshold", str(p["threshold"]), "--flow-source", p["source"],
+           "--flow-lead-seconds", str(p["flow_lead"]), "--flow-minutes", str(p["flow_min"]),
+           "--flat-amount", str(p["flat_amount"]), "--lead-seconds", str(p["act_lead"]),
+           "--deadline-lead-seconds", str(p["deadline_lead"]), "--mode", p["mode"]]
+    if p["no_wait"]:
+        cmd.append("--no-wait")
+    if "daily_budget" in p:
+        cmd += ["--daily-budget", str(p["daily_budget"])]
+    if p["mode"] == "live":
+        recipe = os.environ.get("HRO_IPAT_RECIPE") or os.path.join(
+            os.path.expanduser("~"), "ipat_recipe.json")
+        cmd += ["--confirm-live", "--ipat-recipe", recipe,
+                "--max-amount-per-order", str(p["max_per_order"]),
+                "--max-amount-per-day", str(p["max_per_day"]),
+                "--ipat-screenshot-dir", os.path.join(os.path.expanduser("~"), "ipat_shots")]
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
 def _b_flow_check(a: dict):
@@ -263,7 +354,9 @@ _COMMANDS = {
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
                 "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load,
-                "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check},
+                "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
+                # IPAT を実績のある Windows から叩く経路(VM と二者択一。同時に走らせない)
+                "flow_day": _b_flow_day_windows},
 }
 
 

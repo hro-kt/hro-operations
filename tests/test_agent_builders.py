@@ -12,7 +12,9 @@ def test_flow_day_paper_defaults(monkeypatch):
     cmd, cwd, env = agent._b_flow_day({"date": "20260919"})
     assert cmd == ["bash", "scripts/flow_day.sh"] and cwd.endswith("hro-operations")
     assert env["MODE"] == "paper" and env["FLOW_THRESHOLD"] == "0.2802"
-    assert env["FLOW_SOURCE"] == "ts" and env["LEAD_SECONDS"] == "30"
+    # 既定は「締切30秒前に投票開始」= 発走-90s。その時点で存在する最新スナップは 発走-120s。
+    assert env["FLOW_SOURCE"] == "sokuho" and env["LEAD_SECONDS"] == "90"
+    assert env["FLOW_LEAD"] == "120"
 
 
 def test_flow_day_live_requires_confirm_and_limits(monkeypatch):
@@ -22,10 +24,75 @@ def test_flow_day_live_requires_confirm_and_limits(monkeypatch):
         agent._b_flow_day({"mode": "live"})
     with pytest.raises(ValueError):
         agent._b_flow_day({"mode": "live", "confirm_live": True, "max_amount_per_order": 1000})
+    # 時刻が成立する組でのみ通る(決定 T-180s > 実行 T-90s > 締切 T-60s)。
     _, _, env = agent._b_flow_day({"mode": "live", "confirm_live": True,
-                                   "max_amount_per_order": 1000, "max_amount_per_day": 20000})
+                                   "max_amount_per_order": 1000, "max_amount_per_day": 20000,
+                                   "lead_seconds": 180, "act_lead_seconds": 90})
     assert env["MODE"] == "live" and env["CONFIRM_LIVE"] == "1"
     assert env["MAX_PER_ORDER"] == "1000" and env["MAX_PER_DAY"] == "20000"
+
+
+_LIVE = {"mode": "live", "confirm_live": True,
+         "max_amount_per_order": 1000, "max_amount_per_day": 20000}
+
+
+def test_flow_day_live_rejects_order_time_after_deadline(monkeypatch):
+    """★実行時刻が締切より後だと live を組み立てない。
+
+    この設定は「1日走りきって0件」という最悪の壊れ方をする(run-day は T-act まで待って
+    発注するが、ガードは T-60s を過ぎた発注を捨てる)。開催日は取り返しがつかない。
+    """
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    with pytest.raises(ValueError, match="締切"):
+        agent._b_flow_day({**_LIVE, "act_lead_seconds": 30, "lead_seconds": 60})
+
+
+def test_flow_day_live_rejects_snapshot_not_yet_available(monkeypatch):
+    """決定に使うスナップショットが実行時刻にまだ無い組み合わせも弾く。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    with pytest.raises(ValueError, match="まだ存在しません"):
+        agent._b_flow_day({**_LIVE, "act_lead_seconds": 90, "lead_seconds": 60})
+
+
+def test_flow_day_paper_keeps_running_but_reports_timing_problem(monkeypatch):
+    """paper は計測走行なので、時刻が破綻していても止めず警告だけ返す。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    _, _, env = agent._b_flow_day({"date": "20260926", "act_lead_seconds": 30})
+    assert env["MODE"] == "paper" and env["LEAD_SECONDS"] == "30"
+    p = agent._flow_day_params({"date": "20260926", "act_lead_seconds": 30})
+    assert "締切" in p["timing_problem"]
+
+
+def test_act_time_is_relative_to_deadline(monkeypatch):
+    """運用の基準は「締切の何秒前に投票を開始するか」。締切=発走-60s から逆算する。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    p15 = agent._flow_day_params({"date": "20260926", "act_before_deadline_seconds": 15})
+    p30 = agent._flow_day_params({"date": "20260926", "act_before_deadline_seconds": 30})
+    assert p15["act_lead"] == 75 and p30["act_lead"] == 90     # 発走基準へ変換
+    assert p15["timing_problem"] is None and p30["timing_problem"] is None
+
+
+def test_threshold_not_transferable_across_source_or_lead(monkeypatch):
+    """0.2802 は (ts / 発走-60s) の絶対値。設定が違えば取り直しを促す。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    p = agent._flow_day_params({"date": "20260926"})          # 既定 sokuho/120
+    assert "flow-threshold" in p["threshold_note"]
+    same = agent._flow_day_params({"date": "20260926", "source": "ts", "lead_seconds": 60})
+    assert "threshold_note" not in same                        # 検証と同条件なら黙る
+    other = agent._flow_day_params({"date": "20260926", "threshold": 0.31})
+    assert "threshold_note" not in other                       # 取り直し済みの値には言わない
+
+
+def test_flow_day_windows_builds_run_day_without_bash(monkeypatch):
+    """Windows 経路は bash に依存せず run-day を直接起動する。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, cwd, _ = agent._b_flow_day_windows({**_LIVE, "date": "20260926",
+                                             "lead_seconds": 180, "act_lead_seconds": 90})
+    assert cmd[:4] == ["poetry", "run", "hro-ops", "run-day"] and "bash" not in cmd
+    assert "--confirm-live" in cmd and "--ipat-recipe" in cmd
+    assert cmd[cmd.index("--lead-seconds") + 1] == "90"
+    assert cmd[cmd.index("--deadline-lead-seconds") + 1] == "60"
+    assert cwd.endswith("hro-operations")
 
 
 def test_fetch_ts_odds_resident_limits_scope():

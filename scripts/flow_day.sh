@@ -5,8 +5,13 @@
 #
 # 前提(Windows/JV-Link機で常駐): poetry run hro-synchronizer poll-odds   ※JV-Linkは1台1プロセス
 # 環境変数(agent が UI の設定から渡す):
-#   DATE / FLOW_THRESHOLD(既定0.2802) / FLOW_SOURCE(ts|sokuho) / FLOW_LEAD(60) / FLOW_MIN(6)
-#   LEAD_SECONDS(判断を実行する時刻=発走−これ秒。締切=発走−60秒より前に投票を終える必要がある)
+#   DATE / FLOW_THRESHOLD / FLOW_SOURCE(sokuho|ts) / FLOW_LEAD(120) / FLOW_MIN(6)
+#     ★発表時刻は分刻みなので使えるリードは60秒の倍数。締切30秒前(発走−90s)に投票を
+#       始めるなら、その時点の最新スナップは 発走−120s。ts(0B41)は発走近傍が 0/60/360秒
+#       しか無く 120 指定でも 360 に落ちるため、既定は sokuho(自前10秒ポーリング)。
+#   LEAD_SECONDS(投票を開始する時刻=発走−これ秒)。運用上の基準は「締切の何秒前か」で、
+#     締切=発走−60秒なので 締切30秒前=90 / 締切15秒前=75。agent が UI から逆算して渡す。
+#   DEADLINE_LEAD(締切=発走−これ秒。IPAT実測60)
 #   FLAT_AMOUNT(100) / MODE(paper|live) / NOWAIT / DAILY_BUDGET
 #   live のみ: CONFIRM_LIVE=1 / MAX_PER_ORDER / MAX_PER_DAY / RECIPE(既定 ~/ipat_recipe.json)
 # =============================================================================
@@ -15,9 +20,10 @@ OPS="${OPS:-$HOME/hro/hro-operations}"
 DATE="${DATE:-$(TZ=Asia/Tokyo date +%Y%m%d)}"
 MODE="${MODE:-paper}"
 ARGS=(--date "$DATE" --strategy flow
-      --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-ts}"
-      --flow-lead-seconds "${FLOW_LEAD:-60}" --flow-minutes "${FLOW_MIN:-6}"
-      --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-30}"
+      --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-sokuho}"
+      --flow-lead-seconds "${FLOW_LEAD:-120}" --flow-minutes "${FLOW_MIN:-6}"
+      --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-90}"
+      --deadline-lead-seconds "${DEADLINE_LEAD:-60}"
       --mode "$MODE")
 [ -n "${NOWAIT:-}" ] && ARGS+=(--no-wait)
 [ -n "${DAILY_BUDGET:-}" ] && ARGS+=(--daily-budget "$DAILY_BUDGET")
@@ -29,6 +35,7 @@ if [ "$MODE" = "live" ]; then
          --max-amount-per-order "${MAX_PER_ORDER:?}" --max-amount-per-day "${MAX_PER_DAY:?}"
          --ipat-screenshot-dir "$HOME/ipat_shots")
 fi
-echo "=== flow day-runner date=$DATE mode=$MODE thr=${FLOW_THRESHOLD:-0.2802} src=${FLOW_SOURCE:-ts} T-${FLOW_LEAD:-60}s/T-${FLOW_MIN:-6}m act=T-${LEAD_SECONDS:-30}s ==="
+ACT="${LEAD_SECONDS:-90}"; DL="${DEADLINE_LEAD:-60}"
+echo "=== flow day-runner date=$DATE mode=$MODE thr=${FLOW_THRESHOLD:-0.2802} src=${FLOW_SOURCE:-sokuho} 判断=T-${FLOW_LEAD:-120}s 起点=T-${FLOW_MIN:-6}m 投票開始=T-${ACT}s(締切T-${DL}sの$((ACT-DL))秒前) ==="
 cd "$OPS"
 exec poetry run hro-ops run-day "${ARGS[@]}"
