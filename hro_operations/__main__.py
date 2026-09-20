@@ -375,6 +375,49 @@ def _cmd_flow_lead_scan(args) -> int:
     return 0
 
 
+def _cmd_flow_threshold(args) -> int:
+    """使う設定(信号源・決定時点)と同じ条件で絶対閾値を取り直す。"""
+    from datetime import date as _date, timedelta as _td
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, threshold_from
+    from .race_day import day_races
+
+    d0 = _date(int(args.d_from[:4]), int(args.d_from[4:6]), int(args.d_from[6:8]))
+    d1 = _date(int(args.d_to[:4]), int(args.d_to[4:6]), int(args.d_to[6:8]))
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                     source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        races = []
+        d = d0
+        while d <= d1:
+            races += [r for r, _h in day_races(db, d.strftime("%Y%m%d"))]
+            d += _td(days=1)
+        if not races:
+            print(f"{args.d_from}〜{args.d_to}: 対象レースがありません")
+            return 1
+        res = threshold_from(db, races, cfg, args.quantile)
+    finally:
+        db.close()
+
+    if res["threshold"] is None:
+        print("スコアを1本も作れませんでした(スナップショット不足)")
+        return 1
+    print(f"=== flow_tan 絶対閾値 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
+          f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
+    print(f"  対象: {res['races']} レース / {res['n']:,} 本")
+    print(f"  閾値: {res['threshold']:+.4f}  (>=閾値 {res['n_above']:,} 本 = "
+          f"{res['n_above'] / res['n']:.1%})")
+    print(f"\n  → hro-ops run-day --strategy flow --flow-threshold {res['threshold']:.4f} "
+          f"--flow-source {args.flow_source} --flow-lead-seconds {args.flow_lead_seconds}")
+    print("  ※ 本数が想定(約5%)から大きく外れるなら、対象期間が短すぎる可能性があります")
+    return 0
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -422,6 +465,16 @@ def main(argv: list[str] | None = None) -> int:
                       help="基準の側(検証で使った公式時系列)")
     p_ls.add_argument("--ref-lead", type=int, default=60, help="基準の決定時点(秒)")
     p_ls.set_defaults(func=_cmd_flow_lead_scan)
+
+    p_th = sub.add_parser("flow-threshold",
+                          help="使う設定(信号源・決定時点)と同じ条件で絶対閾値を取り直す")
+    p_th.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
+    p_th.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
+    p_th.add_argument("--quantile", type=float, default=0.95)
+    p_th.add_argument("--flow-lead-seconds", type=int, default=120)
+    p_th.add_argument("--flow-minutes", type=int, default=6)
+    p_th.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
+    p_th.set_defaults(func=_cmd_flow_threshold)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)

@@ -415,6 +415,29 @@ def lead_scan(db, races, leads: list[int], cfg: FlowConfig,
     return out
 
 
+def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
+    """手元のレース群から flow_tan の絶対閾値(上側分位)を求める。
+
+    検証の選別規則は「fit 期間の分位で決めた絶対閾値」。決定時点や信号源を変えるとスコアの
+    尺度が変わる(実測: 発走120秒前は60秒前の約0.49倍)ので、**使う設定と同じ条件で**
+    取り直さないと、買う本数が想定から外れる。
+    """
+    vals: list[float] = []
+    n_races = 0
+    for race in races:
+        sc = flow_scores(db, race, cfg)
+        if not sc:
+            continue
+        n_races += 1
+        vals += [d["score"] for d in sc.values()]
+    if not vals:
+        return {"threshold": None, "n": 0, "races": 0, "n_above": 0}
+    vals.sort()
+    thr = vals[min(len(vals) - 1, int(len(vals) * quantile))]
+    return {"threshold": thr, "n": len(vals), "races": n_races,
+            "n_above": sum(1 for v in vals if v >= thr), "quantile": quantile}
+
+
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
     """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
     from hro_moneymanager.models import BetOrder

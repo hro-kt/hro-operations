@@ -156,3 +156,19 @@ def test_lead_scan_measures_agreement_with_reference():
     assert abs(rows[0]["rho"] - 1.0) < 1e-9 and abs(rows[0]["slope"] - 1.0) < 1e-9  # 基準と同一
     assert rows[0]["jaccard"] == 1.0
     assert rows[1]["races"] == 1 and rows[1]["rho"] is not None
+
+
+def test_threshold_from_uses_upper_quantile_of_scores():
+    """決定時点や信号源を変えると尺度が変わるので、同じ条件で閾値を取り直す。"""
+    from hro_operations.flow_signal import threshold_from
+
+    class ThrDB:
+        def query(self, sql, params):
+            if "UNION ALL" not in sql:
+                return [{"hasso_time": "1450", "post": None}]
+            return [_row("01", "20", "15", "late"), _row("02", "30", "20", "late"),
+                    _row("01", "30", "15", "early"), _row("02", "30", "20", "early")]
+
+    res = threshold_from(ThrDB(), [RACE] * 5, FlowConfig(), quantile=0.5)
+    assert res["races"] == 5 and res["n"] == 10
+    assert res["threshold"] is not None and res["n_above"] == 5
