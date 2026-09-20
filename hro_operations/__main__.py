@@ -466,6 +466,24 @@ def _cmd_flow_threshold(args) -> int:
     return 0
 
 
+def _month_chunks(d_from: str, d_to: str) -> list[tuple[str, str]]:
+    """[from,to] を暦月で切る。レースは月を跨がないので合算しても結果は変わらない。"""
+    out = []
+    y, m = int(d_from[:4]), int(d_from[4:6])
+    while True:
+        first = f"{y:04d}{m:02d}01"
+        ny, nm = (y + 1, 1) if m == 12 else (y, m + 1)
+        last = f"{ny:04d}{nm:02d}01"
+        a = max(first, d_from)
+        b = min(f"{y:04d}{m:02d}31", d_to)
+        if a <= b:
+            out.append((a, b))
+        if last > d_to:
+            break
+        y, m = ny, nm
+    return out
+
+
 def _cmd_flow_backtest(args) -> int:
     """flow_tan(複勝)の期間回収率。払戻は nl_hr の確定複勝で決済する。"""
     from hro_features.config import load_config as load_features_config
@@ -473,14 +491,34 @@ def _cmd_flow_backtest(args) -> int:
 
     from .flow_signal import FlowConfig, backtest
 
+    import time
+
+    from .flow_signal import summarize_bets
+
     cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
                      source=args.flow_source, threshold=args.flow_threshold)
+    # 月ごとに分割して回す。8ヶ月を1クエリにすると何分かかっているのか分からず、
+    # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
+    months = _month_chunks(args.d_from, args.d_to)
+    bets: list = []
+    races = scored = degen = 0
     db = FeatureDB(load_features_config())
+    t0 = time.monotonic()
     try:
-        r = backtest(db, args.d_from, args.d_to, cfg,
-                     max_odds=args.max_odds, amount=args.amount)
+        for i, (a, b) in enumerate(months, 1):
+            part = backtest(db, a, b, cfg, max_odds=args.max_odds,
+                            amount=args.amount, with_ci=False)
+            bets += part["_bets"]
+            races += part["races"]; scored += part["races_scored"]
+            degen += part["races_degenerate"]
+            st = sum(x[1] for x in bets)
+            roi = (sum(x[2] for x in bets) / st) if st else 0.0
+            print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
+                  f"購入{part['bets']:>5,}  累計回収率 {roi:.4f}  "
+                  f"({time.monotonic() - t0:.0f}s)", flush=True)
     finally:
         db.close()
+    r = summarize_bets(bets, races=races, races_scored=scored, races_degenerate=degen)
 
     print(f"=== flow_tan 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "

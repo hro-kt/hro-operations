@@ -540,51 +540,54 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 _SQL_BT = """
 WITH ra AS (
   SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
-         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
-          AT TIME ZONE 'Asia/Tokyo') AS post
+         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+                 - make_interval(secs => %(lead)s), 'MMDDHH24MI') AS cut_late,
+         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+                 - make_interval(mins => %(flow)s), 'MMDDHH24MI') AS cut_early
   FROM nl_ra
   WHERE jyo_cd BETWEEN '01' AND '10'            -- ★JRA のみ(地方/海外を混ぜない)
     AND year||month_day BETWEEN %(d0)s AND %(d1)s
     AND hasso_time ~ '^[0-9]{4}$'
 ),
-snap AS (
-  SELECT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num,
-         t.umaban, t.tan_odds, t.fuku_odds_low,
-         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
-          AT TIME ZONE 'Asia/Tokyo') AS ts
-  FROM {TABLE} t JOIN ra USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
-  WHERE t.hasso_time ~ '{RAW}'
-),
+-- ★ORDER BY は **hasso_time(MMDDHHMI の文字列)**で行う。ここを計算した timestamp に
+--   すると主キー (…,race_num,umaban,hasso_time,source_spec) の索引が使えず、全期間の
+--   スナップ数百万行を2回ソートすることになって終わらない。文字列順=時刻順なので
+--   索引のまま最新1本が取れる(年跨ぎのみ順序が崩れるが、決定時点は発走の数分前で
+--   同日のスナップを指すため実害は無い。取れなければ races_scored に出ない)。
 late AS (
-  SELECT DISTINCT ON (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
-         year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban,
-         tan_odds AS t1, fuku_odds_low AS f1, ts AS ts1
-  FROM snap JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
-  WHERE snap.ts <= ra.post - make_interval(secs => %(lead)s)
-  ORDER BY year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban, ts DESC
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1
+  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.hasso_time <= ra.cut_late
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.hasso_time DESC
 ),
 early AS (
-  SELECT DISTINCT ON (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
-         year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban,
-         tan_odds AS t0, ts AS ts0
-  FROM snap JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
-  WHERE snap.ts <= ra.post - make_interval(mins => %(flow)s)
-  ORDER BY year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban, ts DESC
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t0, t.hasso_time AS ht0
+  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.hasso_time <= ra.cut_early
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.hasso_time DESC
 )
 SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ts1, e.ts0,
-       (SELECT h.pay FROM nl_hr h
-         WHERE (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
-             = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
-           AND h.bet_type='fuku'
-           AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban LIMIT 1) AS pay
-FROM late l JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+       l.t1, l.f1, e.t0, l.ht1, e.ht0, h.pay
+FROM late l
+JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+LEFT JOIN nl_hr h
+  ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
+   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
+ AND h.bet_type = 'fuku'
+ AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
 """
 
 
 def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
-             max_odds: float | None = None, amount: int = 100) -> dict:
+             max_odds: float | None = None, amount: int = 100,
+             with_ci: bool = True) -> dict:
     """flow_tan(複勝)の期間回収率。モデルも候補CSVも使わない。
 
     ★払戻は nl_hr の確定複勝(pay=100円あたり)。パリミュチュエルなので判断時の
@@ -592,8 +595,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     レース単位でブートストラップして CI を出す(同一レース内の馬は独立でない)。
     """
     table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
-    raw = "^[0-9]{8}$"
-    sql = _SQL_BT.replace("{TABLE}", table).replace("{RAW}", raw)
+    sql = _SQL_BT.replace("{TABLE}", table)
     rows = db.query(sql, {"d0": d_from, "d1": d_to,
                           "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
 
@@ -605,7 +607,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     n_races = n_scored = n_degenerate = 0
     for rid, rs in by_race.items():
         n_races += 1
-        if rs[0]["ts1"] is not None and rs[0]["ts1"] == rs[0]["ts0"]:
+        if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
             n_degenerate += 1                   # 決定時点と起点が同じスナップ=測れていない
             continue
         s1 = sum(1.0 / o for x in rs if (o := _num(x["t1"])))
@@ -626,16 +628,23 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
             bets.append((rid, amount, payout))
 
+    return summarize_bets(bets, races=n_races, races_scored=n_scored,
+                          races_degenerate=n_degenerate, with_ci=with_ci)
+
+
+def summarize_bets(bets, *, races: int = 0, races_scored: int = 0,
+                   races_degenerate: int = 0, with_ci: bool = True) -> dict:
+    """購入明細を集計する。期間を分割して回したときに合算できるよう切り出してある。"""
     staked = sum(b[1] for b in bets)
     returned = sum(b[2] for b in bets)
     hits = sum(1 for b in bets if b[2] > 0)
     return {
-        "races": n_races, "races_scored": n_scored, "races_degenerate": n_degenerate,
-        "bets": len(bets), "staked": staked, "returned": returned,
-        "hits": hits,
+        "races": races, "races_scored": races_scored, "races_degenerate": races_degenerate,
+        "bets": len(bets), "staked": staked, "returned": returned, "hits": hits,
         "roi": (returned / staked) if staked else None,
         "hit_rate": (hits / len(bets)) if bets else None,
-        "ci": _bootstrap_roi(bets),
+        "ci": _bootstrap_roi(bets) if with_ci else None,
+        "_bets": bets,
     }
 
 

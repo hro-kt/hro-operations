@@ -260,7 +260,7 @@ def test_flow_scores_still_works_when_snapshots_differ():
 # --------------------------------------------------------------------------- #
 def _bt_row(rid, um, t1, t0, pay, ts1="16:08", ts0="16:04"):
     return {"rid": rid, "ymd": "20260919", "umaban": um, "t1": t1, "f1": "0015",
-            "t0": t0, "ts1": ts1, "ts0": ts0, "pay": pay}
+            "t0": t0, "ht1": ts1, "ht0": ts0, "pay": pay}
 
 
 def test_backtest_settles_on_confirmed_place_payout():
@@ -316,3 +316,18 @@ def test_bootstrap_resamples_whole_races_not_horses():
     assert one["lo"] == one["hi"] == 1.5
     two = _bootstrap_roi([("R1", 100, 300), ("R2", 100, 0)], n_boot=500)
     assert two["lo"] < two["hi"]           # レースが2つあれば幅が出る
+
+
+def test_month_chunks_cover_range_without_gaps_or_overlap():
+    """期間を暦月で切る。文字列比較なので '0231' のような非実在日を上端に使ってよい
+    (SQL 側も year||month_day の文字列 BETWEEN で絞るため)。"""
+    from hro_operations.__main__ import _month_chunks
+
+    ch = _month_chunks("20260101", "20260920")
+    assert ch[0] == ("20260101", "20260131") and ch[-1] == ("20260901", "20260920")
+    assert len(ch) == 9
+    # 隣り合う区間が重ならない(重なると同じレースを二重計上する)
+    for (_, b), (a2, _) in zip(ch, ch[1:]):
+        assert b < a2
+    # 月内に収まる範囲は分割されない
+    assert _month_chunks("20260115", "20260120") == [("20260115", "20260120")]
