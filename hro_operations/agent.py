@@ -177,11 +177,93 @@ def _b_backfill(a: dict):
             os.path.join(_home(), "hro-operations"), env)
 
 
+def _float(v, default: float) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _b_flow_day(a: dict):
+    """flow 戦略の day-runner(モデル不使用)。paper が既定。live は多重ゲートを UI 側の明示で開ける。
+
+    live に必要なもの: confirm_live=true、上限(max_amount_per_order/max_amount_per_day)、
+    実画面で検証済みレシピ(~/ipat_recipe.json)。無ければ run-day 側が起動を拒否する。
+    """
+    d = _ymd(a.get("date"), _today_jst())
+    env = {
+        "DATE": d,
+        "FLOW_THRESHOLD": str(_float(a.get("threshold"), 0.2802)),
+        "FLOW_SOURCE": "sokuho" if a.get("source") == "sokuho" else "ts",
+        "FLOW_LEAD": str(_int(a.get("lead_seconds"), 60)),
+        "FLOW_MIN": str(_int(a.get("flow_minutes"), 6)),
+        "LEAD_SECONDS": str(_int(a.get("act_lead_seconds"), 30)),
+        "FLAT_AMOUNT": str(_int(a.get("flat_amount"), 100)),
+        "MODE": "live" if a.get("mode") == "live" else "paper",
+    }
+    if a.get("no_wait"):
+        env["NOWAIT"] = "1"
+    if env["MODE"] == "live":
+        if not a.get("confirm_live"):
+            raise ValueError("live には confirm_live=true が必要です")
+        env["CONFIRM_LIVE"] = "1"
+        env["MAX_PER_ORDER"] = str(_int(a.get("max_amount_per_order"), 0))
+        env["MAX_PER_DAY"] = str(_int(a.get("max_amount_per_day"), 0))
+        if env["MAX_PER_ORDER"] == "0" or env["MAX_PER_DAY"] == "0":
+            raise ValueError("live には 1件上限と1日上限(>0)が必要です")
+    budget = _daily_budget(d)
+    if budget is not None:
+        env["DAILY_BUDGET"] = str(budget)
+    return (["bash", "scripts/flow_day.sh"], os.path.join(_home(), "hro-operations"), env)
+
+
+def _b_flow_check(a: dict):
+    """締切前オッズの検査(flow-coverage + flow-usable)。発注はしない。翌日に回す。"""
+    d = _ymd(a.get("date"), _today_jst())
+    cmd = ["bash", "-c",
+           "poetry run hro-ops flow-usable --date \"$D\" --margin-seconds 10 && "
+           "poetry run hro-ops flow-coverage --date \"$D\""]
+    return (cmd, os.path.join(_home(), "hro-operations"), {"D": d})
+
+
+def _b_import_results(a: dict):
+    """DB に届かない機で回した結果 JSONL(results_<date>.jsonl)を bet_results へ取り込む。"""
+    d = _ymd(a.get("date"), _today_jst())
+    cmd = ["poetry", "run", "hro-buyer", "import-results", "--results", f"results_{d}.jsonl",
+           "--budget-key", d]
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
+
+
+def _b_fetch_ts_odds(a: dict):
+    """公式時系列オッズ(0B41)。1回(既定)か常駐(repeat_seconds>0)。
+
+    ★JV-Link は1台1プロセス。run_odds(poll-odds)と同時に走らせると COM エラー/-202 になる。
+    常駐は --within-minutes で対象を絞らないと1周が長くなり締切直前を取り逃す。
+    """
+    d = _ymd(a.get("date"), _today_jst())
+    cmd = ["poetry", "run", "hro-synchronizer", "fetch-timeseries-odds",
+           "--from", d, "--to", d, "--specs", str(a.get("specs") or "0B41")]
+    rep = _int(a.get("repeat_seconds"), 0)
+    if rep > 0:
+        cmd += ["--repeat-seconds", str(rep),
+                "--within-minutes", str(_int(a.get("within_minutes"), 15))]
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), {})
+
+
+def _b_env_check(a: dict):
+    """JV-Link を使える環境か(ビット数/登録)。COM エラーの切り分け。"""
+    return (["poetry", "run", "hro-synchronizer", "env-check"],
+            os.path.join(_home(), "hro-synchronizer"), {})
+
+
 _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
-           "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill},
+           "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill,
+           "flow_day": _b_flow_day, "flow_check": _b_flow_check,
+           "import_results": _b_import_results, "jrdb_load": _b_jrdb_load},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
-                "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load},
+                "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load,
+                "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check},
 }
 
 
