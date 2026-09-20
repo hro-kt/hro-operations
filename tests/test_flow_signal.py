@@ -253,3 +253,66 @@ def test_flow_scores_still_works_when_snapshots_differ():
     assert set(out) == {"01", "02", "03"}
     assert out["01"]["score"] > 0        # 単勝が縮んだ=シェアが増えた
     assert out["03"]["score"] < 0
+
+
+# --------------------------------------------------------------------------- #
+# flow-backtest(モデルも候補CSVも使わない回収率)
+# --------------------------------------------------------------------------- #
+def _bt_row(rid, um, t1, t0, pay, ts1="16:08", ts0="16:04"):
+    return {"rid": rid, "ymd": "20260919", "umaban": um, "t1": t1, "f1": "0015",
+            "t0": t0, "ts1": ts1, "ts0": ts0, "pay": pay}
+
+
+def test_backtest_settles_on_confirmed_place_payout():
+    """判断はスナップのオッズ、決済は確定複勝(nl_hr.pay)で行う。
+
+    ★パリミュチュエルなので判断時のオッズでは払われない。ここを取り違えると
+    回収率が実際より良く出る。
+    """
+    from hro_operations.flow_signal import backtest
+
+    rows = [_bt_row("R1", "01", "0020", "0030", "180"),      # 単勝が縮む→スコア正→買う
+            _bt_row("R1", "02", "0030", "0030", None),
+            _bt_row("R1", "03", "0070", "0060", None),
+            _bt_row("R2", "01", "0020", "0030", None),       # 買うが外れ
+            _bt_row("R2", "02", "0030", "0030", None),
+            _bt_row("R2", "03", "0070", "0060", None)]
+    r = backtest(FakeDB(rows), "20260919", "20260919",
+                 FlowConfig(source="ts", threshold=0.0), amount=100)
+    assert r["bets"] == 2 and r["hits"] == 1
+    assert r["staked"] == 200 and r["returned"] == 180
+    assert abs(r["roi"] - 0.9) < 1e-9
+
+
+def test_backtest_excludes_races_where_flow_was_not_measurable():
+    """決定時点と起点が同じスナップのレースは購入せず、件数だけ報告する。"""
+    from hro_operations.flow_signal import backtest
+
+    rows = [_bt_row("R1", "01", "0020", "0030", "180"),
+            _bt_row("R1", "02", "0070", "0060", None),
+            _bt_row("R3", "01", "0020", "0030", "999", "16:04", "16:04")]
+    r = backtest(FakeDB(rows), "20260919", "20260919",
+                 FlowConfig(source="ts", threshold=0.0), amount=100)
+    assert r["races_degenerate"] == 1 and r["races_scored"] == 1
+    assert r["returned"] == 180            # R3 の 999 は混ざらない
+
+
+def test_backtest_max_odds_filters_longshots():
+    from hro_operations.flow_signal import backtest
+
+    rows = [_bt_row("R1", "01", "0900", "1200", "5000"),     # 単勝90.0倍
+            _bt_row("R1", "02", "0070", "0060", None)]
+    cfg = FlowConfig(source="ts", threshold=0.0)
+    assert backtest(FakeDB(rows), "20260919", "20260919", cfg)["bets"] == 1
+    assert backtest(FakeDB(rows), "20260919", "20260919", cfg, max_odds=50.0)["bets"] == 0
+
+
+def test_bootstrap_resamples_whole_races_not_horses():
+    """同一レース内の馬は独立でないので、レースごと丸ごと抜き差しする。"""
+    from hro_operations.flow_signal import _bootstrap_roi
+
+    # 1レースだけなら、何度抽出しても同じレースしか出ない=CIは点になる
+    one = _bootstrap_roi([("R1", 100, 300), ("R1", 100, 0)], n_boot=200)
+    assert one["lo"] == one["hi"] == 1.5
+    two = _bootstrap_roi([("R1", 100, 300), ("R2", 100, 0)], n_boot=500)
+    assert two["lo"] < two["hi"]           # レースが2つあれば幅が出る

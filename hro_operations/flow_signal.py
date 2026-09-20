@@ -458,8 +458,10 @@ def lead_scan(db, races, leads: list[int], cfg: FlowConfig,
                 rhos.append(rho)
             xs += a
             ys += b
+            # ★同じ絶対閾値を両側に当てると、尺度が違う(傾き≠1)だけで重なりが
+            #   潰れて「別物」に見える。選ぶ本数を揃えて比べるのが正しい比較。
             sa = {u for u in ref if ref[u]["score"] >= cfg.threshold}
-            sb = {u for u in cur if cur[u]["score"] >= cfg.threshold}
+            sb = set(sorted(cur, key=lambda u: -cur[u]["score"])[:len(sa)])
             n_ref += len(sa)
             n_cur += len(sb)
             inter += len(sa & sb)
@@ -531,3 +533,138 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
     log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, src=%s)",
              race_id, len(orders), len(sc), cfg.threshold, cfg.source)
     return orders
+
+
+# --- バックテスト: 期間まるごとを1クエリで引く(レースごとに往復すると遅すぎる) ---
+# 候補CSVもモデルも要らない。flow は model-free なので、スナップ2本と払戻だけで完結する。
+_SQL_BT = """
+WITH ra AS (
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE jyo_cd BETWEEN '01' AND '10'            -- ★JRA のみ(地方/海外を混ぜない)
+    AND year||month_day BETWEEN %(d0)s AND %(d1)s
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+snap AS (
+  SELECT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num,
+         t.umaban, t.tan_odds, t.fuku_odds_low,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts
+  FROM {TABLE} t JOIN ra USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
+  WHERE t.hasso_time ~ '{RAW}'
+),
+late AS (
+  SELECT DISTINCT ON (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+         year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban,
+         tan_odds AS t1, fuku_odds_low AS f1, ts AS ts1
+  FROM snap JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE snap.ts <= ra.post - make_interval(secs => %(lead)s)
+  ORDER BY year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban, ts DESC
+),
+early AS (
+  SELECT DISTINCT ON (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+         year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban,
+         tan_odds AS t0, ts AS ts0
+  FROM snap JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE snap.ts <= ra.post - make_interval(mins => %(flow)s)
+  ORDER BY year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban, ts DESC
+)
+SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
+       l.year||l.month_day AS ymd, l.umaban,
+       l.t1, l.f1, e.t0, l.ts1, e.ts0,
+       (SELECT h.pay FROM nl_hr h
+         WHERE (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
+             = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
+           AND h.bet_type='fuku'
+           AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban LIMIT 1) AS pay
+FROM late l JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+"""
+
+
+def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
+             max_odds: float | None = None, amount: int = 100) -> dict:
+    """flow_tan(複勝)の期間回収率。モデルも候補CSVも使わない。
+
+    ★払戻は nl_hr の確定複勝(pay=100円あたり)。パリミュチュエルなので判断時の
+    オッズでは払われない。判断に使うのはスナップのオッズ、決済は必ず確定払戻。
+    レース単位でブートストラップして CI を出す(同一レース内の馬は独立でない)。
+    """
+    table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
+    raw = "^[0-9]{8}$"
+    sql = _SQL_BT.replace("{TABLE}", table).replace("{RAW}", raw)
+    rows = db.query(sql, {"d0": d_from, "d1": d_to,
+                          "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
+
+    by_race: dict[str, list[dict]] = {}
+    for r in rows:
+        by_race.setdefault(r["rid"], []).append(r)
+
+    bets: list[tuple[str, int, int]] = []      # (rid, 賭け金, 払戻)
+    n_races = n_scored = n_degenerate = 0
+    for rid, rs in by_race.items():
+        n_races += 1
+        if rs[0]["ts1"] is not None and rs[0]["ts1"] == rs[0]["ts0"]:
+            n_degenerate += 1                   # 決定時点と起点が同じスナップ=測れていない
+            continue
+        s1 = sum(1.0 / o for x in rs if (o := _num(x["t1"])))
+        s0 = sum(1.0 / o for x in rs if (o := _num(x["t0"])))
+        if s1 <= 0 or s0 <= 0:
+            continue
+        n_scored += 1
+        for x in rs:
+            t1, t0, f1 = _num(x["t1"]), _num(x["t0"]), _num(x["f1"])
+            if t1 is None or t0 is None or f1 is None:
+                continue
+            score = _logit((1.0 / t1) / s1) - _logit((1.0 / t0) / s0)
+            if score < cfg.threshold:
+                continue
+            if max_odds is not None and t1 > max_odds:
+                continue
+            pay = x["pay"]
+            payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
+            bets.append((rid, amount, payout))
+
+    staked = sum(b[1] for b in bets)
+    returned = sum(b[2] for b in bets)
+    hits = sum(1 for b in bets if b[2] > 0)
+    return {
+        "races": n_races, "races_scored": n_scored, "races_degenerate": n_degenerate,
+        "bets": len(bets), "staked": staked, "returned": returned,
+        "hits": hits,
+        "roi": (returned / staked) if staked else None,
+        "hit_rate": (hits / len(bets)) if bets else None,
+        "ci": _bootstrap_roi(bets),
+    }
+
+
+def _bootstrap_roi(bets, n_boot: int = 2000, seed: int = 20260921):
+    """レース単位の復元抽出で回収率の95%CIと P(ROI<=1)。
+
+    ★馬単位でブートストラップすると同一レース内の相関を無視して CI が狭く出る。
+    賭けたのはレースなので、レースごと丸ごと抜き差しする。
+    """
+    import random
+    if not bets:
+        return None
+    per_race: dict[str, list[tuple[int, int]]] = {}
+    for rid, amt, pay in bets:
+        per_race.setdefault(rid, []).append((amt, pay))
+    races = list(per_race.values())
+    rnd = random.Random(seed)
+    rois = []
+    n = len(races)
+    for _ in range(n_boot):
+        st = rt = 0
+        for _ in range(n):
+            for amt, pay in races[rnd.randrange(n)]:
+                st += amt
+                rt += pay
+        if st:
+            rois.append(rt / st)
+    if not rois:
+        return None
+    rois.sort()
+    return {"lo": rois[int(0.025 * len(rois))], "hi": rois[int(0.975 * len(rois))],
+            "p_le_1": sum(1 for r in rois if r <= 1.0) / len(rois)}

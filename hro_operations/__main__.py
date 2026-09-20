@@ -466,6 +466,43 @@ def _cmd_flow_threshold(args) -> int:
     return 0
 
 
+def _cmd_flow_backtest(args) -> int:
+    """flow_tan(複勝)の期間回収率。払戻は nl_hr の確定複勝で決済する。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, backtest
+
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                     source=args.flow_source, threshold=args.flow_threshold)
+    db = FeatureDB(load_features_config())
+    try:
+        r = backtest(db, args.d_from, args.d_to, cfg,
+                     max_odds=args.max_odds, amount=args.amount)
+    finally:
+        db.close()
+
+    print(f"=== flow_tan 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
+          f"起点 発走{args.flow_minutes}分前 / 閾値 {args.flow_threshold:+.4f}"
+          + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
+    print(f"  レース: {r['races']:,} (スコア可 {r['races_scored']:,} / "
+          f"測れず {r['races_degenerate']:,})")
+    if not r["bets"]:
+        print("  購入 0 件。閾値が高すぎるか、スナップショットが足りません")
+        return 1
+    print(f"  購入: {r['bets']:,} 件 / 的中 {r['hits']:,} ({r['hit_rate']:.1%})")
+    print(f"  投資 {r['staked']:,}円 → 払戻 {r['returned']:,}円")
+    print(f"  ★回収率: {r['roi']:.4f}")
+    ci = r["ci"]
+    if ci:
+        print(f"    95%CI [{ci['lo']:.3f}, {ci['hi']:.3f}]  "
+              f"P(回収率<=1) = {ci['p_le_1']:.3f}")
+        print("    ※レース単位のブートストラップ(同一レース内の馬は独立でないため)")
+    print("  ※払戻は確定複勝(パリミュチュエル)。判断時のオッズでは払われない")
+    return 0
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -533,6 +570,19 @@ def main(argv: list[str] | None = None) -> int:
     p_th.add_argument("--flow-minutes", type=int, default=6)
     p_th.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
     p_th.set_defaults(func=_cmd_flow_threshold)
+
+    p_bt = sub.add_parser("flow-backtest",
+                          help="flow_tan(複勝)の期間回収率。モデルも候補CSVも使わない")
+    p_bt.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
+    p_bt.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
+    p_bt.add_argument("--flow-threshold", type=float, required=True,
+                      help="この設定で flow-threshold を取り直した値を渡すこと")
+    p_bt.add_argument("--flow-lead-seconds", type=int, default=360)
+    p_bt.add_argument("--flow-minutes", type=int, default=11)
+    p_bt.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_bt.add_argument("--max-odds", type=float, default=None, help="単勝オッズ上限(既定 無し)")
+    p_bt.add_argument("--amount", type=int, default=100)
+    p_bt.set_defaults(func=_cmd_flow_backtest)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)
