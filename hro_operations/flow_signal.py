@@ -141,6 +141,12 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     early = {x["umaban"]: x for x in rows if x["which"] == "early"}
     if not late or not early:
         return {}
+    # ★決定時点と起点が同じスナップを指したら flow は測れていない。ここで 0 を返すと
+    #   「資金が動かなかった」と区別が付かず、threshold_from の分位点が構造的ゼロで
+    #   汚れる(発走直前のスナップが無い日が混ざると閾値が実際より低く出る)。
+    t_late, t_early = next(iter(late.values()))["ts"], next(iter(early.values()))["ts"]
+    if t_late is not None and t_late == t_early:   # NULL なら判定不能→発注は止めない
+        return {}
     s_late = sum(1.0 / o for x in late.values() if (o := _num(x["tan_odds"])))
     s_early = sum(1.0 / o for x in early.values() if (o := _num(x["tan_odds"])))
     if s_late <= 0 or s_early <= 0:

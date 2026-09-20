@@ -22,7 +22,18 @@ class FakeDB:
         return self.rows
 
 
-def _row(um, tan, fuku, which, ts=datetime(2026, 9, 19, 15, 43, tzinfo=timezone.utc)):
+# 実データでは late(決定時点)と early(起点)は別スナップ。同じ時刻を与えると
+# 「flow が測れていない」扱いで除外されるため、既定を which ごとに分ける。
+_TS_LATE = datetime(2026, 9, 19, 15, 43, tzinfo=timezone.utc)
+_TS_EARLY = datetime(2026, 9, 19, 15, 37, tzinfo=timezone.utc)
+
+
+_UNSET = object()      # ts=None(=DBのNULL)を明示したいテストと区別する
+
+
+def _row(um, tan, fuku, which, ts=_UNSET):
+    if ts is _UNSET:
+        ts = _TS_LATE if which == "late" else _TS_EARLY
     return {"umaban": um, "tan_odds": tan, "fuku_odds_low": fuku, "ts": ts, "which": which}
 
 
@@ -199,3 +210,46 @@ def test_usable_snapshot_reports_what_is_in_hand_at_decision_time():
     rows = usable_snapshot(UsableDB(), "20260919", FlowConfig(), margin_seconds=10)
     assert rows[0]["usable_lead_sec"] == 60 and rows[0]["want_margin_sec"] == 5
     assert rows[1]["usable_lead_sec"] == 120 and rows[1]["want_margin_sec"] == -15
+
+
+def test_flow_scores_rejects_same_snapshot_for_decision_and_baseline():
+    """決定時点と起点が同じスナップなら「測れていない」として何も返さない。
+
+    ★0 を返すと「資金が動かなかった(score=0)」と見分けが付かず、threshold_from の
+    分位点が構造的ゼロで薄まって閾値が実際より低く出る。発走直前のスナップが
+    取れていない日が混ざると起きる(2026-09-20 の速報がまさにこれだった)。
+    """
+    same = "2026-09-20 11:41:00+09:00"
+    rows = []
+    for um, odds in (("01", "0030"), ("02", "0050"), ("03", "0070")):
+        for which in ("late", "early"):
+            rows.append({"umaban": um, "tan_odds": odds, "fuku_odds_low": "0015",
+                         "ts": same, "which": which})
+
+    class _DB:
+        def query(self, sql, params):
+            return rows
+
+    cfg = FlowConfig(lead_seconds=120, flow_minutes=6, source="sokuho")
+    assert flow_scores(_DB(), ("2026", "0920", "09", "04", "06", "12"), cfg) == {}
+
+
+def test_flow_scores_still_works_when_snapshots_differ():
+    """別スナップなら通常どおりスコアを返す(上の除外が効きすぎていないこと)。"""
+    rows = []
+    for um, late_o, early_o in (("01", "0030", "0035"), ("02", "0050", "0048"),
+                                ("03", "0070", "0069")):
+        rows.append({"umaban": um, "tan_odds": late_o, "fuku_odds_low": "0015",
+                     "ts": "2026-09-20 16:08:00+09:00", "which": "late"})
+        rows.append({"umaban": um, "tan_odds": early_o, "fuku_odds_low": "0015",
+                     "ts": "2026-09-20 16:04:00+09:00", "which": "early"})
+
+    class _DB:
+        def query(self, sql, params):
+            return rows
+
+    cfg = FlowConfig(lead_seconds=120, flow_minutes=6, source="sokuho")
+    out = flow_scores(_DB(), ("2026", "0920", "09", "04", "06", "12"), cfg)
+    assert set(out) == {"01", "02", "03"}
+    assert out["01"]["score"] > 0        # 単勝が縮んだ=シェアが増えた
+    assert out["03"]["score"] < 0
