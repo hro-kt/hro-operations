@@ -337,6 +337,44 @@ def _cmd_flow_coverage(args) -> int:
     return 0 if (ok == total) else 1
 
 
+def _cmd_flow_lead_scan(args) -> int:
+    """決定時点を早めても信号が保たれるかを測る(ROI ではなく信号の保存度)。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, lead_scan
+    from .race_day import day_races
+
+    date = args.date or _today()
+    leads = [int(x) for x in args.leads.split(",") if x.strip()]
+    cfg = FlowConfig(flow_minutes=args.flow_minutes, threshold=args.flow_threshold,
+                     source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        races = [r for r, _h in day_races(db, date)]
+        if not races:
+            print(f"{date}: 対象レースがありません")
+            return 1
+        rows = lead_scan(db, races, leads, cfg,
+                         ref_source=args.ref_source, ref_lead=args.ref_lead)
+    finally:
+        db.close()
+
+    print(f"=== {date} 決定時点を早めたときの信号の保存度 ===")
+    print(f"  基準: {args.ref_source} の発走{args.ref_lead}秒前 / 対象: {args.flow_source} / "
+          f"起点 発走{args.flow_minutes}分前 / 閾値 {args.flow_threshold:+.4f}")
+    print("  発走n秒前  レース  順位相関   傾き   基準の選択  今回の選択  重なり")
+    for r in rows:
+        rho = f"{r['rho']:.3f}" if r["rho"] is not None else "  -  "
+        sl = f"{r['slope']:.3f}" if r["slope"] is not None else "  -  "
+        ja = f"{r['jaccard']:.2f}" if r["jaccard"] is not None else " - "
+        print(f"   {r['lead']:5d}秒  {r['races']:5d}  {rho:>8}  {sl:>6}  "
+              f"{r['n_ref']:9d}  {r['n_cur']:9d}  {ja:>6}")
+    print("\n  順位相関が高く重なりが大きいほど、早めても同じ馬を選べる。")
+    print("  傾きが 1 から離れると絶対閾値をそのままは使えない(閾値の取り直しが要る)。")
+    return 0
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -371,6 +409,19 @@ def main(argv: list[str] | None = None) -> int:
     p_fc.add_argument("--flow-lead-seconds", type=int, default=60)
     p_fc.add_argument("--flow-minutes", type=int, default=6)
     p_fc.set_defaults(func=_cmd_flow_coverage)
+
+    p_ls = sub.add_parser("flow-lead-scan",
+                          help="決定時点を早めても信号が保たれるかを測る(締切前に買えるか)")
+    p_ls.add_argument("--date", default=None, help="YYYYMMDD(既定 当日)")
+    p_ls.add_argument("--leads", default="60,75,90,120,180", help="試す決定時点(秒)をカンマ区切り")
+    p_ls.add_argument("--flow-minutes", type=int, default=6)
+    p_ls.add_argument("--flow-threshold", type=float, default=0.2802)
+    p_ls.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho",
+                      help="早い時点を測る側。速報(10秒ポーリング)なら締切前の任意時刻が取れる")
+    p_ls.add_argument("--ref-source", choices=("ts", "sokuho"), default="ts",
+                      help="基準の側(検証で使った公式時系列)")
+    p_ls.add_argument("--ref-lead", type=int, default=60, help="基準の決定時点(秒)")
+    p_ls.set_defaults(func=_cmd_flow_lead_scan)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)

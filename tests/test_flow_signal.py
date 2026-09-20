@@ -133,3 +133,26 @@ def test_flow_coverage_separates_snapshot_time_from_fetch_time():
     assert rows[1]["fetch_margin_sec"] == -50      # 決定時点より後に取り込んだ
     assert rows[1]["has_early"] is False
     assert rows[2]["late_lead_sec"] is None and rows[2]["fetch_margin_sec"] is None
+
+
+def test_lead_scan_measures_agreement_with_reference():
+    """決定時点を早めたときに同じ馬を選べるかを、順位相関・傾き・重なりで測る。"""
+    from hro_operations.flow_signal import lead_scan
+
+    class ScanDB:
+        """基準(lead=60)と対象(lead=90)で少しだけ違うスコアになるよう返す。"""
+
+        def query(self, sql, params):
+            if "UNION ALL" not in sql:
+                return [{"hasso_time": "1450", "post": None}]
+            late_tan = "20" if params["lead"] == 60 else "21"
+            return [_row("01", late_tan, "15", "late"), _row("02", "30", "20", "late"),
+                    _row("03", "40", "30", "late"),
+                    _row("01", "30", "15", "early"), _row("02", "30", "20", "early"),
+                    _row("03", "40", "30", "early")]
+
+    rows = lead_scan(ScanDB(), [RACE], [60, 90], FlowConfig(threshold=0.0))
+    assert [r["lead"] for r in rows] == [60, 90]
+    assert abs(rows[0]["rho"] - 1.0) < 1e-9 and abs(rows[0]["slope"] - 1.0) < 1e-9  # 基準と同一
+    assert rows[0]["jaccard"] == 1.0
+    assert rows[1]["races"] == 1 and rows[1]["rho"] is not None

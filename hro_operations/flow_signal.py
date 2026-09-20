@@ -338,6 +338,83 @@ def flow_diagnose(db, race: tuple[str, ...], cfg: FlowConfig) -> dict:
     }
 
 
+def _spearman(a: list[float], b: list[float]) -> float | None:
+    """順位相関。scipy を使わない(依存を増やさない)。"""
+    n = len(a)
+    if n < 3:
+        return None
+
+    def rank(v):
+        order = sorted(range(n), key=lambda i: v[i])
+        r = [0.0] * n
+        for pos, i in enumerate(order):
+            r[i] = float(pos)
+        return r
+
+    ra, rb = rank(a), rank(b)
+    ma, mb = sum(ra) / n, sum(rb) / n
+    num = sum((x - ma) * (y - mb) for x, y in zip(ra, rb))
+    da = sum((x - ma) ** 2 for x in ra) ** 0.5
+    dbb = sum((y - mb) ** 2 for y in rb) ** 0.5
+    return num / (da * dbb) if da and dbb else None
+
+
+def lead_scan(db, races, leads: list[int], cfg: FlowConfig,
+              ref_source: str = "ts", ref_lead: int = 60) -> list[dict]:
+    """決定時点を早めたときに信号がどれだけ保たれるかを測る。
+
+    基準は「検証で使った時点」(既定: 公式時系列の発走60秒前)。各 lead について
+      - 順位相関(基準との一致)
+      - 回帰の傾き(尺度の違い。絶対閾値をそのまま使えるか)
+      - 閾値で選ぶ馬の重なり(Jaccard)
+    をレース横断で集計する。ROI は測れない(必要な履歴が無い)ので、信号の保存度で判断する。
+    """
+    ref_cfg = FlowConfig(lead_seconds=ref_lead, flow_minutes=cfg.flow_minutes,
+                         threshold=cfg.threshold, source=ref_source)
+    out = []
+    for lead in leads:
+        c = FlowConfig(lead_seconds=lead, flow_minutes=cfg.flow_minutes,
+                       threshold=cfg.threshold, source=cfg.source)
+        rhos: list[float] = []
+        xs: list[float] = []
+        ys: list[float] = []
+        inter = union = n_ref = n_cur = n_races = 0
+        for race in races:
+            ref = flow_scores(db, race, ref_cfg)
+            cur = flow_scores(db, race, c)
+            common = sorted(set(ref) & set(cur))
+            if len(common) < 3:
+                continue
+            n_races += 1
+            a = [ref[u]["score"] for u in common]
+            b = [cur[u]["score"] for u in common]
+            rho = _spearman(a, b)
+            if rho is not None:
+                rhos.append(rho)
+            xs += a
+            ys += b
+            sa = {u for u in ref if ref[u]["score"] >= cfg.threshold}
+            sb = {u for u in cur if cur[u]["score"] >= cfg.threshold}
+            n_ref += len(sa)
+            n_cur += len(sb)
+            inter += len(sa & sb)
+            union += len(sa | sb)
+        slope = None
+        if len(xs) >= 3:
+            mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+            sxx = sum((x - mx) ** 2 for x in xs)
+            if sxx:
+                slope = sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+        out.append({
+            "lead": lead, "races": n_races,
+            "rho": (sum(rhos) / len(rhos)) if rhos else None,
+            "slope": slope,
+            "n_ref": n_ref, "n_cur": n_cur,
+            "jaccard": (inter / union) if union else None,
+        })
+    return out
+
+
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
     """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
     from hro_moneymanager.models import BetOrder
