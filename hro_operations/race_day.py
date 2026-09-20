@@ -469,14 +469,19 @@ def list_day(cfg: DayConfig) -> None:
         races = day_races(db, cfg.date)
     finally:
         db.close()
-    print(f"=== {cfg.date} JRA races: {len(races)} (T-{cfg.lead_seconds}s deadline) ===")
+    # ★締切と投票開始は別物。以前はどちらも lead_seconds で表示していて、
+    #   「締切(T-30s)」のように実際より遅い締切を刷っていた。混同すると事故る。
+    print(f"=== {cfg.date} JRA races: {len(races)} "
+          f"(締切=T-{cfg.deadline_lead_seconds}s / 投票開始=T-{cfg.lead_seconds}s) ===")
     now = datetime.now(JST)
     for race, hasso in races:
         race_id = "".join(race)
-        dl = deadline_from(race_id, hasso, cfg.lead_seconds)
-        if dl is None:
+        dl = deadline_from(race_id, hasso, cfg.deadline_lead_seconds)
+        act = deadline_from(race_id, hasso, cfg.lead_seconds)
+        if dl is None or act is None:
             print(f"  {race_id}  hasso={hasso!r:>8}  締切不明")
             continue
-        delta = (dl - now).total_seconds()
+        delta = (act - now).total_seconds()
         when = "済" if delta < 0 else f"{delta/60:.0f}分後"
-        print(f"  {race_id}  発走{hasso}  締切(T-{cfg.lead_seconds}s)={dl.strftime('%H:%M:%S')}  {when}")
+        print(f"  {race_id}  発走{hasso}  投票開始={act.strftime('%H:%M:%S')}"
+              f"  締切={dl.strftime('%H:%M:%S')}  {when}")
