@@ -188,6 +188,68 @@ WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
     = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
 """
 
+_SQL_GRID = """
+-- 発走前のスナップショットが「発走の何秒前」に在るか(格子の粗さを見る)
+WITH ra AS (
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+sn AS (
+  SELECT DISTINCT t.hasso_time,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts
+  FROM ts_o1 t
+  WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+      = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+)
+SELECT sn.hasso_time,
+       EXTRACT(EPOCH FROM (ra.post - sn.ts)) AS lead_sec
+FROM sn, ra
+WHERE sn.ts <= ra.post
+ORDER BY sn.ts DESC
+LIMIT %(lim)s
+"""
+
+_SQL_GRID_SOKUHO = """
+WITH ra AS (
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+sn AS (
+  SELECT DISTINCT t.hasso_time,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts
+  FROM ts_sokuho_o1 t
+  WHERE t.hasso_time ~ '^[0-9]{8}$'
+    AND (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+      = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+)
+SELECT sn.hasso_time,
+       EXTRACT(EPOCH FROM (ra.post - sn.ts)) AS lead_sec
+FROM sn, ra
+WHERE sn.ts <= ra.post
+ORDER BY sn.ts DESC
+LIMIT %(lim)s
+"""
+
+
+def snapshot_grid(db, race: tuple[str, ...], cfg: FlowConfig, limit: int = 15) -> list[dict]:
+    """発走直前のスナップショットが「何秒前」に在るかを新しい順に返す。
+
+    格子が粗いと、決定時点を早めたときに起点と同じスナップを引いてスコアが 0 になる
+    (実際に lead 90/120/180 秒で全部同じ結果=スコアほぼ全ゼロになった)。
+    """
+    y, m, j, k, n, r = race
+    sql = _SQL_GRID if cfg.source == "ts" else _SQL_GRID_SOKUHO
+    return db.query(sql, {"y": y, "m": m, "j": j, "k": k, "n": n, "r": r, "lim": limit})
+
+
 _SQL_POST = """
 SELECT hasso_time,
        (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp

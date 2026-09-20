@@ -251,6 +251,17 @@ def _cmd_flow_debug(args) -> int:
     print(f"    期間: {snap['first_ts']} 〜 {snap['last_ts']}")
     if snap.get("raw_min"):
         print(f"    発表時刻(生): {snap['raw_min']} 〜 {snap['raw_max']}  ※MMDDHHMI の8桁を想定")
+    from .flow_signal import snapshot_grid
+    db2 = FeatureDB(load_features_config())
+    try:
+        grid = snapshot_grid(db2, race, cfg)
+    finally:
+        db2.close()
+    if grid:
+        leads = ", ".join(f"{int(g['lead_sec'])}s" for g in grid)
+        print(f"  発走前スナップの間隔(新しい順): {leads}")
+        print("    ※ 決定時点と起点が同じスナップを指すとスコアは 0 になる")
+
     sc = d["scores"]
     if not sc:
         print("  ✗ スコアを計算できない(決定時点より前、または起点より前のスナップが無い)")
