@@ -78,6 +78,20 @@ poetry run hro-ops flow-coverage --date $(date +%Y%m%d)
 poetry run hro-ops flow-debug --race-id 2026091906040510 --flow-threshold <閾値>
 ```
 
+### ②-d Linux（開催後、締切前に何が使えたかの測定）
+
+締切は**発走の1分前**(IPAT 実測)。検証は「発走60秒前のスナップショット」で判断しており、
+これは締切と同時刻。実際に締切前へ届いていたかは `observed_at`(最初に手元へ入った時刻)で測る。
+
+```bash
+poetry run hro-ops flow-usable --date $(date +%Y%m%d) --margin-seconds 10
+```
+
+- `○` 検証と同じスナップが判断時刻(締切10秒前)までに届いていた → 検証どおりに執行できる
+- `✗` 届いていない → 「手元の最新」列の時点で信号を作り直す必要がある
+
+※ observed_at を上書きしない修正(2026-09-20)より**後**に取り込んだ日でのみ有効。
+
 ### ③ Linux（開催後、決済）
 ```bash
 poetry run hro-buyer settle --results results_20260719.jsonl          # 損益/ROI 表示

@@ -172,3 +172,30 @@ def test_threshold_from_uses_upper_quantile_of_scores():
     res = threshold_from(ThrDB(), [RACE] * 5, FlowConfig(), quantile=0.5)
     assert res["races"] == 5 and res["n"] == 10
     assert res["threshold"] is not None and res["n_above"] == 5
+
+
+def test_usable_snapshot_reports_what_is_in_hand_at_decision_time():
+    """締切直前に判断するとき、実際に手元にある最新スナップと、
+    検証と同じスナップが間に合ったかを分けて出す。"""
+    from datetime import datetime, timedelta, timezone
+
+    from hro_operations.flow_signal import usable_snapshot
+
+    post = datetime(2026, 9, 19, 5, 50, tzinfo=timezone.utc)
+
+    class UsableDB:
+        def query(self, sql, params):
+            return [
+                # 60秒前のスナップが判断時刻(発走70秒前)の5秒前に届いた → 使える
+                {"jyo_cd": "06", "race_num": "10", "hasso_time": "1450", "post": post,
+                 "usable_ts": post - timedelta(seconds=60),
+                 "want_seen": post - timedelta(seconds=75)},
+                # 60秒前のスナップは判断時刻より後に届いた → 使えない(最新は120秒前)
+                {"jyo_cd": "09", "race_num": "11", "hasso_time": "1530", "post": post,
+                 "usable_ts": post - timedelta(seconds=120),
+                 "want_seen": post - timedelta(seconds=55)},
+            ]
+
+    rows = usable_snapshot(UsableDB(), "20260919", FlowConfig(), margin_seconds=10)
+    assert rows[0]["usable_lead_sec"] == 60 and rows[0]["want_margin_sec"] == 5
+    assert rows[1]["usable_lead_sec"] == 120 and rows[1]["want_margin_sec"] == -15

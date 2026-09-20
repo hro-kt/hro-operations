@@ -375,6 +375,54 @@ def _cmd_flow_lead_scan(args) -> int:
     return 0
 
 
+def _cmd_flow_usable(args) -> int:
+    """締切の直前に判断するとき、実際に手元にある最新オッズが何秒前のものかを測る。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, usable_snapshot
+
+    date = args.date or _today()
+    cfg = FlowConfig(source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        rows = usable_snapshot(db, date, cfg, deadline_seconds=args.deadline_seconds,
+                               margin_seconds=args.margin_seconds)
+    finally:
+        db.close()
+    if not rows:
+        print(f"{date}: 対象レースがありません")
+        return 1
+
+    dec = args.deadline_seconds + args.margin_seconds
+    print(f"=== {date} 締切{args.margin_seconds}秒前に判断するとき手元にあるオッズ "
+          f"({args.flow_source}) ===")
+    print(f"  締切=発走{args.deadline_seconds}秒前 / 判断=発走{dec}秒前")
+    print("  場    R  発走   手元の最新   検証と同じスナップ(発走"
+          f"{args.deadline_seconds}秒前)が届いた余裕")
+    ok = 0
+    for r in rows:
+        lead = r["usable_lead_sec"]
+        marg = r["want_margin_sec"]
+        lead_s = f"{lead:5.0f}秒前" if lead is not None else "  なし "
+        if marg is None:
+            marg_s = "届いていない"
+        elif marg >= 0:
+            ok += 1
+            marg_s = f"{marg:5.0f}秒 前に到着 ○"
+        else:
+            marg_s = f"{-marg:5.0f}秒 遅い ✗"
+        print(f"  {_JYO.get(r['jyo_cd'], r['jyo_cd'])} {int(r['race_num']):2d}R "
+              f"{r['hasso_time']}  {lead_s}   {marg_s}")
+    print(f"\n  検証と同じスナップを判断時刻までに使えた: {ok}/{len(rows)}")
+    if ok == len(rows):
+        print("  → 検証どおりの設定(発走60秒前のスナップ)で執行できます。")
+    elif ok == 0:
+        print("  → 締切前には間に合いません。手元の最新(上の列)で信号を作り直す必要があります。")
+    print("  ※ observed_at を上書きしない修正(2026-09-20)より**後**に取り込んだ日でのみ有効")
+    return 0
+
+
 def _cmd_flow_threshold(args) -> int:
     """使う設定(信号源・決定時点)と同じ条件で絶対閾値を取り直す。"""
     from datetime import date as _date, timedelta as _td
@@ -465,6 +513,16 @@ def main(argv: list[str] | None = None) -> int:
                       help="基準の側(検証で使った公式時系列)")
     p_ls.add_argument("--ref-lead", type=int, default=60, help="基準の決定時点(秒)")
     p_ls.set_defaults(func=_cmd_flow_lead_scan)
+
+    p_us = sub.add_parser("flow-usable",
+                          help="締切直前に判断するとき手元にある最新オッズが何秒前のものかを測る")
+    p_us.add_argument("--date", default=None, help="YYYYMMDD(既定 当日)")
+    p_us.add_argument("--deadline-seconds", type=int, default=60,
+                      help="発売締切=発走−これ秒(実測60)")
+    p_us.add_argument("--margin-seconds", type=int, default=10,
+                      help="締切のこれ秒前に判断する(投票所要は実測2秒程度)")
+    p_us.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
+    p_us.set_defaults(func=_cmd_flow_usable)
 
     p_th = sub.add_parser("flow-threshold",
                           help="使う設定(信号源・決定時点)と同じ条件で絶対閾値を取り直す")

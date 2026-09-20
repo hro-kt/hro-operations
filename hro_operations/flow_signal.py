@@ -289,6 +289,65 @@ ORDER BY ra.jyo_cd, ra.race_num
 """
 
 
+_SQL_USABLE = """
+-- 「締切の X 秒前に判断するとき、手元にある最新スナップは何秒前のものか」
+-- observed_at は**最初に手元へ入った時刻**(上書きしない upsert に変更済み)。
+WITH ra AS (
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num, hasso_time,
+         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE year=%(y)s AND month_day=%(m)s AND hasso_time ~ '^[0-9]{4}$'
+    AND jyo_cd IN ('01','02','03','04','05','06','07','08','09','10')
+),
+sn AS (
+  SELECT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num, t.hasso_time,
+         (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS ts,
+         min(t.observed_at) AS seen
+  FROM %(TABLE)s t
+  WHERE t.year=%(y)s AND t.month_day=%(m)s AND t.hasso_time ~ '^[0-9]{8}$'
+  GROUP BY t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num, t.hasso_time
+)
+SELECT ra.jyo_cd, ra.race_num, ra.hasso_time, ra.post,
+       max(sn.ts) FILTER (WHERE sn.seen <= ra.post - make_interval(secs => %(dec)s))
+         AS usable_ts,
+       min(sn.seen) FILTER (WHERE sn.ts = ra.post - make_interval(secs => %(want)s))
+         AS want_seen
+FROM ra
+LEFT JOIN sn USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
+GROUP BY ra.jyo_cd, ra.race_num, ra.hasso_time, ra.post
+ORDER BY ra.jyo_cd, ra.race_num
+"""
+
+
+def usable_snapshot(db, date: str, cfg: FlowConfig, *, deadline_seconds: int = 60,
+                    margin_seconds: int = 10) -> list[dict]:
+    """締切の margin 秒前に判断するとして、そのとき**実際に手元にある**最新スナップを見る。
+
+    判断時刻 = 発走 − (deadline_seconds + margin_seconds)。
+    want_seen は「発走 deadline_seconds 秒前と印の付いたスナップが最初に届いた時刻」で、
+    これが判断時刻より前なら、検証と同じスナップをそのまま使える。
+    """
+    table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
+    sql = _SQL_USABLE.replace("%(TABLE)s", table)
+    dec = deadline_seconds + margin_seconds
+    rows = db.query(sql, {"y": date[:4], "m": date[4:8], "dec": dec, "want": deadline_seconds})
+    out = []
+    for r in rows:
+        post = r["post"]
+        decide_at = post - timedelta(seconds=dec) if post else None
+        out.append({
+            "jyo_cd": r["jyo_cd"], "race_num": r["race_num"], "hasso_time": r["hasso_time"],
+            "usable_lead_sec": ((post - r["usable_ts"]).total_seconds()
+                                if (post and r["usable_ts"]) else None),
+            # 検証と同じスナップが判断時刻までに届いていたか(正なら余裕、負なら間に合わない)
+            "want_margin_sec": ((decide_at - r["want_seen"]).total_seconds()
+                                if (decide_at and r["want_seen"]) else None),
+        })
+    return out
+
+
 def flow_coverage(db, date: str, cfg: FlowConfig) -> list[dict]:
     """開催日の全レースについて、決定時点(T−lead)のオッズが**間に合って**取れているかを見る。
 
