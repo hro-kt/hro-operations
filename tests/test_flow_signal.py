@@ -390,3 +390,19 @@ def test_flow_orders_uses_per_lead_threshold():
     skip = flow_orders(FakeDB(rows), RACE,
                        FlowConfig(thresholds={120: 0.30}), 100, "flow")
     assert skip == []                          # T-180s の閾値が無いので見送り
+
+
+def test_backtest_details_record_the_lead_actually_used():
+    """本数が少ない日は集計値より1点ずつの中身を見たい。実測リードも添える
+    (配信遅れで当日それが手元にあったとは限らないので、突き合わせに要る)。"""
+    from hro_operations.flow_signal import backtest
+
+    rows = [{**_bt_row("R1", "01", "0020", "0030", "180"), "lead1": 120},
+            {**_bt_row("R1", "02", "0070", "0060", None), "lead1": 120},
+            {**_bt_row("R2", "01", "0020", "0030", None), "lead1": 180}]
+    r = backtest(FakeDB(rows), "20260921", "20260921",
+                 FlowConfig(source="sokuho", threshold=0.0), amount=100)
+    det = {d["rid"]: d for d in r["details"]}
+    assert det["R1"]["umaban"] == "01" and det["R1"]["payout"] == 180
+    assert det["R1"]["note"] == "的中" and det["R2"]["note"] == "外れ"
+    assert det["R1"]["lead"] == 120 and det["R2"]["lead"] == 180

@@ -571,6 +571,7 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 _SQL_BT = """
 WITH ra AS (
   SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp AS post,
          to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
                  - make_interval(secs => %(lead)s), 'MMDDHH24MI') AS cut_late,
          to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
@@ -588,7 +589,9 @@ WITH ra AS (
 late AS (
   SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
          t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
-         t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1
+         t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1,
+         EXTRACT(EPOCH FROM (ra.post
+           - to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp))::int AS lead1
   FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
   WHERE t.hasso_time <= ra.cut_late
   ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
@@ -605,7 +608,7 @@ early AS (
 )
 SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ht1, e.ht0, h.pay, se.i_jyo_cd
+       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 -- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
@@ -639,7 +642,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     for r in rows:
         by_race.setdefault(r["rid"], []).append(r)
 
-    bets: list[tuple[str, int, int]] = []      # (rid, 賭け金, 払戻)
+    bets: list[tuple] = []                    # (rid, 賭け金, 払戻, 返還フラグ)
+    details: list[dict] = []                  # 1点ずつの明細(目視確認用)
     n_races = n_scored = n_degenerate = n_refund = 0
     for rid, rs in by_race.items():
         n_races += 1
@@ -662,16 +666,26 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 continue
             # 異常区分 1=出走取消 2=発走除外 3=競走除外 は返還(元金が戻る)。
             # 4=競走中止 5=失格 は出走しているので外れ扱いのままでよい。
+            lead = x.get("lead1")
             if str(x.get("i_jyo_cd") or "").strip() in ("1", "2", "3"):
                 n_refund += 1
                 bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
+                details.append({"rid": rid, "umaban": x["umaban"], "score": score,
+                                "lead": lead, "tan": t1, "fuku": f1,
+                                "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
             payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
             bets.append((rid, amount, payout, False))
+            details.append({"rid": rid, "umaban": x["umaban"], "score": score,
+                            "lead": lead, "tan": t1, "fuku": f1,
+                            "payout": payout, "note": "的中" if payout else "外れ"})
 
-    return summarize_bets(bets, races=n_races, races_scored=n_scored,
-                          races_degenerate=n_degenerate, with_ci=with_ci)
+    rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
+                         races_degenerate=n_degenerate, with_ci=with_ci)
+    rep["details"] = details
+    return rep
+
 
 
 def summarize_bets(bets, *, races: int = 0, races_scored: int = 0,

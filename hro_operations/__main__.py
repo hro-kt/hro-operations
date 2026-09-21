@@ -581,6 +581,16 @@ def _cmd_flow_backtest(args) -> int:
         print(f"    95%CI [{ci['lo']:.3f}, {ci['hi']:.3f}]  "
               f"P(回収率<=1) = {ci['p_le_1']:.3f}")
         print("    ※レース単位のブートストラップ(同一レース内の馬は独立でないため)")
+    if args.show_bets:
+        det = sorted(r.get("details") or [], key=lambda d: (d["rid"], -d["score"]))
+        print(f"\n  --- 購入明細 {len(det)} 点 ---")
+        print("  レース            馬番  スコア   実測    単勝   複勝   払戻  結果")
+        for d in det:
+            lead = f"T-{d['lead']}s" if d.get("lead") is not None else "  -  "
+            print(f"  {d['rid']}  {d['umaban']:>3}  {d['score']:+.4f}  {lead:>7}  "
+                  f"{d['tan']:>6.1f} {d['fuku']:>6.1f} {d['payout']:>6,}  {d['note']}")
+        print("  ※実測=判断に使ったスナップが発走の何秒前か。配信遅れで当日これが"
+              "手元にあったとは限らない(締切前の到着は flow-usable で確認する)")
     print("  ※払戻は確定複勝(パリミュチュエル)。判断時のオッズでは払われない")
     return 0
 
@@ -667,6 +677,8 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
     p_bt.add_argument("--max-odds", type=float, default=None, help="単勝オッズ上限(既定 無し)")
     p_bt.add_argument("--amount", type=int, default=100)
+    p_bt.add_argument("--show-bets", action="store_true",
+                      help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
