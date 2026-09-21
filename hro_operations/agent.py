@@ -253,7 +253,7 @@ def _flow_day_params(a: dict) -> dict:
     if a.get("act_lead_seconds") is not None:
         p["act_lead"] = _int(a.get("act_lead_seconds"), 30)
     else:
-        p["act_lead"] = p["deadline_lead"] + (p["act_before_deadline"] or 30)
+        p["act_lead"] = p["deadline_lead"] + (p["act_before_deadline"] or 10)
 
     # paper は「その設定なら何を選んだか」を記録する計測走行なので止めない(警告のみ)。
     # live は1件も通らないまま開催日を使い切るのが最悪なので、投入時点で落とす。

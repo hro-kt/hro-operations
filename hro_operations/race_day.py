@@ -62,6 +62,9 @@ class DayConfig:
     #   (中山10R 発走15:05 / 締切15:04、阪神10R 発走14:50 / 締切14:49)。
     #   ここを0にすると「まだ買える」と誤判定して締切後に投票しようとする。
     deadline_lead_seconds: int = 60
+    # 判断の何秒前に画面をレース/式別まで進めておくか(preselect)。締切直前に残す
+    # 作業を馬番と金額だけにするための前倒し。live 以外では何も起きない。
+    preselect_lead_seconds: int = 120
     mode: str = MODE_PAPER
     bet_types: tuple[str, ...] = ("place",)
     source: str = "live"  # live=ts_sokuho(本番) / confirmed=nl_o*(過去レースでの検証用)
@@ -455,10 +458,22 @@ def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool,
                 log.info("%s: 締切を %.0fs 超過 skip", race_id, -wait)
                 continue
             if wait > 0 and not no_wait:
+                # ★判断の前に、画面を「そのレースの式別」まで進めておく(preselect)。
+                #   配信遅れで判断は締切ぎりぎりになるので、締切直前に残す作業を
+                #   馬番と金額だけにしておかないと投票が間に合わない。
+                pre = getattr(executor, "preselect", None)
+                if callable(pre):
+                    lead = min(cfg.preselect_lead_seconds, max(0, wait - 5))
+                    if wait > lead:
+                        time.sleep(wait - lead)
+                    log.info("%s: 画面を先に進めます(T-%ds)", race_id, cfg.lead_seconds + lead)
+                    pre(race_id, cfg.bet_types[0] if cfg.bet_types else "place")
+                    wait = (deadline - datetime.now(JST)).total_seconds()
                 log.info("%s: 発走%s の T-%ds(%s)まで %.0fs 待機",
                          race_id, hasso, cfg.lead_seconds,
                          deadline.strftime("%H:%M:%S"), wait)
-                time.sleep(wait)
+                if wait > 0:
+                    time.sleep(wait)
         try:
             process_race(cfg, win_b, place_b, race, executor)
             processed += 1

@@ -12,8 +12,8 @@ def test_flow_day_paper_defaults(monkeypatch):
     cmd, cwd, env = agent._b_flow_day({"date": "20260919"})
     assert cmd == ["bash", "scripts/flow_day.sh"] and cwd.endswith("hro-operations")
     assert env["MODE"] == "paper" and env["FLOW_THRESHOLD"] == "0.2802"
-    # 既定は「締切30秒前に投票開始」= 発走-90s。その時点で存在する最新スナップは 発走-120s。
-    assert env["FLOW_SOURCE"] == "sokuho" and env["LEAD_SECONDS"] == "90"
+    # 既定は「締切10秒前に投票開始」= 発走-70s(preselect で直前の作業を削ったため)。
+    assert env["FLOW_SOURCE"] == "sokuho" and env["LEAD_SECONDS"] == "70"
     assert env["FLOW_LEAD"] == "120"
 
 
@@ -145,3 +145,13 @@ def test_run_odds_poll_interval_is_tunable():
     assert env["ODDS_POLL_INTERVAL_SEC"] == "3.0"
     _, _, env2 = agent._b_run_odds({"date": "20260922", "poll_interval_sec": 2})
     assert env2["ODDS_POLL_INTERVAL_SEC"] == "2.0"
+
+
+def test_vote_starts_10s_before_deadline_by_default(monkeypatch):
+    """★IPAT の事前準備(preselect)で締切直前に残る作業を馬番と金額だけにしたので、
+    投票開始を締切10秒前まで引っ張れる。配信遅れ中央値51秒に対して10秒は大きい
+    (T-120s の入手率が 41%→54% 相当)。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    p = agent._flow_day_params({"date": "20260922"})
+    assert p["act_lead"] == 70 and p["deadline_lead"] == 60
+    assert p["timing_problem"] is None

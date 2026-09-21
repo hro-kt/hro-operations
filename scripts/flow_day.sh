@@ -23,7 +23,7 @@ MODE="${MODE:-paper}"
 ARGS=(--date "$DATE" --strategy flow
       --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-sokuho}"
       --flow-lead-seconds "${FLOW_LEAD:-120}" --flow-minutes "${FLOW_MIN:-6}"
-      --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-90}"
+      --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-70}"
       --deadline-lead-seconds "${DEADLINE_LEAD:-60}"
       --mode "$MODE")
 # リード別の閾値。実測リードに対応する値が無いレースは run-day 側が見送る。
@@ -39,7 +39,7 @@ if [ "$MODE" = "live" ]; then
          --max-amount-per-order "${MAX_PER_ORDER:?}" --max-amount-per-day "${MAX_PER_DAY:?}"
          --ipat-screenshot-dir "$HOME/ipat_shots")
 fi
-ACT="${LEAD_SECONDS:-90}"; DL="${DEADLINE_LEAD:-60}"
+ACT="${LEAD_SECONDS:-70}"; DL="${DEADLINE_LEAD:-60}"
 echo "=== flow day-runner date=$DATE mode=$MODE thr=${FLOW_THRESHOLD:-0.2802} src=${FLOW_SOURCE:-sokuho} 判断=T-${FLOW_LEAD:-120}s 起点=T-${FLOW_MIN:-6}m 投票開始=T-${ACT}s(締切T-${DL}sの$((ACT-DL))秒前) ==="
 cd "$OPS"
 exec poetry run hro-ops run-day "${ARGS[@]}"
