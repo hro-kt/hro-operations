@@ -193,6 +193,27 @@ def _float(v, default: float) -> float:
         return default
 
 
+def _thresholds(raw) -> dict[int, float] | None:
+    """{リード秒: 閾値} を正規化する。UI からは文字列キーで来る。"""
+    if not raw:
+        return None
+    if isinstance(raw, str):
+        import json
+        try:
+            raw = json.loads(raw)
+        except ValueError as e:
+            raise ValueError(f"リード別閾値が JSON ではありません: {e}") from e
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError('リード別閾値は {"120": 0.1631} の形で指定してください')
+    out: dict[int, float] = {}
+    for k, v in raw.items():
+        lead = int(k)
+        if lead % 60:
+            raise ValueError(f"リードは60秒の倍数で指定してください(発表時刻が分格子): {lead}")
+        out[lead] = float(v)
+    return out
+
+
 def _flow_day_params(a: dict) -> dict:
     """UI の flow 設定を解決して1箇所に畳む(VM/Windows のビルダで共用)。
 
@@ -205,6 +226,9 @@ def _flow_day_params(a: dict) -> dict:
     p = {
         "date": d,
         "threshold": _float(a.get("threshold"), 0.2802),
+        # リード別の閾値 {リード秒: 閾値}。これを渡すと、実測リードに対応する値が
+        # 無いレースは**見送る**。「T-120s が間に合ったレースだけ買う」運用はこれで実現する。
+        "thresholds": _thresholds(a.get("thresholds")),
         # 既定は「締切30秒前に投票開始」で実際に使える組。発表時刻は分刻みなので、
         # 発走-90s の時点で存在する最新スナップは 発走-120s のもの。ts(0B41)は
         # 発走近傍が 0/60/360秒しか無く 120 を指定しても 360 に落ちるため sokuho を既定にする。
@@ -240,7 +264,9 @@ def _flow_day_params(a: dict) -> dict:
             raise ValueError("live には 1件上限と1日上限(>0)が必要です")
     # 閾値 0.2802 は (ts / 発走-60s / 6分 / 分位0.95) で取った絶対値。信号源やリードを
     # 変えるとスケールが変わる(ts と sokuho は順位相関 0.993 だが傾き 1.245)。流用不可。
-    if abs(p["threshold"] - 0.2802) < 1e-9 and (p["source"], p["flow_lead"]) != ("ts", 60):
+    if p["thresholds"]:
+        pass                      # リード別に取り直した値を渡しているので警告不要
+    elif abs(p["threshold"] - 0.2802) < 1e-9 and (p["source"], p["flow_lead"]) != ("ts", 60):
         p["threshold_note"] = (
             f"閾値 0.2802 は (ts / 発走-60s) で取った値です。現在の設定 "
             f"({p['source']} / 発走-{p['flow_lead']}s) では取り直しが必要です: "
@@ -279,6 +305,9 @@ def _b_flow_day(a: dict):
         "FLOW_MIN": str(p["flow_min"]), "LEAD_SECONDS": str(p["act_lead"]),
         "FLAT_AMOUNT": str(p["flat_amount"]), "MODE": p["mode"],
     }
+    if p["thresholds"]:
+        import json
+        env["FLOW_THRESHOLDS"] = json.dumps({str(k): v for k, v in p["thresholds"].items()})
     if p["no_wait"]:
         env["NOWAIT"] = "1"
     if p["mode"] == "live":
@@ -303,6 +332,10 @@ def _b_flow_day_windows(a: dict):
            "--flow-lead-seconds", str(p["flow_lead"]), "--flow-minutes", str(p["flow_min"]),
            "--flat-amount", str(p["flat_amount"]), "--lead-seconds", str(p["act_lead"]),
            "--deadline-lead-seconds", str(p["deadline_lead"]), "--mode", p["mode"]]
+    if p["thresholds"]:
+        import json
+        cmd += ["--flow-thresholds",
+                json.dumps({str(k): v for k, v in p["thresholds"].items()})]
     if p["no_wait"]:
         cmd.append("--no-wait")
     if "daily_budget" in p:

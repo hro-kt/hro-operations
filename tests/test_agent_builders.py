@@ -118,3 +118,21 @@ def test_run_odds_limits_scope_so_each_race_is_polled_within_a_minute():
     # UI から広げられること
     wide, _, _ = agent._b_run_odds({"date": "20260921", "within_minutes": 45})
     assert wide[wide.index("--within-minutes") + 1] == "45"
+
+
+def test_flow_day_passes_per_lead_thresholds(monkeypatch):
+    """「T-120s が間に合ったレースだけ買う」= 120 だけ渡す。他のリードは run-day が見送る。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    _, _, env = agent._b_flow_day({"date": "20260926", "thresholds": {"120": 0.1631}})
+    assert env["FLOW_THRESHOLDS"] == '{"120": 0.1631}'
+    cmd, _, _ = agent._b_flow_day_windows({"date": "20260926", "thresholds": {"120": 0.1631}})
+    assert cmd[cmd.index("--flow-thresholds") + 1] == '{"120": 0.1631}'
+
+
+def test_flow_day_rejects_leads_off_the_announcement_grid(monkeypatch):
+    """発表時刻は分格子なので、60の倍数以外のリードは実測され得ない=設定ミス。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    with pytest.raises(ValueError, match="60秒の倍数"):
+        agent._b_flow_day({"date": "20260926", "thresholds": {"117": 0.1}})
+    with pytest.raises(ValueError, match="JSON"):
+        agent._b_flow_day({"date": "20260926", "thresholds": "not json"})

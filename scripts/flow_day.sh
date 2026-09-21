@@ -5,7 +5,8 @@
 #
 # 前提(Windows/JV-Link機で常駐): poetry run hro-synchronizer poll-odds   ※JV-Linkは1台1プロセス
 # 環境変数(agent が UI の設定から渡す):
-#   DATE / FLOW_THRESHOLD / FLOW_SOURCE(sokuho|ts) / FLOW_LEAD(120) / FLOW_MIN(6)
+#   DATE / FLOW_THRESHOLD / FLOW_THRESHOLDS(リード別JSON) / FLOW_SOURCE(sokuho|ts)
+#   FLOW_LEAD(120) / FLOW_MIN(6)
 #     ★発表時刻は分刻みなので使えるリードは60秒の倍数。締切30秒前(発走−90s)に投票を
 #       始めるなら、その時点の最新スナップは 発走−120s。ts(0B41)は発走近傍が 0/60/360秒
 #       しか無く 120 指定でも 360 に落ちるため、既定は sokuho(自前10秒ポーリング)。
@@ -25,6 +26,9 @@ ARGS=(--date "$DATE" --strategy flow
       --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-90}"
       --deadline-lead-seconds "${DEADLINE_LEAD:-60}"
       --mode "$MODE")
+# リード別の閾値。実測リードに対応する値が無いレースは run-day 側が見送る。
+# 「T-120s が間に合ったレースだけ買う」運用はこれで実現する。
+[ -n "${FLOW_THRESHOLDS:-}" ] && ARGS+=(--flow-thresholds "$FLOW_THRESHOLDS")
 [ -n "${NOWAIT:-}" ] && ARGS+=(--no-wait)
 [ -n "${DAILY_BUDGET:-}" ] && ARGS+=(--daily-budget "$DAILY_BUDGET")
 if [ "$MODE" = "live" ]; then
