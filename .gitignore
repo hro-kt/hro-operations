@@ -1,3 +1,7 @@
 .vscode/
 .DS_Store
 __pycache__/
+
+# ローカルの秘密設定(DB/JRDB/IPAT の認証情報)。絶対にコミットしない
+.env
+.env.*
