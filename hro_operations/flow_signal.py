@@ -574,9 +574,14 @@ early AS (
 )
 SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ht1, e.ht0, h.pay
+       l.t1, l.f1, e.t0, l.ht1, e.ht0, h.pay, se.i_jyo_cd
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+-- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
+--   払戻表(nl_hr)には行が立たないので、これを見ないと全損として数えてしまう。
+LEFT JOIN nl_se se
+  ON (se.year,se.month_day,se.jyo_cd,se.kaiji,se.nichiji,se.race_num,se.umaban)
+   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)
 LEFT JOIN nl_hr h
   ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
@@ -604,7 +609,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
         by_race.setdefault(r["rid"], []).append(r)
 
     bets: list[tuple[str, int, int]] = []      # (rid, 賭け金, 払戻)
-    n_races = n_scored = n_degenerate = 0
+    n_races = n_scored = n_degenerate = n_refund = 0
     for rid, rs in by_race.items():
         n_races += 1
         if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
@@ -624,9 +629,15 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 continue
             if max_odds is not None and t1 > max_odds:
                 continue
+            # 異常区分 1=出走取消 2=発走除外 3=競走除外 は返還(元金が戻る)。
+            # 4=競走中止 5=失格 は出走しているので外れ扱いのままでよい。
+            if str(x.get("i_jyo_cd") or "").strip() in ("1", "2", "3"):
+                n_refund += 1
+                bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
+                continue
             pay = x["pay"]
             payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
-            bets.append((rid, amount, payout))
+            bets.append((rid, amount, payout, False))
 
     return summarize_bets(bets, races=n_races, races_scored=n_scored,
                           races_degenerate=n_degenerate, with_ci=with_ci)
@@ -637,12 +648,17 @@ def summarize_bets(bets, *, races: int = 0, races_scored: int = 0,
     """購入明細を集計する。期間を分割して回したときに合算できるよう切り出してある。"""
     staked = sum(b[1] for b in bets)
     returned = sum(b[2] for b in bets)
-    hits = sum(1 for b in bets if b[2] > 0)
+    # 返還は的中ではない。払戻>0 で数えると的中率が水増しされる
+    # (複勝の最低払戻は1.0倍=元金と同額なので、金額では返還と区別できない)。
+    refunds = sum(1 for b in bets if len(b) > 3 and b[3])
+    live = [b for b in bets if not (len(b) > 3 and b[3])]
+    hits = sum(1 for b in live if b[2] > 0)
     return {
         "races": races, "races_scored": races_scored, "races_degenerate": races_degenerate,
         "bets": len(bets), "staked": staked, "returned": returned, "hits": hits,
+        "refunds": refunds,
         "roi": (returned / staked) if staked else None,
-        "hit_rate": (hits / len(bets)) if bets else None,
+        "hit_rate": (hits / len(live)) if live else None,
         "ci": _bootstrap_roi(bets) if with_ci else None,
         "_bets": bets,
     }
@@ -658,8 +674,8 @@ def _bootstrap_roi(bets, n_boot: int = 2000, seed: int = 20260921):
     if not bets:
         return None
     per_race: dict[str, list[tuple[int, int]]] = {}
-    for rid, amt, pay in bets:
-        per_race.setdefault(rid, []).append((amt, pay))
+    for b in bets:                      # (rid, 賭け金, 払戻[, 返還フラグ])
+        per_race.setdefault(b[0], []).append((b[1], b[2]))
     races = list(per_race.values())
     rnd = random.Random(seed)
     rois = []

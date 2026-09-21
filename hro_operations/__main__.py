@@ -529,7 +529,8 @@ def _cmd_flow_backtest(args) -> int:
     if not r["bets"]:
         print("  購入 0 件。閾値が高すぎるか、スナップショットが足りません")
         return 1
-    print(f"  購入: {r['bets']:,} 件 / 的中 {r['hits']:,} ({r['hit_rate']:.1%})")
+    print(f"  購入: {r['bets']:,} 件 / 的中 {r['hits']:,} ({r['hit_rate']:.1%})"
+          + (f" / 返還 {r['refunds']:,}" if r.get("refunds") else ""))
     print(f"  投資 {r['staked']:,}円 → 払戻 {r['returned']:,}円")
     print(f"  ★回収率: {r['roi']:.4f}")
     ci = r["ci"]

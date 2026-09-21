@@ -331,3 +331,22 @@ def test_month_chunks_cover_range_without_gaps_or_overlap():
         assert b < a2
     # 月内に収まる範囲は分割されない
     assert _month_chunks("20260115", "20260120") == [("20260115", "20260120")]
+
+
+def test_backtest_treats_scratched_horses_as_refund_not_loss():
+    """★出走取消/発走除外/競走除外 は**返還**。払戻表に行が立たないので、
+    異常区分を見ないと全損として数えてしまい回収率が不当に下がる。"""
+    from hro_operations.flow_signal import backtest
+
+    rows = [
+        {**_bt_row("R1", "01", "0020", "0030", None), "i_jyo_cd": "1"},   # 出走取消→返還
+        {**_bt_row("R1", "02", "0070", "0060", None), "i_jyo_cd": "0"},
+        {**_bt_row("R2", "01", "0020", "0030", None), "i_jyo_cd": "4"},   # 競走中止→外れ
+        {**_bt_row("R2", "02", "0070", "0060", None), "i_jyo_cd": "0"},
+    ]
+    r = backtest(FakeDB(rows), "20260921", "20260921",
+                 FlowConfig(source="sokuho", threshold=0.0), amount=100)
+    assert r["bets"] == 2 and r["refunds"] == 1
+    assert r["staked"] == 200 and r["returned"] == 100      # 返還100 + 外れ0
+    assert r["hits"] == 0                                   # 返還は的中に数えない
+    assert r["hit_rate"] == 0.0                             # 分母も返還を除く(1件)
