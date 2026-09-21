@@ -137,7 +137,12 @@ def _b_run_odds(a: dict):
     cmd = ["poetry", "run", "hro-synchronizer", "--date", d, "run",
            "--within-minutes", str(_int(a.get("within_minutes"), 20)),
            "--past-minutes", str(_int(a.get("past_minutes"), 5))]
-    return (cmd, os.path.join(_home(), "hro-synchronizer"), {"ODDS_SPEC": "0B30"})
+    # ★取得周期。発表の到着が遅れるほど締切直前の価格を掴めなくなるが、遅れの一部は
+    #   **自分のサンプリング待ち**(平均 周期/2)。対象を20分以内に絞れば1周1秒未満なので
+    #   周期を詰めれば無料で数秒縮まる(2026-09-21 実測: 1周0.7秒/2レース)。
+    env = {"ODDS_SPEC": "0B30",
+           "ODDS_POLL_INTERVAL_SEC": str(_float(a.get("poll_interval_sec"), 3.0))}
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), env)
 
 
 def _b_tyb_poll(a: dict):

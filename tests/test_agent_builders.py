@@ -136,3 +136,12 @@ def test_flow_day_rejects_leads_off_the_announcement_grid(monkeypatch):
         agent._b_flow_day({"date": "20260926", "thresholds": {"117": 0.1}})
     with pytest.raises(ValueError, match="JSON"):
         agent._b_flow_day({"date": "20260926", "thresholds": "not json"})
+
+
+def test_run_odds_poll_interval_is_tunable():
+    """★到着遅れの一部は自分のサンプリング待ち(平均 周期/2)。対象を絞れば1周1秒未満
+    なので、周期を詰めれば無料で数秒縮まる。締切直前の価格を掴めるかに直結する。"""
+    _, _, env = agent._b_run_odds({"date": "20260922"})
+    assert env["ODDS_POLL_INTERVAL_SEC"] == "3.0"
+    _, _, env2 = agent._b_run_odds({"date": "20260922", "poll_interval_sec": 2})
+    assert env2["ODDS_POLL_INTERVAL_SEC"] == "2.0"
