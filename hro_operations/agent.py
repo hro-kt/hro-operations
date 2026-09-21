@@ -126,9 +126,18 @@ def _b_sync_all(a: dict):
 
 
 def _b_run_odds(a: dict):
+    """速報オッズ(0B30)の常駐取得。
+
+    ★within_minutes を絞らないと当日全レースを毎周なめる。1レース約6秒なので
+    24レースで1周82秒(2026-09-21 実測)になり、同じレースを1分に1回も取れない。
+    締切(発走-60秒)の30秒前に 発走-120秒 のスナップを使うには、その直前に
+    そのレースを取れている必要があるため、発走が近いものだけに絞る。
+    """
     d = _ymd(a.get("date"), _today_jst())
-    return (["poetry", "run", "hro-synchronizer", "--date", d, "run"],
-            os.path.join(_home(), "hro-synchronizer"), {"ODDS_SPEC": "0B30"})
+    cmd = ["poetry", "run", "hro-synchronizer", "--date", d, "run",
+           "--within-minutes", str(_int(a.get("within_minutes"), 20)),
+           "--past-minutes", str(_int(a.get("past_minutes"), 5))]
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), {"ODDS_SPEC": "0B30"})
 
 
 def _b_tyb_poll(a: dict):

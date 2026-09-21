@@ -105,3 +105,16 @@ def test_fetch_ts_odds_resident_limits_scope():
 def test_new_kinds_are_registered():
     assert {"flow_day", "flow_check", "import_results", "jrdb_load"} <= set(agent._COMMANDS["vm"])
     assert {"fetch_ts_odds", "env_check"} <= set(agent._COMMANDS["windows"])
+
+
+def test_run_odds_limits_scope_so_each_race_is_polled_within_a_minute():
+    """★絞らないと当日全レースを毎周なめる。2026-09-21 の実測で24レース/1周82秒。
+    締切30秒前に 発走-120秒 のスナップを使うには直前にそのレースを取れている必要がある。"""
+    cmd, cwd, env = agent._b_run_odds({"date": "20260921"})
+    assert cmd[cmd.index("--within-minutes") + 1] == "20"
+    assert cmd[cmd.index("--past-minutes") + 1] == "5"
+    assert env["ODDS_SPEC"] == "0B30"
+    assert cwd.endswith("hro-synchronizer")
+    # UI から広げられること
+    wide, _, _ = agent._b_run_odds({"date": "20260921", "within_minutes": 45})
+    assert wide[wide.index("--within-minutes") + 1] == "45"
