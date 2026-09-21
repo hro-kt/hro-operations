@@ -545,7 +545,7 @@ def _cmd_flow_backtest(args) -> int:
     months = _month_chunks(args.d_from, args.d_to)
     bets: list = []
     details: list = []          # 月ごとに分割するので明細も引き継ぐ
-    races = scored = degen = 0
+    races = scored = degen = unsettled = 0
     db = FeatureDB(load_features_config())
     t0 = time.monotonic()
     try:
@@ -556,6 +556,7 @@ def _cmd_flow_backtest(args) -> int:
             details += part.get("details") or []
             races += part["races"]; scored += part["races_scored"]
             degen += part["races_degenerate"]
+            unsettled += part.get("races_unsettled", 0)
             st = sum(x[1] for x in bets)
             roi = (sum(x[2] for x in bets) / st) if st else 0.0
             print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
@@ -565,13 +566,19 @@ def _cmd_flow_backtest(args) -> int:
         db.close()
     r = summarize_bets(bets, races=races, races_scored=scored, races_degenerate=degen)
     r["details"] = details
+    r["races_unsettled"] = unsettled
 
     print(f"=== flow_tan 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 閾値 {args.flow_threshold:+.4f}"
           + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
     print(f"  レース: {r['races']:,} (スコア可 {r['races_scored']:,} / "
-          f"測れず {r['races_degenerate']:,})")
+          f"測れず {r['races_degenerate']:,}"
+          + (f" / **結果未取込 {r['races_unsettled']:,}**" if r.get("races_unsettled") else "")
+          + ")")
+    if r.get("races_unsettled"):
+        print("  ※結果未取込のレースは集計から除外しています(外れとして数えると回収率が"
+              "0に張り付く)。払戻は開催後に配信されるので sync-all / reparse で取り込んでください")
     if not r["bets"]:
         print("  購入 0 件。閾値が高すぎるか、スナップショットが足りません")
         return 1

@@ -418,3 +418,22 @@ def test_month_chunked_run_keeps_bet_details():
     src = inspect.getsource(m._cmd_flow_backtest)
     assert 'details += part.get("details")' in src
     assert 'r["details"] = details' in src
+
+
+def test_backtest_excludes_races_whose_results_are_not_loaded_yet():
+    """★払戻が1行も無いレースは「未確定」であって「全部外れ」ではない。
+
+    2026-09-21 に実際に起きた: 開催当日は払戻(nl_hr)がまだ配信されていないのに
+    6点すべてを外れとして数え、回収率 0.0000 と表示していた。
+    """
+    from hro_operations.flow_signal import backtest
+
+    settled = [{**_bt_row("R1", "01", "0020", "0030", "180"), "has_payout": True},
+               {**_bt_row("R1", "02", "0070", "0060", None), "has_payout": True}]
+    pending = [{**_bt_row("R2", "01", "0020", "0030", None), "has_payout": False},
+               {**_bt_row("R2", "02", "0070", "0060", None), "has_payout": False}]
+    r = backtest(FakeDB(settled + pending), "20260921", "20260921",
+                 FlowConfig(source="sokuho", threshold=0.0), amount=100)
+    assert r["races_unsettled"] == 1
+    assert r["bets"] == 1 and r["returned"] == 180      # R2 は買ったことにしない
+    assert r["roi"] == 1.8

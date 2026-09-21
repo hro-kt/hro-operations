@@ -608,7 +608,13 @@ early AS (
 )
 SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd
+       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
+       -- ★そのレースの複勝払戻が1行でも存在するか。無い=まだ結果が入っていない。
+       --   これを見ないと「未確定」を「全部外れ」として数えてしまう。
+       EXISTS (SELECT 1 FROM nl_hr h2
+                WHERE (h2.year,h2.month_day,h2.jyo_cd,h2.kaiji,h2.nichiji,h2.race_num)
+                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
+                  AND h2.bet_type = 'fuku') AS has_payout
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 -- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
@@ -644,7 +650,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
 
     bets: list[tuple] = []                    # (rid, 賭け金, 払戻, 返還フラグ)
     details: list[dict] = []                  # 1点ずつの明細(目視確認用)
-    n_races = n_scored = n_degenerate = n_refund = 0
+    n_races = n_scored = n_degenerate = n_refund = n_unsettled = 0
     for rid, rs in by_race.items():
         n_races += 1
         if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
@@ -653,6 +659,10 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
         s1 = sum(1.0 / o for x in rs if (o := _num(x["t1"])))
         s0 = sum(1.0 / o for x in rs if (o := _num(x["t0"])))
         if s1 <= 0 or s0 <= 0:
+            continue
+        # ★払戻が1行も無いレースは「未確定」。外れとして数えると回収率が0に張り付く。
+        if not rs[0].get("has_payout", True):
+            n_unsettled += 1
             continue
         n_scored += 1
         for x in rs:
@@ -684,6 +694,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
                          races_degenerate=n_degenerate, with_ci=with_ci)
     rep["details"] = details
+    rep["races_unsettled"] = n_unsettled
     return rep
 
 
