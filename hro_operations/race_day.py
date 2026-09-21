@@ -80,7 +80,11 @@ class DayConfig:
     ev_lcb_z: float = 0.0             # EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化=勝者の呪い対策
     # flow シグナル運用(モデル非使用)。strategy="flow" で有効化。
     strategy: str = "model"          # model | flow
-    flow_threshold: float = 0.0      # fit 期間の分位から決めた絶対閾値
+    flow_threshold: float = 0.0                          # fit 期間の分位から決めた絶対閾値
+    # ★リード別の閾値。配信遅れで決定時点がレースごとに変わる(2026-09-21 実測:
+    #   T-120s が41%、残りは T-180s)。スコアの尺度もリードで変わるので、単一の閾値だと
+    #   片方でほぼ0件になる。指定すると実測リードに対応する値で判定する。
+    flow_thresholds: dict[int, float] | None = None
     flow_lead_seconds: int = 60      # 決定時点 = 発走 − これ秒(0B41 の格子は T−60s)
     flow_minutes: int = 6            # フロー起点 = 発走 − これ分
     flow_source: str = "ts"          # ts(公式時系列 0B41) | sokuho(自前10秒ポーリング)
@@ -204,6 +208,7 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
         try:
             fc = FlowConfig(lead_seconds=cfg.flow_lead_seconds, flow_minutes=cfg.flow_minutes,
                             threshold=cfg.flow_threshold, source=cfg.flow_source,
+                            thresholds=cfg.flow_thresholds,
                             max_odds=cfg.max_odds or 0.0)
             return None, flow_orders(db, race, fc, cfg.flat_amount,
                                      f"flow@{cfg.flow_source}:{cfg.flow_threshold:+.4f}")

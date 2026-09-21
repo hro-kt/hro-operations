@@ -350,3 +350,43 @@ def test_backtest_treats_scratched_horses_as_refund_not_loss():
     assert r["staked"] == 200 and r["returned"] == 100      # 返還100 + 外れ0
     assert r["hits"] == 0                                   # 返還は的中に数えない
     assert r["hit_rate"] == 0.0                             # 分母も返還を除く(1件)
+
+
+# --------------------------------------------------------------------------- #
+# リード別の閾値(配信遅れで決定時点がレースごとに変わる)
+# --------------------------------------------------------------------------- #
+def _lead_row(um, tan, fuku, which, lead):
+    r = _row(um, tan, fuku, which)
+    r["lead_sec"] = lead
+    return r
+
+
+def test_threshold_is_chosen_by_the_lead_actually_used():
+    """★配信遅れで T-120s になったり T-180s になったりする(2026-09-21 実測で41%/59%)。
+    スコアの尺度もリードで変わる(ts@60 比の傾き 0.454 / 0.252)ので、単一の閾値だと
+    片方でほぼ0件になる。しかも**黙って0件**になるのが最悪。"""
+    from hro_operations.flow_signal import threshold_for
+
+    cfg = FlowConfig(thresholds={120: 0.16, 180: 0.08})
+    assert threshold_for(cfg, 120) == 0.16
+    assert threshold_for(cfg, 180) == 0.08
+    # 実測リードは分格子なので 60 の倍数に丸める(117秒→120)
+    assert threshold_for(cfg, 117) == 0.16
+    # 未設定のリードは見送る(近い値を流用すると尺度がずれた閾値で買うことになる)
+    assert threshold_for(cfg, 240) is None
+    # thresholds 未指定なら従来どおり単一閾値
+    assert threshold_for(FlowConfig(threshold=0.2802), 120) == 0.2802
+
+
+def test_flow_orders_uses_per_lead_threshold():
+    rows = [_lead_row("01", "20", "15", "late", 180), _lead_row("02", "30", "20", "late", 180),
+            _lead_row("01", "30", "15", "early", 540), _lead_row("02", "30", "20", "early", 540)]
+    # 01 のスコアは約 +0.18。T-180s の閾値 0.08 なら買うが、T-120s の 0.30 では買わない
+    buy = flow_orders(FakeDB(rows), RACE,
+                      FlowConfig(thresholds={120: 0.30, 180: 0.08}), 100, "flow")
+    assert [o.selection_id for o in buy] == ["01"]
+    assert "@T-180s" in buy[0].reason          # どのリードで判定したか追える
+
+    skip = flow_orders(FakeDB(rows), RACE,
+                       FlowConfig(thresholds={120: 0.30}), 100, "flow")
+    assert skip == []                          # T-180s の閾値が無いので見送り

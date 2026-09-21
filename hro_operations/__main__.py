@@ -102,6 +102,10 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                         "(検証 ROI 1.174 P(ROI<=1)=0.001 8/8ヶ月, docs/2026-09_flow_signal.md)")
     p.add_argument("--flow-threshold", type=float, default=0.0,
                    help="flow スコアの絶対閾値(fit 期間の分位から決めた値)")
+    p.add_argument("--flow-thresholds", default=None,
+                   help='リード別の閾値 JSON 例 \'{"120":0.1631,"180":0.08}\'。'
+                        "配信遅れで決定時点がレースごとに変わるため、実際に使った"
+                        "スナップのリードに対応する閾値で判定する(未設定のリードは見送り)")
     p.add_argument("--flow-lead-seconds", type=int, default=60,
                    help="決定時点=発走−これ秒(既定60。0B41 のスナップショット格子に合わせる)")
     p.add_argument("--flow-minutes", type=int, default=6, help="フロー起点=発走−これ分")
@@ -171,6 +175,7 @@ def _cfg(args):
         plans=plans,
         strategy=args.strategy,
         flow_threshold=args.flow_threshold,
+        flow_thresholds=_parse_thresholds(args.flow_thresholds),
         flow_lead_seconds=args.flow_lead_seconds,
         flow_minutes=args.flow_minutes,
         flow_source=args.flow_source,
@@ -183,6 +188,20 @@ def _cfg(args):
         max_amount_per_day=args.max_amount_per_day,
         max_amount_per_race=args.max_amount_per_race,
     )
+
+
+def _parse_thresholds(raw: str | None) -> dict[int, float] | None:
+    """--flow-thresholds の JSON を {リード秒: 閾値} に。キーは文字列でも受ける。"""
+    if not raw:
+        return None
+    import json
+    try:
+        d = json.loads(raw)
+    except ValueError as e:
+        raise SystemExit(f"--flow-thresholds が JSON ではありません: {e}") from e
+    if not isinstance(d, dict) or not d:
+        raise SystemExit("--flow-thresholds は {\"リード秒\": 閾値} の形で指定してください")
+    return {int(k): float(v) for k, v in d.items()}
 
 
 def _cmd_run_day(args) -> int:
@@ -435,8 +454,8 @@ def _cmd_flow_threshold(args) -> int:
 
     d0 = _date(int(args.d_from[:4]), int(args.d_from[4:6]), int(args.d_from[6:8]))
     d1 = _date(int(args.d_to[:4]), int(args.d_to[4:6]), int(args.d_to[6:8]))
-    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
-                     source=args.flow_source)
+    leads = ([int(x) for x in args.leads.split(",") if x.strip()]
+             if args.leads else [args.flow_lead_seconds])
     db = FeatureDB(load_features_config())
     try:
         races = []
@@ -447,9 +466,33 @@ def _cmd_flow_threshold(args) -> int:
         if not races:
             print(f"{args.d_from}〜{args.d_to}: 対象レースがありません")
             return 1
-        res = threshold_from(db, races, cfg, args.quantile)
+        results = []
+        for lead in leads:
+            cfg = FlowConfig(lead_seconds=lead, flow_minutes=args.flow_minutes,
+                             source=args.flow_source)
+            results.append((lead, threshold_from(db, races, cfg, args.quantile)))
     finally:
         db.close()
+
+    if len(results) > 1:
+        import json
+        print(f"=== flow_tan リード別の絶対閾値 ({args.d_from}〜{args.d_to}) ===")
+        print(f"  条件: {args.flow_source} / 起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
+        print("  発走n秒前  レース   本数     閾値   閾値以上")
+        table = {}
+        for lead, r in results:
+            if r["threshold"] is None:
+                print(f"  {lead:>7}秒  スコアを作れず(スナップショット不足)")
+                continue
+            table[lead] = round(r["threshold"], 4)
+            print(f"  {lead:>7}秒  {r['races']:>5}  {r['n']:>6,}  {r['threshold']:+.4f}  "
+                  f"{r['n_above']:>5,} ({r['n_above'] / r['n']:.1%})")
+        print("\n  → run-day / agent にはこの表をそのまま渡す:")
+        print(f"     --flow-thresholds '{json.dumps(table)}'")
+        print("  ※ 配信遅れで決定時点はレースごとに変わる。単一の閾値だと、"
+              "リードが1段ずれただけでほぼ0件になる")
+        return 0
+    res = results[0][1]
 
     if res["threshold"] is None:
         print("スコアを1本も作れませんでした(スナップショット不足)")
@@ -606,6 +649,9 @@ def main(argv: list[str] | None = None) -> int:
     p_th.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
     p_th.add_argument("--quantile", type=float, default=0.95)
     p_th.add_argument("--flow-lead-seconds", type=int, default=120)
+    p_th.add_argument("--leads", default=None,
+                      help="複数のリードをまとめて取る(カンマ区切り, 例 120,180,240)。"
+                           "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
     p_th.add_argument("--flow-minutes", type=int, default=6)
     p_th.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
     p_th.set_defaults(func=_cmd_flow_threshold)

@@ -42,6 +42,11 @@ class FlowConfig:
     threshold: float = 0.0      # スコアの絶対閾値(fit 期間の分位から決めた値)
     source: str = "ts"          # ts | sokuho
     max_odds: float = 0.0       # >0 で複勝オッズ上限(荒れすぎを弾く)
+    # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
+    #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
+    #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
+    #   ほぼ全件、もう片方でほぼ0件になる。**黙って0件**が一番危ないので分けて持つ。
+    thresholds: dict[int, float] | None = None
 
 
 def _logit(x: float, lo: float = 1e-6) -> float:
@@ -67,18 +72,20 @@ snap AS (
 -- PostgreSQL は UNION の**前**に ORDER BY を書けない(構文エラー)。DISTINCT ON は
 -- ORDER BY と組で意味を持つので、枝ごとに CTE へ切り出す。
 late AS (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts,
+         EXTRACT(EPOCH FROM (ra.post - ts))::int AS lead_sec
   FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s)
   ORDER BY umaban, ts DESC
 ),
 early AS (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts,
+         EXTRACT(EPOCH FROM (ra.post - ts))::int AS lead_sec
   FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s)
   ORDER BY umaban, ts DESC
 )
-SELECT umaban, tan_odds, fuku_odds_low, ts, 'late' AS which FROM late
+SELECT umaban, tan_odds, fuku_odds_low, ts, lead_sec, 'late' AS which FROM late
 UNION ALL
-SELECT umaban, tan_odds, fuku_odds_low, ts, 'early' AS which FROM early
+SELECT umaban, tan_odds, fuku_odds_low, ts, lead_sec, 'early' AS which FROM early
 """
 
 _SQL_SOKUHO = """
@@ -101,18 +108,20 @@ snap AS (
 -- PostgreSQL は UNION の**前**に ORDER BY を書けない(構文エラー)。DISTINCT ON は
 -- ORDER BY と組で意味を持つので、枝ごとに CTE へ切り出す。
 late AS (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts,
+         EXTRACT(EPOCH FROM (ra.post - ts))::int AS lead_sec
   FROM snap, ra WHERE ts <= ra.post - make_interval(secs => %(lead)s)
   ORDER BY umaban, ts DESC
 ),
 early AS (
-  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts
+  SELECT DISTINCT ON (umaban) umaban, tan_odds, fuku_odds_low, ts,
+         EXTRACT(EPOCH FROM (ra.post - ts))::int AS lead_sec
   FROM snap, ra WHERE ts <= ra.post - make_interval(mins => %(flow)s)
   ORDER BY umaban, ts DESC
 )
-SELECT umaban, tan_odds, fuku_odds_low, ts, 'late' AS which FROM late
+SELECT umaban, tan_odds, fuku_odds_low, ts, lead_sec, 'late' AS which FROM late
 UNION ALL
-SELECT umaban, tan_odds, fuku_odds_low, ts, 'early' AS which FROM early
+SELECT umaban, tan_odds, fuku_odds_low, ts, lead_sec, 'early' AS which FROM early
 """
 
 
@@ -129,6 +138,19 @@ def _num(v) -> float | None:
     if not s.isdigit() or int(s) <= 0:
         return None
     return int(s) / 10.0
+
+
+def threshold_for(cfg: "FlowConfig", lead_sec: int | None) -> float | None:
+    """実際に使ったリードに対応する閾値。対応が無ければ None(=そのレースは見送る)。
+
+    発表時刻は分格子なので実測リードは 60 の倍数に丸める。未設定のリードで
+    近い値を流用すると尺度がずれた閾値で買うことになるため、あえて見送る。
+    """
+    if not cfg.thresholds:
+        return cfg.threshold
+    if lead_sec is None:
+        return None
+    return cfg.thresholds.get(int(round(lead_sec / 60.0)) * 60)
 
 
 def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
@@ -162,6 +184,7 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
             "score": _logit((1.0 / tl) / s_late) - _logit((1.0 / te) / s_early),
             "fuku_odds": fk, "tan_odds": tl,
             "ts_late": xl["ts"], "ts_early": xe["ts"],
+            "lead_late": xl.get("lead_sec"), "lead_early": xe.get("lead_sec"),
         }
     return out
 
@@ -514,9 +537,17 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
     if not sc:
         log.info("%s: flow スコア算出不可(スナップショット不足)", race_id)
         return []
+    # ★実際に使ったスナップのリードで閾値を選ぶ。配信遅れでレースごとに T-120s に
+    #   なったり T-180s になったりするため、固定の閾値だと片方で全く買わない。
+    lead_used = next(iter(sc.values())).get("lead_late")
+    thr = threshold_for(cfg, lead_used)
+    if thr is None:
+        log.warning("%s: 実測リード T-%ss の閾値が未設定のため見送り(設定: %s)",
+                    race_id, lead_used, sorted(cfg.thresholds or {}))
+        return []
     orders = []
     for um, d in sorted(sc.items(), key=lambda kv: -kv[1]["score"]):
-        if d["score"] < cfg.threshold:
+        if d["score"] < thr:
             continue
         if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
             continue
@@ -526,12 +557,12 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             odds=d["fuku_odds"],
             expected_return=0.0, edge=0.0, kelly_fraction=0.0,
             model_version=model_version,
-            reason=(f"flow_tan={d['score']:+.4f}>={cfg.threshold:+.4f} "
+            reason=(f"flow_tan={d['score']:+.4f}>={thr:+.4f}@T-{lead_used}s "
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
         ))
-    log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, src=%s)",
-             race_id, len(orders), len(sc), cfg.threshold, cfg.source)
+    log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, 実測 T-%ss, src=%s)",
+             race_id, len(orders), len(sc), thr, lead_used, cfg.source)
     return orders
 
 
