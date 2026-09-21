@@ -544,6 +544,7 @@ def _cmd_flow_backtest(args) -> int:
     # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
     months = _month_chunks(args.d_from, args.d_to)
     bets: list = []
+    details: list = []          # 月ごとに分割するので明細も引き継ぐ
     races = scored = degen = 0
     db = FeatureDB(load_features_config())
     t0 = time.monotonic()
@@ -552,6 +553,7 @@ def _cmd_flow_backtest(args) -> int:
             part = backtest(db, a, b, cfg, max_odds=args.max_odds,
                             amount=args.amount, with_ci=False)
             bets += part["_bets"]
+            details += part.get("details") or []
             races += part["races"]; scored += part["races_scored"]
             degen += part["races_degenerate"]
             st = sum(x[1] for x in bets)
@@ -562,6 +564,7 @@ def _cmd_flow_backtest(args) -> int:
     finally:
         db.close()
     r = summarize_bets(bets, races=races, races_scored=scored, races_degenerate=degen)
+    r["details"] = details
 
     print(f"=== flow_tan 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "

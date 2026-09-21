@@ -406,3 +406,15 @@ def test_backtest_details_record_the_lead_actually_used():
     assert det["R1"]["umaban"] == "01" and det["R1"]["payout"] == 180
     assert det["R1"]["note"] == "的中" and det["R2"]["note"] == "外れ"
     assert det["R1"]["lead"] == 120 and det["R2"]["lead"] == 180
+
+
+def test_month_chunked_run_keeps_bet_details():
+    """★CLI は期間を月で割って合算する。明細を引き継がないと、購入件数だけ出て
+    明細が空になる(2026-09-21 に実際に起きた)。"""
+    import inspect
+
+    from hro_operations import __main__ as m
+
+    src = inspect.getsource(m._cmd_flow_backtest)
+    assert 'details += part.get("details")' in src
+    assert 'r["details"] = details' in src
