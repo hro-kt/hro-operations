@@ -502,9 +502,10 @@ def _cmd_flow_threshold(args) -> int:
     print(f"=== flow_tan 絶対閾値 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
+    # ★除外0件でも必ず出す。出さないと「除外後に残った数」なのか「そもそもの母数」なのか
+    #   区別できず、閾値が汚染されているのかどうかを読み間違える(2026-09-22 に読み間違えた)。
     print(f"  対象: {res['races']} レース / {res['n']:,} 本"
-          + (f" (実効窓ズレで除外 {res['races_skewed_window']} レース)"
-             if res.get("races_skewed_window") else ""))
+          f" (実効窓ズレで除外 {res.get('races_skewed_window', 0)} レース)")
     print(f"  閾値: {res['threshold']:+.4f}  (>=閾値 {res['n_above']:,} 本 = "
           f"{res['n_above'] / res['n']:.1%})")
     print(f"\n  → hro-ops run-day --strategy flow --flow-threshold {res['threshold']:.4f} "
