@@ -437,3 +437,18 @@ def test_backtest_excludes_races_whose_results_are_not_loaded_yet():
     assert r["races_unsettled"] == 1
     assert r["bets"] == 1 and r["returned"] == 180      # R2 は買ったことにしない
     assert r["roi"] == 1.8
+
+
+def test_race_day_imports_without_the_model_stack():
+    """★flow はモデルを使わないのに race_day が冒頭で hro_backtest(LightGBM)を
+    読み込んでいたため、モデル一式を入れていない機械(IPAT を叩く Windows)で
+    ModuleNotFoundError になり、model-free のはずの戦略が動かせなかった。"""
+    import inspect
+
+    from hro_operations import race_day
+
+    src = inspect.getsource(race_day)
+    head = src[:src.index("def ")]
+    assert "from hro_backtest import harness" not in head, "冒頭で読んではいけない"
+    # 使う場所では遅延 import されていること
+    assert src.count("from hro_backtest import harness") == 2

@@ -23,7 +23,10 @@ from hro_optimizer.config import BettingConfig, KellyConfig, SimConfig
 from hro_optimizer.db import connect as opt_connect
 from hro_moneymanager.config import MoneyManagerConfig
 
-from hro_backtest import harness
+# ★hro_backtest は LightGBM(hro-predictor)を引き込む重い依存。flow 戦略はモデルを
+#   一切使わないので、モジュール冒頭で読むとモデル用の一式が無い機械(IPAT を叩く
+#   Windows 等)で ImportError になり、model-free のはずの戦略が動かせない。
+#   実際に使うモデル分岐の中で遅延 import する。
 
 from hro_buyer.config import BuyerConfig
 from hro_buyer.models import COMMITTED_STATUSES, MODE_LIVE, MODE_PAPER
@@ -217,6 +220,8 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
                                      f"flow@{cfg.flow_source}:{cfg.flow_threshold:+.4f}")
         finally:
             db.close()
+    from hro_backtest import harness          # モデル戦略のみ(LightGBM を引き込む)
+
     db = FeatureDB(load_features_config())
     conn = opt_connect()
     try:
@@ -402,6 +407,7 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     check_timing(cfg)
     win_b = place_b = None
     if cfg.strategy != "flow":        # flow はモデルを使わない
+        from hro_backtest import harness      # モデル戦略のみ(LightGBM を引き込む)
         win_b, place_b = harness.load_models(cfg.win_model, cfg.place_model)
     db = FeatureDB(load_features_config())
     try:

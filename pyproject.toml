@@ -8,12 +8,23 @@ packages = [{ include = "hro_operations" }]
 
 [tool.poetry.dependencies]
 python = ">=3.10,<3.13"
-# per-race E2E ドライバ(能力値→PL→資金配分)とモデル/特徴/最適化/資金管理を推移的に取り込む
-hro-backtest = { path = "../hro-backtest", develop = true }
+# DB接続(FeatureDB)。flow / model のどちらでも使う直接依存。
+# ★以前は hro-backtest→hro-predictor 経由の間接依存だったため、モデル一式を入れない
+#   機械(IPAT を叩く Windows)で ModuleNotFoundError になった。直接 import しているので
+#   直接宣言する。
+hro-features = { path = "../hro-features", develop = true }
+# per-race E2E ドライバ(能力値→PL→資金配分)。**モデル戦略のみ**で必要。
+# LightGBM を引き込むので、flow(model-free)しか回さない機械では入れない。
+#   モデルも使う場合: poetry install -E model
+hro-backtest = { path = "../hro-backtest", develop = true, optional = true }
 # paper 実行(締切/発売可否/実行直前ガード)と決済
 hro-buyer = { path = "../hro-buyer", develop = true }
 # DB接続の実依存。agent(ops_jobキュー)/day-runner とも常時使うため必須。
 psycopg = { version = ">=3.1", extras = ["binary"] }
+
+[tool.poetry.extras]
+# モデル戦略(LightGBM)を使うとき。flow だけなら不要。
+model = ["hro-backtest"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
