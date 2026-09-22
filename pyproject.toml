@@ -21,10 +21,16 @@ hro-backtest = { path = "../hro-backtest", develop = true, optional = true }
 hro-buyer = { path = "../hro-buyer", develop = true }
 # DB接続の実依存。agent(ops_jobキュー)/day-runner とも常時使うため必須。
 psycopg = { version = ">=3.1", extras = ["binary"] }
+# ★live(IPAT 実投票)は run-day と同じプロセスでブラウザを動かすので、hro-buyer の
+#   extras ではなく**この venv に**playwright が要る(hro-buyer 側に入れても届かない)。
+#   live を回す機械だけ: poetry install -E live
+playwright = { version = ">=1.40", optional = true }
 
 [tool.poetry.extras]
 # モデル戦略(LightGBM)を使うとき。flow だけなら不要。
 model = ["hro-backtest"]
+# IPAT 実投票(ブラウザ自動操作)を行う機械。paper だけなら不要。
+live = ["playwright"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.0"
