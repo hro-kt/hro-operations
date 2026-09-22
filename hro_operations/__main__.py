@@ -609,6 +609,43 @@ def _cmd_flow_backtest(args) -> int:
     return 0
 
 
+def _cmd_netkeiba_compare(args) -> int:
+    """netkeiba の秒単位の動きが本物か(公式の分更新の補間でないか)を判定する。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import netkeiba_compare
+
+    db = FeatureDB(load_features_config())
+    try:
+        rows = netkeiba_compare(db, args.date)
+    finally:
+        db.close()
+    if not rows:
+        print(f"{args.date}: 突き合わせられる行がありません"
+              "(netkeiba 収集と速報ポーリングの両方が同じ分で必要)")
+        return 1
+
+    n = sum(r["n"] for r in rows)
+    agree = sum(r["agree"] for r in rows)
+    multi = sum(1 for r in rows if (r["nk_values"] or 0) > 1)
+    print(f"=== {args.date} netkeiba × 公式速報 ===")
+    print(f"  突合: {n:,} 点 / 値が一致 {agree:,} ({agree / n:.1%})")
+    print(f"  発表分ごとの標本: {len(rows):,} / うち netkeiba が分内で動いた {multi:,} "
+          f"({multi / len(rows):.1%})")
+    print("\n  場  R  発表時刻  突合  nk値数 公式値数  一致   最初〜最後")
+    for r in rows[:40]:
+        print(f"  {r['jyo_cd']} {r['race_num']}  {r['minute_key']}  {r['n']:>4} "
+              f"{r['nk_values']:>6} {r['jv_values']:>7}  {r['agree']:>4}   "
+              f"{r['first_at']}〜{r['last_at']}")
+    print("\n  読み方:")
+    print("   一致率が高い          → 同じプールを見ている(信用できる)")
+    print("   nk値数が 1 のまま      → 分内では動いていない(公式と同じ粒度。足す意味なし)")
+    print("   nk値数が 2 以上        → 分の途中でも動いている(netkeiba の方が細かい)")
+    print("   一致率が低い          → 別物を見ている。補間か予想オッズを掴んでいる疑い")
+    return 0
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -694,6 +731,11 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_nk = sub.add_parser("netkeiba-compare",
+                          help="netkeiba と公式速報を突き合わせ、秒単位の動きが本物か見る")
+    p_nk.add_argument("--date", required=True, help="YYYYMMDD")
+    p_nk.set_defaults(func=_cmd_netkeiba_compare)
 
     p_list = sub.add_parser("list", help="当日レースと締切を一覧(発注しない)")
     _add_common(p_list)

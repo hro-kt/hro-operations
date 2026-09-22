@@ -777,3 +777,52 @@ def _bootstrap_roi(bets, n_boot: int = 2000, seed: int = 20260921):
     rois.sort()
     return {"lo": rois[int(0.025 * len(rois))], "hi": rois[int(0.975 * len(rois))],
             "p_le_1": sum(1 for r in rois if r <= 1.0) / len(rois)}
+
+
+# --- netkeiba と JV-Link(速報)の突き合わせ -------------------------------- #
+# ★秒単位に見える動きが「本物の票数由来」か「公式の分更新を補間しているだけ」かを
+#   判定する。補間なら分境界の間を単調に移動するだけで、新しい情報は無い。
+#   同じ発表時刻の値が一致するか / 分の途中に公式には無い値が出るか、で見分ける。
+_SQL_NK_COMPARE = """
+WITH nk AS (
+  SELECT jyo_cd, race_num, umaban, observed_at, tan_odds,
+         to_char(observed_at AT TIME ZONE 'Asia/Tokyo', 'MMDDHH24MI') AS minute_key
+  FROM ts_netkeiba_o1
+  WHERE year = %(y)s AND month_day = %(m)s
+),
+jv AS (
+  SELECT jyo_cd, race_num, umaban, hasso_time AS minute_key,
+         tan_odds::numeric / 10.0 AS jv_odds
+  FROM ts_sokuho_o1
+  WHERE year = %(y)s AND month_day = %(m)s
+    AND tan_odds ~ '^[0-9]+$' AND tan_odds::numeric > 0
+)
+SELECT nk.jyo_cd, nk.race_num, nk.minute_key,
+       count(*) AS 突合数,
+       count(DISTINCT nk.tan_odds) AS netkeiba値数,
+       count(DISTINCT jv.jv_odds) AS 公式値数,
+       count(*) FILTER (WHERE abs(nk.tan_odds - jv.jv_odds) < 0.051) AS 一致,
+       min(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS 最初,
+       max(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS 最後
+FROM nk JOIN jv
+  ON (jv.jyo_cd, jv.race_num, jv.umaban, jv.minute_key)
+   = (nk.jyo_cd, nk.race_num, nk.umaban, nk.minute_key)
+GROUP BY 1, 2, 3
+ORDER BY 1, 2, 3
+"""
+
+
+def netkeiba_compare(db, date: str) -> list[dict]:
+    """同じ「発表分」の中で netkeiba と公式速報を突き合わせる。
+
+    読み方:
+      - 一致 / 突合数 が高い          → 同じプールを見ている(信用できる)
+      - netkeiba値数 が 1 のまま      → 分内では動いていない(公式と同じ粒度)
+      - netkeiba値数 が 2 以上        → 分の途中でも動いている(こちらが速い)
+    """
+    cols = ["jyo_cd", "race_num", "minute_key", "n", "nk_values", "jv_values",
+            "agree", "first_at", "last_at"]
+    rows = db.query(_SQL_NK_COMPARE, {"y": date[:4], "m": date[4:8]})
+    if rows and isinstance(rows[0], dict):
+        return rows
+    return [dict(zip(cols, r)) for r in rows]

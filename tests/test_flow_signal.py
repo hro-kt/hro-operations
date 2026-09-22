@@ -526,3 +526,22 @@ def test_flow_orders_skips_races_whose_window_differs_from_intent():
     near = [_win_row("01", "20", "15", "late", 120), _win_row("02", "30", "20", "late", 120),
             _win_row("01", "30", "15", "early", 420), _win_row("02", "30", "20", "early", 420)]
     assert [o.selection_id for o in flow_orders(FakeDB(near), RACE, cfg, 100, "flow")] == ["01"]
+
+
+def test_netkeiba_compare_sql_joins_on_the_same_announcement_minute():
+    """★秒単位の動きが本物か(公式の分更新の補間か)を見分けるための突き合わせ。
+
+    同じ「発表分」で両者の値を比べる。補間なら分境界の間を単調に動くだけで、
+    公式には無い値が出ない。一致率と「分内で何種類の値が出たか」で判定する。
+    """
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import _SQL_NK_COMPARE
+
+    pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", _SQL_NK_COMPARE))
+    # 公式は10倍整数、netkeiba は倍。単位を揃えずに比べると全件不一致になる
+    assert "tan_odds::numeric / 10.0" in _SQL_NK_COMPARE
+    # 分キーで結合する(観測時刻そのものでは一致しない)
+    assert "minute_key" in _SQL_NK_COMPARE
