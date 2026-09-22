@@ -564,8 +564,12 @@ def _cmd_flow_backtest(args) -> int:
             unsettled += part.get("races_unsettled", 0)
             st = sum(x[1] for x in bets)
             roi = (sum(x[2] for x in bets) / st) if st else 0.0
+            # ★その月**単体**の回収率も出す。累計だけだと「どの月が沈んでいるか」が
+            #   見えず、安定して1を超えているのかを判断できない(累積から逆算させない)。
+            pst = sum(x[1] for x in part["_bets"])
+            proi = (sum(x[2] for x in part["_bets"]) / pst) if pst else 0.0
             print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
-                  f"購入{part['bets']:>5,}  累計回収率 {roi:.4f}  "
+                  f"購入{part['bets']:>5,}  当月 {proi:.4f}  累計 {roi:.4f}  "
                   f"({time.monotonic() - t0:.0f}s)", flush=True)
     finally:
         db.close()
