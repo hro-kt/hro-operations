@@ -47,6 +47,11 @@ class FlowConfig:
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
     #   ほぼ全件、もう片方でほぼ0件になる。**黙って0件**が一番危ないので分けて持つ。
     thresholds: dict[int, float] | None = None
+    # ★実効窓(起点リード − 決定リード)が意図から何秒ずれるまで許すか。
+    #   格子に穴があると実際の間隔が意図とずれ、窓が長いほどスコアが大きく出る。
+    #   日によって窓が違うと**絶対閾値が比較できない**(2026-09-22: 疎なポーリングの日で
+    #   取った閾値0.1631を、窓が正しく短い日に当てて候補0になった)。
+    window_tolerance_sec: int = 60
 
 
 def _logit(x: float, lo: float = 1e-6) -> float:
@@ -185,6 +190,9 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
             "fuku_odds": fk, "tan_odds": tl,
             "ts_late": xl["ts"], "ts_early": xe["ts"],
             "lead_late": xl.get("lead_sec"), "lead_early": xe.get("lead_sec"),
+            "window_sec": (xe["lead_sec"] - xl["lead_sec"]
+                           if xl.get("lead_sec") is not None and xe.get("lead_sec") is not None
+                           else None),
         }
     return out
 
@@ -513,19 +521,29 @@ def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
     取り直さないと、買う本数が想定から外れる。
     """
     vals: list[float] = []
-    n_races = 0
+    n_races = n_skewed = 0
+    want = cfg.flow_minutes * 60 - cfg.lead_seconds
     for race in races:
         sc = flow_scores(db, race, cfg)
         if not sc:
             continue
+        # ★実効窓がずれたレースは混ぜない。窓が長いほどスコアが大きく出るので、
+        #   スナップが疎な日(ポーリングが遅い日)が混ざると閾値が水増しされ、
+        #   窓が正しい日に当てたとき誰も超えなくなる(2026-09-22 に発生)。
+        got = next(iter(sc.values())).get("window_sec")
+        if got is not None and abs(got - want) > cfg.window_tolerance_sec:
+            n_skewed += 1
+            continue
         n_races += 1
         vals += [d["score"] for d in sc.values()]
     if not vals:
-        return {"threshold": None, "n": 0, "races": 0, "n_above": 0}
+        return {"threshold": None, "n": 0, "races": 0, "n_above": 0,
+                "races_skewed_window": n_skewed}
     vals.sort()
     thr = vals[min(len(vals) - 1, int(len(vals) * quantile))]
     return {"threshold": thr, "n": len(vals), "races": n_races,
-            "n_above": sum(1 for v in vals if v >= thr), "quantile": quantile}
+            "n_above": sum(1 for v in vals if v >= thr), "quantile": quantile,
+            "races_skewed_window": n_skewed}
 
 
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
@@ -539,7 +557,17 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         return []
     # ★実際に使ったスナップのリードで閾値を選ぶ。配信遅れでレースごとに T-120s に
     #   なったり T-180s になったりするため、固定の閾値だと片方で全く買わない。
-    lead_used = next(iter(sc.values())).get("lead_late")
+    first = next(iter(sc.values()))
+    lead_used = first.get("lead_late")
+    # ★実効窓が意図とずれたレースは見送る。窓が違えばスコアの尺度が違い、
+    #   閾値を当てても意味がない(格子の穴で起きる)。
+    want = cfg.flow_minutes * 60 - cfg.lead_seconds
+    got = first.get("window_sec")
+    if got is not None and abs(got - want) > cfg.window_tolerance_sec:
+        log.warning("%s: 実効窓 %ds が想定 %ds から外れているため見送り"
+                    "(決定 T-%ss / 起点 T-%ss)",
+                    race_id, got, want, lead_used, first.get("lead_early"))
+        return []
     thr = threshold_for(cfg, lead_used)
     if thr is None:
         log.warning("%s: 実測リード T-%ss の閾値が未設定のため見送り(設定: %s)",

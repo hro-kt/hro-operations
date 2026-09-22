@@ -494,3 +494,35 @@ def test_check_timing_rejects_voting_after_the_deadline():
 
     with pytest.raises(TimingError, match="締切"):
         check_timing(_day_cfg(flow_lead_seconds=120, lead_seconds=50))
+
+
+# --------------------------------------------------------------------------- #
+# 実効窓(起点リード − 決定リード)の一致
+# --------------------------------------------------------------------------- #
+def _win_row(um, tan, fuku, which, lead):
+    r = _row(um, tan, fuku, which)
+    r["lead_sec"] = lead
+    return r
+
+
+def test_flow_orders_skips_races_whose_window_differs_from_intent():
+    """★格子に穴があると実効窓が意図とずれ、窓が長いほどスコアが大きく出る。
+    日によって窓が違うと絶対閾値が比較できない。
+
+    2026-09-22 の実害: ポーリングが82秒周期だった日(窓が長い)で取った閾値0.1631を、
+    窓が正しく短い日に当てて候補0になった。
+    """
+    cfg = FlowConfig(lead_seconds=120, flow_minutes=6, threshold=0.0)   # 想定窓 240s
+    ok = [_win_row("01", "20", "15", "late", 120), _win_row("02", "30", "20", "late", 120),
+          _win_row("01", "30", "15", "early", 360), _win_row("02", "30", "20", "early", 360)]
+    assert [o.selection_id for o in flow_orders(FakeDB(ok), RACE, cfg, 100, "flow")] == ["01"]
+
+    # 起点が 600s にずれた(実効窓 480s = 想定240s から +240s)→ 見送り
+    skew = [_win_row("01", "20", "15", "late", 120), _win_row("02", "30", "20", "late", 120),
+            _win_row("01", "30", "15", "early", 600), _win_row("02", "30", "20", "early", 600)]
+    assert flow_orders(FakeDB(skew), RACE, cfg, 100, "flow") == []
+
+    # 1格子(60秒)のずれは許容(既定 window_tolerance_sec=60)
+    near = [_win_row("01", "20", "15", "late", 120), _win_row("02", "30", "20", "late", 120),
+            _win_row("01", "30", "15", "early", 420), _win_row("02", "30", "20", "early", 420)]
+    assert [o.selection_id for o in flow_orders(FakeDB(near), RACE, cfg, 100, "flow")] == ["01"]

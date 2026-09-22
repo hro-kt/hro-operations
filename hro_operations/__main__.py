@@ -486,7 +486,9 @@ def _cmd_flow_threshold(args) -> int:
                 continue
             table[lead] = round(r["threshold"], 4)
             print(f"  {lead:>7}秒  {r['races']:>5}  {r['n']:>6,}  {r['threshold']:+.4f}  "
-                  f"{r['n_above']:>5,} ({r['n_above'] / r['n']:.1%})")
+                  f"{r['n_above']:>5,} ({r['n_above'] / r['n']:.1%})"
+                  + (f"  窓ズレ除外{r['races_skewed_window']}"
+                     if r.get("races_skewed_window") else ""))
         print("\n  → run-day / agent にはこの表をそのまま渡す:")
         print(f"     --flow-thresholds '{json.dumps(table)}'")
         print("  ※ 配信遅れで決定時点はレースごとに変わる。単一の閾値だと、"
@@ -500,7 +502,9 @@ def _cmd_flow_threshold(args) -> int:
     print(f"=== flow_tan 絶対閾値 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
-    print(f"  対象: {res['races']} レース / {res['n']:,} 本")
+    print(f"  対象: {res['races']} レース / {res['n']:,} 本"
+          + (f" (実効窓ズレで除外 {res['races_skewed_window']} レース)"
+             if res.get("races_skewed_window") else ""))
     print(f"  閾値: {res['threshold']:+.4f}  (>=閾値 {res['n_above']:,} 本 = "
           f"{res['n_above'] / res['n']:.1%})")
     print(f"\n  → hro-ops run-day --strategy flow --flow-threshold {res['threshold']:.4f} "
