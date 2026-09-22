@@ -414,11 +414,41 @@ def head_to_head(db, d_from: str, d_to: str, mcfg: MoneyConfig, fcfg, *,
         rep["threshold"] = thr
         return rep
 
+    # ★2つの信号が**同じ馬を買っているのか**を見る。的中率が大きく違うのに回収率が
+    #   近いなら別の馬を拾っている。重なりが小さいほど組み合わせる価値がある。
+    def _picks(idx: int) -> tuple[set, float]:
+        vals = sorted(v["score"] for _rid, *sc in kept for v in sc[idx].values())
+        thr = vals[min(len(vals) - 1, int(len(vals) * quantile))] if vals else 0.0
+        return ({(rid, um) for rid, *sc in kept
+                 for um, d in sc[idx].items() if d["score"] >= thr}, thr)
+
+    m_picks, _ = _picks(0)
+    f_picks, _ = _picks(1)
+
+    def _settle(picks: set, label: str) -> dict:
+        bets = []
+        for rid, um in picks:
+            if um in refund.get(rid, ()):
+                bets.append((rid, amount, amount, True))
+                continue
+            pv = pay.get(rid, {}).get(um)
+            bets.append((rid, amount, 0 if pv in (None, "") else
+                         int(round(int(pv) * amount / 100)), False))
+        rep = summarize_bets(bets, races=len(kept), races_scored=len(kept))
+        rep["label"] = label
+        return rep
+
+    both, either = m_picks & f_picks, m_picks | f_picks
     return {"races_seen": n_races, "races_used": len(kept),
             "money_only": n_money_only, "flow_only": n_flow_only,
             "neither": n_neither, "unsettled": n_unsettled,
+            "overlap": len(both), "union": len(either),
             "money": _run(0, f"{mcfg.pool}/{mcfg.weight} T-{mcfg.lead_seconds}s"),
-            "flow": _run(1, f"flow_tan {fcfg.source} T-{fcfg.lead_seconds}s")}
+            "flow": _run(1, f"flow_tan {fcfg.source} T-{fcfg.lead_seconds}s"),
+            "both": _settle(both, "両方が選んだ馬(AND)"),
+            "either": _settle(either, "どちらかが選んだ馬(OR)"),
+            "money_not_flow": _settle(m_picks - f_picks, "馬連のみ"),
+            "flow_not_money": _settle(f_picks - m_picks, "flowのみ")}
 
 
 def _ok(sc: dict, want: int, tol: int) -> dict:

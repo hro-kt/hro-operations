@@ -668,7 +668,18 @@ def _cmd_money_vs_flow(args) -> int:
         print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
               f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
               f"   {ci.get('p_le_1', 0):.3f}")
+    print(f"\n  --- 重なり: 両方 {r['overlap']} / どちらか {r['union']} ---")
+    for k in ("both", "either", "money_not_flow", "flow_not_money"):
+        x = r[k]
+        if not x["bets"]:
+            print(f"  {x['label']:<28} {'0':>5}")
+            continue
+        ci = x.get("ci") or {}
+        print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
+              f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"   {ci.get('p_le_1', 0):.3f}")
     print("\n  ※同じレース・同じ分位・同じ複勝決済。違うのは**信号だけ**。")
+    print("  ※AND は本数が減るぶん CI が広がる。本数と回収率を一緒に見ること。")
     return 0
 
 
