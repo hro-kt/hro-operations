@@ -251,12 +251,14 @@ def backtest(db, d_from: str, d_to: str, cfg: MoneyConfig, *,
                                {"d0": d_from, "d1": d_to})]
     pay: dict[str, dict[str, str]] = {}
     settled: set[str] = set()
+    # ★馬番は必ず2桁に揃えてから突合する。ts_o2 の kumi は '01' 形式だが nl_hr / nl_se の
+    #   側が ' 1' や '1' だと**取りこぼして全部「外れ」になる**(回収率が静かに下振れする)。
     for r in db.query(_SQL_SETTLE, {"d0": d_from, "d1": d_to}):
-        pay.setdefault(r["rid"], {})[r["umaban"]] = r["pay"]
+        pay.setdefault(r["rid"], {})[str(r["umaban"]).strip().zfill(2)] = r["pay"]
         settled.add(r["rid"])
     refund: dict[str, set[str]] = {}
     for r in db.query(_SQL_SCRATCH, {"d0": d_from, "d1": d_to}):
-        refund.setdefault(r["rid"], set()).add(r["umaban"])
+        refund.setdefault(r["rid"], set()).add(str(r["umaban"]).strip().zfill(2))
 
     bets: list[tuple] = []
     details: list[dict] = []

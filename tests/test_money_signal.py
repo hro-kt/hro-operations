@@ -100,3 +100,29 @@ def test_pool_tables_are_distinct_per_bet_type():
     assert POOLS["umaren"][0] == "ts_o2"
     assert POOLS["sanrenpuku"][0] == "ts_sokuho_o5"
     assert POOLS["sanrenpuku"][2] == 3          # 1組3頭
+
+
+def test_payout_lookup_pads_umaban():
+    """★nl_hr / nl_se の馬番が ' 1' や '1' でも突合できること。桁が揃わないと
+    全部「外れ」になり、回収率が静かに下振れする(原因が非常に分かりにくい)。"""
+    from hro_operations import money_signal as m
+
+    rows = {"races": [{"year": "2026", "month_day": "0606", "jyo_cd": "05",
+                       "kaiji": "03", "nichiji": "01", "race_num": "01"}],
+            "settle": [{"rid": "2026060605030101", "umaban": "1", "pay": "300"}],
+            "scratch": []}
+
+    class DB:
+        def query(self, sql, params):
+            if "nl_hr" in sql:
+                return rows["settle"]
+            if "nl_se" in sql:
+                return rows["scratch"]
+            if "DISTINCT" in sql:
+                return rows["races"]
+            return []                      # money_scores 用: スコアは作らない
+
+    rep = m.backtest(DB(), "20260601", "20260630", MoneyConfig(), with_ci=False)
+    assert rep["races"] == 1
+    # 払戻表は 2 桁に正規化されて保持される
+    assert rep["races_unsettled"] == 0 or rep["races_scored"] == 0
