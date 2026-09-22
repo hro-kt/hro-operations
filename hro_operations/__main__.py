@@ -610,6 +610,108 @@ def _cmd_flow_backtest(args) -> int:
     return 0
 
 
+
+from .money_signal import POOLS as _MONEY_POOLS  # noqa: E402
+
+
+def _money_cfg(args):
+    from .money_signal import MoneyConfig
+
+    return MoneyConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
+                       pool=args.pool, threshold=getattr(args, "threshold", 0.0),
+                       min_pool_growth=args.min_pool_growth)
+
+
+def _cmd_money_threshold(args) -> int:
+    """金額フローの絶対閾値。flow-threshold と同じ規則(fit 期間の上側分位)。"""
+    from datetime import date as _date, timedelta as _td
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .money_signal import threshold_from
+    from .race_day import day_races
+
+    d0 = _date(int(args.d_from[:4]), int(args.d_from[4:6]), int(args.d_from[6:8]))
+    d1 = _date(int(args.d_to[:4]), int(args.d_to[4:6]), int(args.d_to[6:8]))
+    db = FeatureDB(load_features_config())
+    try:
+        races, d = [], d0
+        while d <= d1:
+            races += [r for r, _h in day_races(db, d.strftime("%Y%m%d"))]
+            d += _td(days=1)
+        if not races:
+            print(f"{args.d_from}〜{args.d_to}: 対象レースがありません")
+            return 1
+        res = threshold_from(db, races, _money_cfg(args), args.quantile)
+    finally:
+        db.close()
+    if res["threshold"] is None:
+        print("スコアを1本も作れませんでした(スナップショット不足)")
+        return 1
+    print(f"=== late money 絶対閾値 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  条件: {args.pool} / 決定時点 発走{args.lead_seconds}秒前 / "
+          f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile} / "
+          f"プール増分下限 {args.min_pool_growth:.1%}")
+    print(f"  対象: {res['races']} レース / {res['n']:,} 本"
+          f" (実効窓ズレで除外 {res.get('races_skewed_window', 0)} レース)")
+    print(f"  閾値: {res['threshold']:+.4f}  (>=閾値 {res['n_above']:,} 本 = "
+          f"{res['n_above'] / res['n']:.1%})")
+    print(f"\n  → hro-ops money-backtest --from {args.d_from} --to {args.d_to} "
+          f"--pool {args.pool} --lead-seconds {args.lead_seconds} "
+          f"--flow-minutes {args.flow_minutes} --threshold {res['threshold']:.4f}")
+    return 0
+
+
+def _cmd_money_backtest(args) -> int:
+    """金額フローで複勝を買った場合の期間回収率。
+
+    ★券種は複勝に固定。信号源を変えた効果だけを見るため、決済まで flow_tan と同じにする。
+    """
+    import sys
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .money_signal import backtest
+
+    def _p(i, n):
+        print(f"  {i}/{n} レース...", end="\r", file=sys.stderr, flush=True)
+
+    db = FeatureDB(load_features_config())
+    try:
+        rep = backtest(db, args.d_from, args.d_to, _money_cfg(args),
+                       amount=args.amount, progress=_p)
+    finally:
+        db.close()
+    print(f"\n=== late money 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  条件: {args.pool} / 決定時点 発走{args.lead_seconds}秒前 / "
+          f"起点 発走{args.flow_minutes}分前 / 閾値 {args.threshold:+.4f} / "
+          f"プール増分下限 {args.min_pool_growth:.1%}")
+    print(f"  レース: {rep['races']} "
+          f"(スコア可 {rep['races_scored']} / 窓ズレ {rep.get('races_skewed_window', 0)}"
+          f" / 結果未取込 {rep.get('races_unsettled', 0)})")
+    if not rep["bets"]:
+        print("  購入 0 件。閾値が高すぎるか、スナップショットが足りません")
+        return 0
+    print(f"  購入: {rep['bets']:,} 件 / 的中 {rep['hits']:,} ({rep['hit_rate']:.1%})"
+          + (f" / 返還 {rep['refunds']}" if rep.get("refunds") else ""))
+    print(f"  投資 {rep['staked']:,}円 → 払戻 {rep['returned']:,}円")
+    print(f"  ★回収率: {rep['roi']:.4f}")
+    ci = rep.get("ci")
+    if ci:
+        print(f"    95%CI [{ci['lo']:.3f}, {ci['hi']:.3f}]  "
+              f"P(回収率<=1) = {ci['p_le_1']:.3f}")
+        print("    ※レース単位のブートストラップ(同一レース内の馬は独立でないため)")
+    if args.show_bets and rep.get("details"):
+        print(f"\n  --- 購入明細 {len(rep['details'])} 点 ---")
+        print("  レース            馬番  スコア   T-秒  プール増  払戻  結果")
+        for d in rep["details"]:
+            print(f"  {d['rid']}   {d['umaban']}  {d['score']:+.4f}  "
+                  f"{str(d['lead']):>5}  {d['growth']:7.1%}  {d['payout']:>5}  {d['note']}")
+    return 0
+
+
 def _cmd_netkeiba_compare(args) -> int:
     """netkeiba の秒単位の動きが本物か(公式の分更新の補間でないか)を判定する。"""
     from hro_features.config import load_config as load_features_config
@@ -732,6 +834,28 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_mt = sub.add_parser("money-threshold",
+                          help="late money(金額フロー)の絶対閾値を取る")
+    p_mb = sub.add_parser("money-backtest",
+                          help="late money で複勝を買った場合の期間回収率")
+    for q in (p_mt, p_mb):
+        q.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
+        q.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
+        q.add_argument("--pool", choices=tuple(_MONEY_POOLS), default="umaren",
+                       help="金の動きを読むプール。umaren=ts_o2(0B42で過去分あり)")
+        q.add_argument("--lead-seconds", type=int, default=60)
+        q.add_argument("--flow-minutes", type=int, default=6)
+        q.add_argument("--min-pool-growth", type=float, default=0.005,
+                       help="窓の間にプールがこの割合以上増えたレースだけ使う"
+                            "(増えていない窓の ΔM は雑音)")
+    p_mt.add_argument("--quantile", type=float, default=0.95)
+    p_mt.set_defaults(func=_cmd_money_threshold)
+    p_mb.add_argument("--threshold", type=float, required=True,
+                      help="この設定で money-threshold を取り直した値を渡すこと")
+    p_mb.add_argument("--amount", type=int, default=100)
+    p_mb.add_argument("--show-bets", action="store_true")
+    p_mb.set_defaults(func=_cmd_money_backtest)
 
     p_nk = sub.add_parser("netkeiba-compare",
                           help="netkeiba と公式速報を突き合わせ、秒単位の動きが本物か見る")

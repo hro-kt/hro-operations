@@ -26,7 +26,6 @@
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 
 from .flow_signal import _logit, summarize_bets
@@ -208,5 +207,102 @@ def threshold_from(db, races, cfg: MoneyConfig, quantile: float = 0.95) -> dict:
             "races_skewed_window": n_skewed}
 
 
-__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "summarize_bets",
-           "math"]
+# --- 期間バックテスト ------------------------------------------------------- #
+# ★レース一覧と払戻は**期間まとめて1回ずつ**引く。レースごとに往復すると 400 レースで
+#   1600 往復になる。スコア計算だけはレース単位(2スナップを選ぶため)。
+_SQL_RACES = """
+SELECT DISTINCT t.year, t.month_day, t.jyo_cd, t.kaiji, t.nichiji, t.race_num
+FROM {TABLE} t
+JOIN nl_ra ra USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
+WHERE t.year||t.month_day BETWEEN %(d0)s AND %(d1)s
+  AND t.jyo_cd BETWEEN '01' AND '10'          -- ★JRA のみ(地方/海外を混ぜない)
+  AND ra.hasso_time ~ '^[0-9]{4}$'
+ORDER BY 1,2,3,4,5,6
+"""
+
+# 複勝の確定払戻と異常区分。★未確定(行が無い)を「外れ」と数えると回収率が0に張り付く。
+_SQL_SETTLE = """
+SELECT h.year||h.month_day||h.jyo_cd||h.kaiji||h.nichiji||h.race_num AS rid,
+       regexp_replace(h.kumi,'[^0-9]','','g') AS umaban, h.pay
+FROM nl_hr h
+WHERE h.year||h.month_day BETWEEN %(d0)s AND %(d1)s
+  AND h.bet_type = 'fuku'
+"""
+
+_SQL_SCRATCH = """
+SELECT se.year||se.month_day||se.jyo_cd||se.kaiji||se.nichiji||se.race_num AS rid,
+       se.umaban, se.i_jyo_cd
+FROM nl_se se
+WHERE se.year||se.month_day BETWEEN %(d0)s AND %(d1)s
+  AND se.i_jyo_cd IN ('1','2','3')            -- 出走取消/発走除外/競走除外 = 返還
+"""
+
+
+def backtest(db, d_from: str, d_to: str, cfg: MoneyConfig, *,
+             amount: int = 100, with_ci: bool = True, progress=None) -> dict:
+    """金額フローで複勝を買った場合の期間回収率。
+
+    ★券種は複勝に固定する。信号源(馬連の金の動き)を変えた効果だけを見たいので、
+      決済まで flow_tan と同じにしないと比較にならない。
+    """
+    table = POOLS[cfg.pool][0]
+    races = [(r["year"], r["month_day"], r["jyo_cd"], r["kaiji"], r["nichiji"], r["race_num"])
+             for r in db.query(_SQL_RACES.replace("{TABLE}", table),
+                               {"d0": d_from, "d1": d_to})]
+    pay: dict[str, dict[str, str]] = {}
+    settled: set[str] = set()
+    for r in db.query(_SQL_SETTLE, {"d0": d_from, "d1": d_to}):
+        pay.setdefault(r["rid"], {})[r["umaban"]] = r["pay"]
+        settled.add(r["rid"])
+    refund: dict[str, set[str]] = {}
+    for r in db.query(_SQL_SCRATCH, {"d0": d_from, "d1": d_to}):
+        refund.setdefault(r["rid"], set()).add(r["umaban"])
+
+    bets: list[tuple] = []
+    details: list[dict] = []
+    n_races = n_scored = n_skewed = n_unsettled = n_refund = 0
+    want = cfg.flow_minutes * 60 - cfg.lead_seconds
+    for i, race in enumerate(races):
+        if progress is not None and i % 50 == 0:
+            progress(i, len(races))
+        rid = "".join(race)
+        n_races += 1
+        sc = money_scores(db, race, cfg)
+        if not sc:
+            continue
+        got = next(iter(sc.values())).get("window_sec")
+        if got is not None and abs(got - want) > cfg.window_tolerance_sec:
+            n_skewed += 1
+            continue
+        # ★払戻が1行も無いレースは未確定。外れとして数えない。
+        if rid not in settled:
+            n_unsettled += 1
+            continue
+        n_scored += 1
+        for um, d in sorted(sc.items(), key=lambda kv: -kv[1]["score"]):
+            if d["score"] < cfg.threshold:
+                continue
+            if um in refund.get(rid, ()):        # 返還: 元金が戻る(外れではない)
+                n_refund += 1
+                bets.append((rid, amount, amount, True))
+                details.append({"rid": rid, "umaban": um, "score": d["score"],
+                                "lead": d["lead_late"], "growth": d["pool_growth"],
+                                "payout": amount, "note": "返還"})
+                continue
+            p = pay.get(rid, {}).get(um)
+            payout = int(round(int(p) * amount / 100)) if p not in (None, "") else 0
+            bets.append((rid, amount, payout, False))
+            details.append({"rid": rid, "umaban": um, "score": d["score"],
+                            "lead": d["lead_late"], "growth": d["pool_growth"],
+                            "payout": payout, "note": "的中" if payout else "外れ"})
+
+    rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
+                         races_degenerate=n_skewed, with_ci=with_ci)
+    rep["details"] = details
+    rep["races_unsettled"] = n_unsettled
+    rep["races_skewed_window"] = n_skewed
+    rep["refunds"] = n_refund
+    return rep
+
+
+__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "backtest"]
