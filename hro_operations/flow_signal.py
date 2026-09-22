@@ -32,6 +32,10 @@ log = logging.getLogger(__name__)
 _SRC = {
     "ts": ("ts_o1", "hasso_time"),            # 公式時系列(0B41)。発表時刻の格子
     "sokuho": ("ts_sokuho_o1", "hasso_time"),   # 自前10秒ポーリング(0B30)。基準は発表時刻
+    # netkeiba は**実時刻(observed_at)**が基準。分格子ではないのでリードを秒で選べる。
+    # JV-Link は締切(発走-60秒)前に届く発表が T-120s までだが、netkeiba は締切直前まで
+    # 秒単位で動くため、判断時点を発走-70秒付近まで寄せられる。
+    "netkeiba": ("ts_netkeiba_o1", "observed_at"),
 }
 
 
@@ -130,6 +134,52 @@ SELECT umaban, tan_odds, fuku_odds_low, ts, lead_sec, 'early' AS which FROM earl
 """
 
 
+
+# ★netkeiba は単勝しか持たない。複勝(発注する券種)のオッズは JV 側の直近値を添える。
+#   無ければその馬は落とす(BetOrder に odds が要るため)。
+_SQL_NETKEIBA = """
+WITH ra AS (
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+snap AS (
+  SELECT t.umaban, t.tan_odds, t.observed_at AS ts
+  FROM ts_netkeiba_o1 t
+  WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+      = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND t.tan_odds IS NOT NULL AND t.tan_odds > 0
+),
+fk AS (
+  SELECT DISTINCT ON (t.umaban) t.umaban, t.fuku_odds_low
+  FROM ts_sokuho_o1 t
+  WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+      = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND t.hasso_time ~ '^[0-9]{8}$'
+  ORDER BY t.umaban, t.hasso_time DESC
+),
+late AS (
+  SELECT DISTINCT ON (s.umaban) s.umaban, s.tan_odds, s.ts,
+         EXTRACT(EPOCH FROM (ra.post - s.ts))::int AS lead_sec
+  FROM snap s, ra WHERE s.ts <= ra.post - make_interval(secs => %(lead)s)
+  ORDER BY s.umaban, s.ts DESC
+),
+early AS (
+  SELECT DISTINCT ON (s.umaban) s.umaban, s.tan_odds, s.ts,
+         EXTRACT(EPOCH FROM (ra.post - s.ts))::int AS lead_sec
+  FROM snap s, ra WHERE s.ts <= ra.post - make_interval(mins => %(flow)s)
+  ORDER BY s.umaban, s.ts DESC
+)
+SELECT l.umaban, l.tan_odds, fk.fuku_odds_low, l.ts, l.lead_sec, 'late' AS which
+FROM late l LEFT JOIN fk ON fk.umaban = l.umaban
+UNION ALL
+SELECT e.umaban, e.tan_odds, fk.fuku_odds_low, e.ts, e.lead_sec, 'early' AS which
+FROM early e LEFT JOIN fk ON fk.umaban = e.umaban
+"""
+
+
 def _hhmmss(v) -> str:
     """理由文用の時刻表記。ts が NULL や文字列でも落とさない(発注を止めないため)。"""
     try:
@@ -139,10 +189,30 @@ def _hhmmss(v) -> str:
 
 
 def _num(v) -> float | None:
+    """JV-Data のオッズ(10倍の整数文字列)→ 倍率。'0000'/空/'----' は None。"""
     s = (str(v) or "").strip()
     if not s.isdigit() or int(s) <= 0:
         return None
     return int(s) / 10.0
+
+
+def _num_plain(v) -> float | None:
+    """netkeiba のオッズ(NUMERIC、そのままの倍率)→ float。
+
+    ★JV の10倍整数と**同じ関数で読んではいけない**。42.8 を _num に渡すと isdigit が
+      False で None になり、全頭落ちて「スナップショット不足」に見える。
+    """
+    if v is None:
+        return None
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        return None
+    return x if x > 0 else None
+
+
+def _tan_reader(source: str):
+    return _num_plain if source == "netkeiba" else _num
 
 
 def threshold_for(cfg: "FlowConfig", lead_sec: int | None) -> float | None:
@@ -151,6 +221,12 @@ def threshold_for(cfg: "FlowConfig", lead_sec: int | None) -> float | None:
     発表時刻は分格子なので実測リードは 60 の倍数に丸める。未設定のリードで
     近い値を流用すると尺度がずれた閾値で買うことになるため、あえて見送る。
     """
+    if cfg.source == "netkeiba":
+        # ★netkeiba は実時刻基準で、リードは我々が指定した値にほぼ一致する(格子が無い)。
+        #   60秒格子に丸めると存在しないキーを引いて**黙って見送る**ので丸めない。
+        if cfg.thresholds:
+            return cfg.thresholds.get(int(cfg.lead_seconds))
+        return cfg.threshold
     if not cfg.thresholds:
         return cfg.threshold
     if lead_sec is None:
@@ -161,7 +237,10 @@ def threshold_for(cfg: "FlowConfig", lead_sec: int | None) -> float | None:
 def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     """{馬番: {'score','fuku_odds','tan_odds','ts_late','ts_early'}}。取れない馬は含めない。"""
     y, m, j, k, n, r = race
-    sql = _SQL_TS if cfg.source == "ts" else _SQL_SOKUHO
+    sql = {"ts": _SQL_TS, "sokuho": _SQL_SOKUHO, "netkeiba": _SQL_NETKEIBA}.get(cfg.source)
+    if sql is None:
+        raise ValueError(f"不明な flow 信号源: {cfg.source!r} (ts|sokuho|netkeiba)")
+    tan_of = _tan_reader(cfg.source)
     rows = db.query(sql, {"y": y, "m": m, "j": j, "k": k, "n": n, "r": r,
                           "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
     late = {x["umaban"]: x for x in rows if x["which"] == "late"}
@@ -174,14 +253,14 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     t_late, t_early = next(iter(late.values()))["ts"], next(iter(early.values()))["ts"]
     if t_late is not None and t_late == t_early:   # NULL なら判定不能→発注は止めない
         return {}
-    s_late = sum(1.0 / o for x in late.values() if (o := _num(x["tan_odds"])))
-    s_early = sum(1.0 / o for x in early.values() if (o := _num(x["tan_odds"])))
+    s_late = sum(1.0 / o for x in late.values() if (o := tan_of(x["tan_odds"])))
+    s_early = sum(1.0 / o for x in early.values() if (o := tan_of(x["tan_odds"])))
     if s_late <= 0 or s_early <= 0:
         return {}
     out: dict[str, dict] = {}
     for um, xl in late.items():
         xe = early.get(um)
-        tl, te = _num(xl["tan_odds"]), _num(xe["tan_odds"]) if xe else None
+        tl, te = tan_of(xl["tan_odds"]), tan_of(xe["tan_odds"]) if xe else None
         fk = _num(xl["fuku_odds_low"])
         if tl is None or te is None or fk is None:
             continue
@@ -658,6 +737,76 @@ LEFT JOIN nl_hr h
 """
 
 
+
+# ★netkeiba 用。時間軸が **observed_at(実時刻)** なので、分格子前提の _SQL_BT は使えない。
+#   ここを分けずに {TABLE} を差し替えるだけにすると、netkeiba を指定したのに
+#   ts_sokuho_o1 を読んで「別ソースの数字を netkeiba の成績として報告する」ことになる。
+_SQL_BT_NK = """
+WITH ra AS (
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE jyo_cd BETWEEN '01' AND '10'            -- ★JRA のみ(地方/海外を混ぜない)
+    AND year||month_day BETWEEN %(d0)s AND %(d1)s
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+-- 複勝は netkeiba に無いので JV 側の直近値を添える(上限フィルタと明細表示用)
+fk AS (
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.fuku_odds_low AS f1
+  FROM ts_sokuho_o1 t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.hasso_time ~ '^[0-9]{8}$'
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.hasso_time DESC
+),
+late AS (
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t1, t.observed_at AS ht1,
+         EXTRACT(EPOCH FROM (ra.post - t.observed_at))::int AS lead1
+  FROM ts_netkeiba_o1 t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.observed_at <= ra.post - make_interval(secs => %(lead)s)
+    AND t.tan_odds IS NOT NULL AND t.tan_odds > 0
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.observed_at DESC
+),
+early AS (
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t0, t.observed_at AS ht0
+  FROM ts_netkeiba_o1 t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.observed_at <= ra.post - make_interval(mins => %(flow)s)
+    AND t.tan_odds IS NOT NULL AND t.tan_odds > 0
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.observed_at DESC
+)
+SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
+       l.year||l.month_day AS ymd, l.umaban,
+       l.t1, fk.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
+       -- ★そのレースの複勝払戻が1行でも存在するか。無い=まだ結果が入っていない。
+       --   これを見ないと「未確定」を「全部外れ」として数えてしまう。
+       EXISTS (SELECT 1 FROM nl_hr h2
+                WHERE (h2.year,h2.month_day,h2.jyo_cd,h2.kaiji,h2.nichiji,h2.race_num)
+                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
+                  AND h2.bet_type = 'fuku') AS has_payout
+FROM late l
+JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+-- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
+--   払戻表(nl_hr)には行が立たないので、これを見ないと全損として数えてしまう。
+LEFT JOIN nl_se se
+  ON (se.year,se.month_day,se.jyo_cd,se.kaiji,se.nichiji,se.race_num,se.umaban)
+   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)
+LEFT JOIN nl_hr h
+  ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
+   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
+ AND h.bet_type = 'fuku'
+ AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
+LEFT JOIN fk USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+"""
+
+
 def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
              max_odds: float | None = None, amount: int = 100,
              with_ci: bool = True) -> dict:
@@ -667,8 +816,13 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     オッズでは払われない。判断に使うのはスナップのオッズ、決済は必ず確定払戻。
     レース単位でブートストラップして CI を出す(同一レース内の馬は独立でない)。
     """
-    table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
-    sql = _SQL_BT.replace("{TABLE}", table)
+    if cfg.source == "netkeiba":
+        sql = _SQL_BT_NK
+    elif cfg.source in ("ts", "sokuho"):
+        sql = _SQL_BT.replace("{TABLE}", "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1")
+    else:
+        raise ValueError(f"不明な flow 信号源: {cfg.source!r}")
+    tan_of = _tan_reader(cfg.source)
     rows = db.query(sql, {"d0": d_from, "d1": d_to,
                           "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
 
@@ -684,8 +838,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
         if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
             n_degenerate += 1                   # 決定時点と起点が同じスナップ=測れていない
             continue
-        s1 = sum(1.0 / o for x in rs if (o := _num(x["t1"])))
-        s0 = sum(1.0 / o for x in rs if (o := _num(x["t0"])))
+        s1 = sum(1.0 / o for x in rs if (o := tan_of(x["t1"])))
+        s0 = sum(1.0 / o for x in rs if (o := tan_of(x["t0"])))
         if s1 <= 0 or s0 <= 0:
             continue
         # ★払戻が1行も無いレースは「未確定」。外れとして数えると回収率が0に張り付く。
@@ -694,7 +848,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             continue
         n_scored += 1
         for x in rs:
-            t1, t0, f1 = _num(x["t1"]), _num(x["t0"]), _num(x["f1"])
+            # ★複勝(f1)は JV 由来なので常に _num。単勝だけソース別に読む
+            t1, t0, f1 = tan_of(x["t1"]), tan_of(x["t0"]), _num(x["f1"])
             if t1 is None or t0 is None or f1 is None:
                 continue
             score = _logit((1.0 / t1) / s1) - _logit((1.0 / t0) / s0)

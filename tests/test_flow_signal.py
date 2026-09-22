@@ -545,3 +545,64 @@ def test_netkeiba_compare_sql_joins_on_the_same_announcement_minute():
     assert "tan_odds::numeric / 10.0" in _SQL_NK_COMPARE
     # 分キーで結合する(観測時刻そのものでは一致しない)
     assert "minute_key" in _SQL_NK_COMPARE
+
+
+# --- netkeiba を信号源にする(締切直前まで判断時点を寄せるため) --------------- #
+def _nk_row(um, tan, fuku, which, lead):
+    """netkeiba 由来の行。単勝は **NUMERIC のそのままの倍率**(JV の10倍整数ではない)。"""
+    ts = _TS_LATE if which == "late" else _TS_EARLY
+    return {"umaban": um, "tan_odds": tan, "fuku_odds_low": fuku, "ts": ts,
+            "lead_sec": lead, "which": which}
+
+
+def test_netkeiba_odds_are_read_as_plain_multipliers():
+    """★JV は '428'=42.8 の10倍整数、netkeiba は 42.8 そのもの。同じ関数で読むと
+    isdigit が False で全頭 None になり『スナップショット不足』に化ける。"""
+    from hro_operations.flow_signal import _num, _num_plain
+
+    assert _num("428") == 42.8
+    assert _num_plain(42.8) == 42.8
+    assert _num_plain("42.8") == 42.8
+    assert _num_plain(0) is None
+    assert _num_plain(None) is None
+    assert _num("42.8") is None          # 10倍整数として読むと壊れることの明示
+
+
+def test_flow_scores_with_netkeiba_source():
+    from hro_operations.flow_signal import FlowConfig, flow_scores
+
+    # late で 01 が売れて(オッズ低下)、02 が売れ残る
+    rows = [_nk_row("01", 2.0, "0110", "late", 75), _nk_row("02", 6.0, "0220", "late", 75),
+            _nk_row("01", 3.0, "0110", "early", 360), _nk_row("02", 5.0, "0220", "early", 360)]
+    cfg = FlowConfig(source="netkeiba", lead_seconds=75, flow_minutes=6)
+    sc = flow_scores(FakeDB(rows), ("2026", "0926", "06", "04", "08", "11"), cfg)
+    assert set(sc) == {"01", "02"}
+    assert sc["01"]["score"] > 0 > sc["02"]["score"]
+    assert sc["01"]["fuku_odds"] == 11.0          # 複勝は JV 由来(10倍整数)のまま
+    assert sc["01"]["window_sec"] == 285          # 360-75
+
+
+def test_netkeiba_threshold_is_not_snapped_to_the_60s_grid():
+    """★netkeiba は実時刻基準でリードが 75 秒などになる。60秒格子に丸めると
+    存在しないキー(60/120)を引いて**黙って見送る**。"""
+    from hro_operations.flow_signal import FlowConfig, threshold_for
+
+    cfg = FlowConfig(source="netkeiba", lead_seconds=75, thresholds={75: 0.12})
+    assert threshold_for(cfg, 76) == 0.12
+    grid = FlowConfig(source="sokuho", lead_seconds=120, thresholds={120: 0.15})
+    assert threshold_for(grid, 118) == 0.15       # 格子ソースは従来どおり丸める
+
+
+def test_backtest_does_not_silently_read_another_source():
+    """★--flow-source netkeiba で ts_sokuho_o1 を読むと、別ソースの数字を
+    netkeiba の成績として報告することになる。"""
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import _SQL_BT_NK, _SQL_NETKEIBA
+
+    for q in (_SQL_NETKEIBA, _SQL_BT_NK):
+        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", q))
+        assert "ts_netkeiba_o1" in q
+    assert "observed_at" in _SQL_BT_NK and "hasso_time <=" not in _SQL_BT_NK

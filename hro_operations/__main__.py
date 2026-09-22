@@ -109,7 +109,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--flow-lead-seconds", type=int, default=60,
                    help="決定時点=発走−これ秒(既定60。0B41 のスナップショット格子に合わせる)")
     p.add_argument("--flow-minutes", type=int, default=6, help="フロー起点=発走−これ分")
-    p.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts",
+    p.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts",
                    help="ts=公式時系列(0B41, 検証に使った経路) / sokuho=自前10秒ポーリング")
     p.add_argument("--ev-lcb-z", type=float, default=0.0,
                    help="EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化し、推定上振れ組の選別を抑える")
@@ -671,7 +671,7 @@ def main(argv: list[str] | None = None) -> int:
     p_fd.add_argument("--flow-threshold", type=float, default=0.0)
     p_fd.add_argument("--flow-lead-seconds", type=int, default=60)
     p_fd.add_argument("--flow-minutes", type=int, default=6)
-    p_fd.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_fd.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_fd.add_argument("--max-odds", type=float, default=None)
     p_fd.set_defaults(func=_cmd_flow_debug)
 
@@ -688,9 +688,9 @@ def main(argv: list[str] | None = None) -> int:
     p_ls.add_argument("--leads", default="60,75,90,120,180", help="試す決定時点(秒)をカンマ区切り")
     p_ls.add_argument("--flow-minutes", type=int, default=6)
     p_ls.add_argument("--flow-threshold", type=float, default=0.2802)
-    p_ls.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho",
+    p_ls.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho",
                       help="早い時点を測る側。速報(10秒ポーリング)なら締切前の任意時刻が取れる")
-    p_ls.add_argument("--ref-source", choices=("ts", "sokuho"), default="ts",
+    p_ls.add_argument("--ref-source", choices=("ts", "sokuho", "netkeiba"), default="ts",
                       help="基準の側(検証で使った公式時系列)")
     p_ls.add_argument("--ref-lead", type=int, default=60, help="基準の決定時点(秒)")
     p_ls.set_defaults(func=_cmd_flow_lead_scan)
@@ -702,7 +702,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="発売締切=発走−これ秒(実測60)")
     p_us.add_argument("--margin-seconds", type=int, default=10,
                       help="締切のこれ秒前に判断する(投票所要は実測2秒程度)")
-    p_us.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
+    p_us.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho")
     p_us.set_defaults(func=_cmd_flow_usable)
 
     p_th = sub.add_parser("flow-threshold",
@@ -715,7 +715,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="複数のリードをまとめて取る(カンマ区切り, 例 120,180,240)。"
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
     p_th.add_argument("--flow-minutes", type=int, default=6)
-    p_th.add_argument("--flow-source", choices=("ts", "sokuho"), default="sokuho")
+    p_th.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho")
     p_th.set_defaults(func=_cmd_flow_threshold)
 
     p_bt = sub.add_parser("flow-backtest",
@@ -726,7 +726,7 @@ def main(argv: list[str] | None = None) -> int:
                       help="この設定で flow-threshold を取り直した値を渡すこと")
     p_bt.add_argument("--flow-lead-seconds", type=int, default=360)
     p_bt.add_argument("--flow-minutes", type=int, default=11)
-    p_bt.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_bt.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_bt.add_argument("--max-odds", type=float, default=None, help="単勝オッズ上限(既定 無し)")
     p_bt.add_argument("--amount", type=int, default=100)
     p_bt.add_argument("--show-bets", action="store_true",

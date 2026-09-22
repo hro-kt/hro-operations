@@ -93,7 +93,10 @@ class DayConfig:
     flow_thresholds: dict[int, float] | None = None
     flow_lead_seconds: int = 60      # 決定時点 = 発走 − これ秒(0B41 の格子は T−60s)
     flow_minutes: int = 6            # フロー起点 = 発走 − これ分
-    flow_source: str = "ts"          # ts(公式時系列 0B41) | sokuho(自前10秒ポーリング)
+    # ts(公式時系列 0B41) | sokuho(自前ポーリング 0B30) | netkeiba(実時刻・秒単位)
+    # ★netkeiba だけ時間軸が分格子でなく実時刻なので、flow_lead_seconds を秒で細かく
+    #   指定できる(例 75)。JV-Link は配信遅れで T-120s が限界。
+    flow_source: str = "ts"
     # --- live(IPAT 実投票)。mode="live" のとき有効。多重ゲート: confirm_live + 1件/1日上限 + レシピ verified ---
     confirm_live: bool = False
     ipat_recipe: str | None = None      # レシピ JSON(hro-buyer ipat show-recipe の雛形を実画面で調整)

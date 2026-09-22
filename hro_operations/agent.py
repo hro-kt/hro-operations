@@ -237,7 +237,11 @@ def _flow_day_params(a: dict) -> dict:
         # 既定は「締切30秒前に投票開始」で実際に使える組。発表時刻は分刻みなので、
         # 発走-90s の時点で存在する最新スナップは 発走-120s のもの。ts(0B41)は
         # 発走近傍が 0/60/360秒しか無く 120 を指定しても 360 に落ちるため sokuho を既定にする。
-        "source": "ts" if a.get("source") == "ts" else "sokuho",
+        # ★許可された値だけ通し、知らない値は sokuho に落とす。以前は
+        #   `"ts" if ... else "sokuho"` と書いており、netkeiba を指定しても**黙って
+        #   sokuho で走っていた**(別ソースの結果を netkeiba の成績として記録する事故)。
+        "source": (a.get("source") if a.get("source") in ("ts", "sokuho", "netkeiba")
+                   else "sokuho"),
         "flow_lead": _int(a.get("lead_seconds"), 120),
         "flow_min": _int(a.get("flow_minutes"), 6),
         "act_lead": 0,          # 下で締切基準から解決する
