@@ -49,6 +49,11 @@ class MoneyConfig:
     # ★窓の間にプールがほとんど増えていないと ΔM は雑音しか含まない。
     #   増分がプールの何%以上あれば使うか。0 で無効。
     min_pool_growth: float = 0.005
+    # ★何を測るかの切り分け。money=入ってきた金額の配分 / share=シェアの変化。
+    #   share は票数を使わないので**オッズだけで計算できる**(netkeiba から取れる)。
+    #   money が share に勝つなら、勝っている理由はプール総額という追加情報にある。
+    #   share で足りるなら、netkeiba の馬連オッズで締切直前まで寄せられる。
+    weight: str = "money"
 
 
 _SQL = """
@@ -158,11 +163,22 @@ def money_scores(db, race: tuple[str, ...], cfg: MoneyConfig) -> dict[str, dict]
     if cfg.min_pool_growth > 0 and growth < cfg.min_pool_growth:
         return {}
 
-    # ★金は引き出せないので ΔM は本来非負。負は取得の揺らぎなので 0 に丸める。
-    d = {h: max(0.0, m_late.get(h, 0.0) - v) for h, v in m_early.items()}
-    d_total = sum(d.values())
     e_total = sum(m_early.values())
-    if d_total <= 0 or e_total <= 0:
+    l_total = sum(m_late.values())
+    if e_total <= 0 or l_total <= 0:
+        return {}
+    if cfg.weight == "share":
+        # 票数を使わない版。プール総額は Σ に比例して約分されるので、
+        # これは実質「馬連オッズから作った馬ごとの限界シェアの変化」= flow と同じ形。
+        d = {h: m_late.get(h, 0.0) for h in m_early}
+        d_total = l_total
+    elif cfg.weight == "money":
+        # ★金は引き出せないので ΔM は本来非負。負は取得の揺らぎなので 0 に丸める。
+        d = {h: max(0.0, m_late.get(h, 0.0) - v) for h, v in m_early.items()}
+        d_total = sum(d.values())
+    else:
+        raise ValueError(f"不明な weight: {cfg.weight!r} (money|share)")
+    if d_total <= 0:
         return {}
 
     lead_late = late_rows[0].get("lead_sec")

@@ -619,7 +619,7 @@ def _money_cfg(args):
 
     return MoneyConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
                        pool=args.pool, threshold=getattr(args, "threshold", 0.0),
-                       min_pool_growth=args.min_pool_growth)
+                       min_pool_growth=args.min_pool_growth, weight=args.weight)
 
 
 
@@ -677,7 +677,7 @@ def _cmd_money_threshold(args) -> int:
         print("スコアを1本も作れませんでした(スナップショット不足)")
         return 1
     print(f"=== late money 絶対閾値 ({args.d_from}〜{args.d_to}) ===")
-    print(f"  条件: {args.pool} / 決定時点 発走{args.lead_seconds}秒前 / "
+    print(f"  条件: {args.pool}/{args.weight} / 決定時点 発走{args.lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile} / "
           f"プール増分下限 {args.min_pool_growth:.1%}")
     print(f"  対象: {res['races']} レース / {res['n']:,} 本"
@@ -685,7 +685,7 @@ def _cmd_money_threshold(args) -> int:
     print(f"  閾値: {res['threshold']:+.4f}  (>=閾値 {res['n_above']:,} 本 = "
           f"{res['n_above'] / res['n']:.1%})")
     print(f"\n  → hro-ops money-backtest --from {args.d_from} --to {args.d_to} "
-          f"--pool {args.pool} --lead-seconds {args.lead_seconds} "
+          f"--pool {args.pool} --weight {args.weight} --lead-seconds {args.lead_seconds} "
           f"--flow-minutes {args.flow_minutes} --threshold {res['threshold']:.4f}")
     return 0
 
@@ -712,7 +712,7 @@ def _cmd_money_backtest(args) -> int:
     finally:
         db.close()
     print(f"\n=== late money 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
-    print(f"  条件: {args.pool} / 決定時点 発走{args.lead_seconds}秒前 / "
+    print(f"  条件: {args.pool}/{args.weight} / 決定時点 発走{args.lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 閾値 {args.threshold:+.4f} / "
           f"プール増分下限 {args.min_pool_growth:.1%}")
     print(f"  レース: {rep['races']} "
@@ -881,6 +881,9 @@ def main(argv: list[str] | None = None) -> int:
                        help="金の動きを読むプール。umaren=ts_o2(0B42で過去分あり)")
         q.add_argument("--lead-seconds", type=int, default=60)
         q.add_argument("--flow-minutes", type=int, default=6)
+        q.add_argument("--weight", choices=("money", "share"), default="money",
+                       help="money=入ってきた金額の配分(票数が要る) / "
+                            "share=シェアの変化(オッズだけで計算でき netkeiba から取れる)")
         q.add_argument("--min-pool-growth", type=float, default=0.005,
                        help="窓の間にプールがこの割合以上増えたレースだけ使う"
                             "(増えていない窓の ΔM は雑音)")

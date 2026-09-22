@@ -126,3 +126,37 @@ def test_payout_lookup_pads_umaban():
     assert rep["races"] == 1
     # 払戻表は 2 桁に正規化されて保持される
     assert rep["races_unsettled"] == 0 or rep["races_scored"] == 0
+
+
+def test_share_mode_ignores_the_pool_total():
+    """★切り分け用。share はオッズだけで決まる(プール総額に依存しない)ので、
+    netkeiba のように票数を出さない情報源からでも計算できる。
+    money が share に勝つなら、勝っている理由はプール総額という追加情報にある。"""
+    def rows(pool_late):
+        return [_row("0102", "0030", "00000001000", "early", 360),
+                _row("0103", "0030", "00000001000", "early", 360),
+                _row("0203", "0030", "00000001000", "early", 360),
+                _row("0102", "0020", pool_late, "late", 60),
+                _row("0103", "0060", pool_late, "late", 60),
+                _row("0203", "0060", pool_late, "late", 60)]
+
+    key = ("2026", "0816", "07", "04", "02", "11")
+    cfg = MoneyConfig(pool="umaren", weight="share", min_pool_growth=0.0)
+    a = money_scores(FakeDB(rows("00000002000")), key, cfg)
+    b = money_scores(FakeDB(rows("00000009000")), key, cfg)
+    assert {h: round(v["score"], 9) for h, v in a.items()} == \
+           {h: round(v["score"], 9) for h, v in b.items()}
+
+    # money はプールの伸びで変わる(こちらは総額を使っている)
+    mcfg = MoneyConfig(pool="umaren", weight="money", min_pool_growth=0.0)
+    ma = money_scores(FakeDB(rows("00000002000")), key, mcfg)
+    mb = money_scores(FakeDB(rows("00000009000")), key, mcfg)
+    assert ma["01"]["score"] != mb["01"]["score"]
+
+
+def test_unknown_weight_raises():
+    rows = [_row("0102", "0030", "00000001000", "early", 360),
+            _row("0102", "0020", "00000002000", "late", 60)]
+    with pytest.raises(ValueError):
+        money_scores(FakeDB(rows), ("2026", "0816", "07", "04", "02", "11"),
+                     MoneyConfig(weight="でたらめ", min_pool_growth=0.0))
