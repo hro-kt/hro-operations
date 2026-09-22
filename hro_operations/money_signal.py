@@ -307,4 +307,39 @@ def backtest(db, d_from: str, d_to: str, cfg: MoneyConfig, *,
     return rep
 
 
-__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "backtest"]
+# ★発走直前の格子を見る。これを見ないと「lead=120 にしたらスコア可 2/408」のような
+#   潰れ方を、閾値や実装の誤りと取り違える(2026-09-23 に実際に起きた)。
+#   0B42(ts_o2)は T-360s の次が T-60s で、その間にスナップが無い。
+_SQL_GRID = """
+WITH ra AS (
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE year||month_day BETWEEN %(d0)s AND %(d1)s
+    AND jyo_cd BETWEEN '01' AND '10'
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+sn AS (
+  SELECT DISTINCT ra.year||ra.month_day||ra.jyo_cd||ra.kaiji||ra.nichiji||ra.race_num AS rid,
+         EXTRACT(EPOCH FROM (ra.post
+           - (to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp
+              AT TIME ZONE 'Asia/Tokyo')))::int AS lead_sec
+  FROM {TABLE} t JOIN ra USING (year, month_day, jyo_cd, kaiji, nichiji, race_num)
+  WHERE t.hasso_time ~ '^[0-9]{8}$'
+)
+SELECT lead_sec, count(*) AS races
+FROM sn
+WHERE lead_sec BETWEEN 0 AND %(max_lead)s
+GROUP BY lead_sec ORDER BY lead_sec
+"""
+
+
+def snapshot_grid(db, d_from: str, d_to: str, pool: str, max_lead: int = 900) -> list[dict]:
+    """発走 max_lead 秒前までの各リードに、何レースがスナップを持つか。"""
+    table = POOLS[pool][0]
+    return db.query(_SQL_GRID.replace("{TABLE}", table),
+                    {"d0": d_from, "d1": d_to, "max_lead": max_lead})
+
+
+__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "backtest", "snapshot_grid"]

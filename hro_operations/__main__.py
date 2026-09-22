@@ -622,6 +622,33 @@ def _money_cfg(args):
                        min_pool_growth=args.min_pool_growth)
 
 
+
+def _cmd_money_grid(args) -> int:
+    """発走直前のスナップショット格子。どのリードが**そもそも測れるか**を見る。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .money_signal import snapshot_grid
+
+    db = FeatureDB(load_features_config())
+    try:
+        rows = snapshot_grid(db, args.d_from, args.d_to, args.pool, args.max_lead)
+    finally:
+        db.close()
+    if not rows:
+        print("スナップショットがありません")
+        return 1
+    top = max(r["races"] for r in rows)
+    print(f"=== 発走直前の格子 {args.pool} ({args.d_from}〜{args.d_to}) ===")
+    print("  T-秒   レース数")
+    for r in rows:
+        bar = "#" * int(30 * r["races"] / top)
+        print(f"  {r['lead_sec']:>5}  {r['races']:>6}  {bar}")
+    print("\n  ※ 決定時点 T-L と起点 T-F の**両方**に行が要る。間が空いている区間を"
+          "\n    指定すると late と early が同じスナップを指し、そのレースは丸ごと落ちる。")
+    return 0
+
+
 def _cmd_money_threshold(args) -> int:
     """金額フローの絶対閾値。flow-threshold と同じ規則(fit 期間の上側分位)。"""
     from datetime import date as _date, timedelta as _td
@@ -834,6 +861,14 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_mg = sub.add_parser("money-grid",
+                          help="発走直前のスナップショット格子(どのリードが測れるか)")
+    p_mg.add_argument("--from", dest="d_from", required=True)
+    p_mg.add_argument("--to", dest="d_to", required=True)
+    p_mg.add_argument("--pool", choices=tuple(_MONEY_POOLS), default="umaren")
+    p_mg.add_argument("--max-lead", type=int, default=900)
+    p_mg.set_defaults(func=_cmd_money_grid)
 
     p_mt = sub.add_parser("money-threshold",
                           help="late money(金額フロー)の絶対閾値を取る")
