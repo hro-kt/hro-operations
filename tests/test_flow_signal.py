@@ -452,3 +452,45 @@ def test_race_day_imports_without_the_model_stack():
     assert "from hro_backtest import harness" not in head, "冒頭で読んではいけない"
     # 使う場所では遅延 import されていること
     assert src.count("from hro_backtest import harness") == 2
+
+
+# --------------------------------------------------------------------------- #
+# 時刻の整合(リードは「発走の何秒前」= 大きいほど早い)
+# --------------------------------------------------------------------------- #
+def _day_cfg(**kw):
+    from hro_operations.race_day import DayConfig
+
+    base = dict(date="20260922", win_model="", place_model="", results_path="",
+                strategy="flow", deadline_lead_seconds=60)
+    return DayConfig(**{**base, **kw})
+
+
+def test_check_timing_accepts_the_real_operating_configuration():
+    """★実運用の設定 (決定 発走-120s / 投票開始 発走-70s / 締切 発走-60s) を通すこと。
+
+    以前ここを >= で書いており、**正しい設定のほうを弾いていた**(2026-09-22 に
+    live 投入が止まった)。リードは大きいほど早い時刻なので flow_lead > lead > deadline。
+    """
+    from hro_operations.race_day import check_timing
+
+    check_timing(_day_cfg(flow_lead_seconds=120, lead_seconds=70))
+
+
+def test_check_timing_rejects_snapshot_later_than_the_vote():
+    """スナップが投票時刻より後(= まだ存在しない)なら止める。"""
+    import pytest
+
+    from hro_operations.race_day import TimingError, check_timing
+
+    with pytest.raises(TimingError, match="まだ存在しません"):
+        check_timing(_day_cfg(flow_lead_seconds=60, lead_seconds=70))
+
+
+def test_check_timing_rejects_voting_after_the_deadline():
+    """投票開始が締切以降なら、全件が締切超過で捨てられるので止める。"""
+    import pytest
+
+    from hro_operations.race_day import TimingError, check_timing
+
+    with pytest.raises(TimingError, match="締切"):
+        check_timing(_day_cfg(flow_lead_seconds=120, lead_seconds=50))

@@ -392,11 +392,15 @@ def check_timing(cfg: DayConfig) -> None:
             f"--lead-seconds を {cfg.deadline_lead_seconds} より大きくしてください"
             f"(例 {cfg.deadline_lead_seconds + 30})。"
         )
-    if cfg.strategy == "flow" and cfg.flow_lead_seconds >= cfg.lead_seconds:
+    # ★リードは「発走の何秒前か」なので **大きいほど早い時刻**。
+    #   発走-120s(スナップ) → 発走-70s(投票開始) → 発走-60s(締切) の順に起きるので、
+    #   正しい関係は flow_lead > lead > deadline_lead。
+    #   以前ここを >= で書いており、**正しい設定のほうを弾いていた**(2026-09-22 実害)。
+    if cfg.strategy == "flow" and cfg.flow_lead_seconds <= cfg.lead_seconds:
         raise TimingError(
             f"判断に使うスナップショット T-{cfg.flow_lead_seconds}s は、発注時刻 "
-            f"T-{cfg.lead_seconds}s の時点ではまだ存在しません。"
-            f"--flow-lead-seconds > --lead-seconds になるようにしてください"
+            f"T-{cfg.lead_seconds}s にはまだ存在しません(スナップの方が後の時刻)。"
+            f"--flow-lead-seconds を --lead-seconds より大きくしてください"
             f"(締切 T-{cfg.deadline_lead_seconds}s も跨げないので、"
             f"flow-lead > lead > {cfg.deadline_lead_seconds} が必要)。"
         )
