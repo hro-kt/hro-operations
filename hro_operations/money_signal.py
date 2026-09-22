@@ -265,16 +265,9 @@ def backtest(db, d_from: str, d_to: str, cfg: MoneyConfig, *,
     races = [(r["year"], r["month_day"], r["jyo_cd"], r["kaiji"], r["nichiji"], r["race_num"])
              for r in db.query(_SQL_RACES.replace("{TABLE}", table),
                                {"d0": d_from, "d1": d_to})]
-    pay: dict[str, dict[str, str]] = {}
-    settled: set[str] = set()
     # ★馬番は必ず2桁に揃えてから突合する。ts_o2 の kumi は '01' 形式だが nl_hr / nl_se の
     #   側が ' 1' や '1' だと**取りこぼして全部「外れ」になる**(回収率が静かに下振れする)。
-    for r in db.query(_SQL_SETTLE, {"d0": d_from, "d1": d_to}):
-        pay.setdefault(r["rid"], {})[str(r["umaban"]).strip().zfill(2)] = r["pay"]
-        settled.add(r["rid"])
-    refund: dict[str, set[str]] = {}
-    for r in db.query(_SQL_SCRATCH, {"d0": d_from, "d1": d_to}):
-        refund.setdefault(r["rid"], set()).add(str(r["umaban"]).strip().zfill(2))
+    pay, settled, refund = _settlement(db, d_from, d_to)
 
     bets: list[tuple] = []
     details: list[dict] = []
@@ -358,4 +351,94 @@ def snapshot_grid(db, d_from: str, d_to: str, pool: str, max_lead: int = 900) ->
                     {"d0": d_from, "d1": d_to, "max_lead": max_lead})
 
 
-__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "backtest", "snapshot_grid"]
+def head_to_head(db, d_from: str, d_to: str, mcfg: MoneyConfig, fcfg, *,
+                 quantile: float = 0.95, amount: int = 100, progress=None) -> dict:
+    """**同一レース**で馬連の板(money/share)と単勝シェア(flow_tan)を戦わせる。
+
+    ★これを分けずに別々のコマンドの数字を並べると、信号の差とレース構成の差が
+      混ざる(2026-09-23: ts_o2 は391レース・ts_o1 は877レースで、7月が丸ごと
+      欠けていた)。両方がスコアを作れて決済済みのレースだけを土俵にし、
+      閾値も**その土俵の中で**同じ分位から取る(本数を揃えるため)。
+    """
+    from .flow_signal import flow_scores
+
+    table = POOLS[mcfg.pool][0]
+    races = [(r["year"], r["month_day"], r["jyo_cd"], r["kaiji"], r["nichiji"], r["race_num"])
+             for r in db.query(_SQL_RACES.replace("{TABLE}", table),
+                               {"d0": d_from, "d1": d_to})]
+    pay, settled, refund = _settlement(db, d_from, d_to)
+
+    m_want = mcfg.flow_minutes * 60 - mcfg.lead_seconds
+    f_want = fcfg.flow_minutes * 60 - fcfg.lead_seconds
+    kept: list[tuple[str, dict, dict]] = []
+    n_races = n_money_only = n_flow_only = n_neither = n_unsettled = 0
+    for i, race in enumerate(races):
+        if progress is not None and i % 50 == 0:
+            progress(i, len(races))
+        n_races += 1
+        rid = "".join(race)
+        msc = _ok(money_scores(db, race, mcfg), m_want, mcfg.window_tolerance_sec)
+        fsc = _ok(flow_scores(db, race, fcfg), f_want, fcfg.window_tolerance_sec)
+        if not msc and not fsc:
+            n_neither += 1
+            continue
+        if not fsc:
+            n_money_only += 1
+            continue
+        if not msc:
+            n_flow_only += 1
+            continue
+        if rid not in settled:
+            n_unsettled += 1
+            continue
+        kept.append((rid, msc, fsc))
+
+    def _run(idx: int, label: str) -> dict:
+        vals = sorted(v["score"] for _rid, *sc in kept for v in sc[idx].values())
+        if not vals:
+            return {"label": label, "bets": 0, "roi": 0.0, "threshold": None}
+        thr = vals[min(len(vals) - 1, int(len(vals) * quantile))]
+        bets = []
+        for rid, *sc in kept:
+            for um, d in sc[idx].items():
+                if d["score"] < thr:
+                    continue
+                if um in refund.get(rid, ()):
+                    bets.append((rid, amount, amount, True))
+                    continue
+                pv = pay.get(rid, {}).get(um)
+                bets.append((rid, amount, 0 if pv in (None, "") else
+                             int(round(int(pv) * amount / 100)), False))
+        rep = summarize_bets(bets, races=len(kept), races_scored=len(kept))
+        rep["label"] = label
+        rep["threshold"] = thr
+        return rep
+
+    return {"races_seen": n_races, "races_used": len(kept),
+            "money_only": n_money_only, "flow_only": n_flow_only,
+            "neither": n_neither, "unsettled": n_unsettled,
+            "money": _run(0, f"{mcfg.pool}/{mcfg.weight} T-{mcfg.lead_seconds}s"),
+            "flow": _run(1, f"flow_tan {fcfg.source} T-{fcfg.lead_seconds}s")}
+
+
+def _ok(sc: dict, want: int, tol: int) -> dict:
+    """実効窓が意図から外れたレースは使わない(尺度が違うので比較にならない)。"""
+    if not sc:
+        return {}
+    got = next(iter(sc.values())).get("window_sec")
+    return {} if (got is not None and abs(got - want) > tol) else sc
+
+
+def _settlement(db, d_from: str, d_to: str):
+    pay: dict[str, dict[str, str]] = {}
+    settled: set[str] = set()
+    for r in db.query(_SQL_SETTLE, {"d0": d_from, "d1": d_to}):
+        pay.setdefault(r["rid"], {})[str(r["umaban"]).strip().zfill(2)] = r["pay"]
+        settled.add(r["rid"])
+    refund: dict[str, set[str]] = {}
+    for r in db.query(_SQL_SCRATCH, {"d0": d_from, "d1": d_to}):
+        refund.setdefault(r["rid"], set()).add(str(r["umaban"]).strip().zfill(2))
+    return pay, settled, refund
+
+
+__all__ = ["MoneyConfig", "POOLS", "money_scores", "threshold_from", "backtest", "snapshot_grid", "head_to_head"]

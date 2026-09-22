@@ -623,6 +623,55 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_money_vs_flow(args) -> int:
+    """★同一レースで馬連の板と単勝シェアを戦わせる。
+
+    別々のコマンドの数字を並べると、信号の差とレース構成の差が混ざる。
+    """
+    import sys
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig
+    from .money_signal import head_to_head
+
+    def _p(i, n):
+        print(f"  {i}/{n} レース...", end="\r", file=sys.stderr, flush=True)
+
+    fcfg = FlowConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
+                      source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        r = head_to_head(db, args.d_from, args.d_to, _money_cfg(args), fcfg,
+                         quantile=args.quantile, amount=args.amount, progress=_p)
+    finally:
+        db.close()
+    print(f"\n=== 同一レース対決 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  決定時点 発走{args.lead_seconds}秒前 / 起点 発走{args.flow_minutes}分前 / "
+          f"分位 {args.quantile}")
+    print(f"  対象 {r['races_seen']} レース → **両方がスコアを作れて決済済み "
+          f"{r['races_used']} レース**")
+    print(f"    (馬連のみ {r['money_only']} / flowのみ {r['flow_only']} / "
+          f"どちらも不可 {r['neither']} / 未確定 {r['unsettled']})")
+    if not r["races_used"]:
+        print("  共通のレースがありません")
+        return 1
+    print(f"\n  {'信号':<28} {'購入':>5} {'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
+    for k in ("money", "flow"):
+        x = r[k]
+        if not x["bets"]:
+            print(f"  {x['label']:<28} {'0':>5}  (閾値 {x['threshold']})")
+            continue
+        ci = x.get("ci") or {}
+        print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
+              f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"   {ci.get('p_le_1', 0):.3f}")
+    print("\n  ※同じレース・同じ分位・同じ複勝決済。違うのは**信号だけ**。")
+    return 0
+
+
 def _cmd_money_grid(args) -> int:
     """発走直前のスナップショット格子。どのリードが**そもそも測れるか**を見る。"""
     from hro_features.config import load_config as load_features_config
@@ -861,6 +910,20 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_mv = sub.add_parser("money-vs-flow",
+                          help="★同一レースで馬連の板と単勝シェアを比べる")
+    p_mv.add_argument("--from", dest="d_from", required=True)
+    p_mv.add_argument("--to", dest="d_to", required=True)
+    p_mv.add_argument("--pool", choices=tuple(_MONEY_POOLS), default="umaren")
+    p_mv.add_argument("--weight", choices=("money", "share"), default="share")
+    p_mv.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
+    p_mv.add_argument("--lead-seconds", type=int, default=60)
+    p_mv.add_argument("--flow-minutes", type=int, default=6)
+    p_mv.add_argument("--min-pool-growth", type=float, default=0.005)
+    p_mv.add_argument("--quantile", type=float, default=0.95)
+    p_mv.add_argument("--amount", type=int, default=100)
+    p_mv.set_defaults(func=_cmd_money_vs_flow)
 
     p_mg = sub.add_parser("money-grid",
                           help="発走直前のスナップショット格子(どのリードが測れるか)")
