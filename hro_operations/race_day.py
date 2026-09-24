@@ -207,8 +207,12 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
     """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
     戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。
 
-    strategy="flow" のときはモデルを使わず、締切直前の単勝プール資金移動で選ぶ
-    (検証: 複勝 ROI 1.174, P(ROI<=1)=0.001, 8/8ヶ月。docs/2026-09_flow_signal.md)。
+    strategy="flow" のときはモデルを使わず、締切直前の単勝プール資金移動で選ぶ。
+    ★検証(2026-09-25, ts_o1 13か月3,555レース, T-60s, 起点6分前, 上側5%):
+      全期間 2,449件 ROI 1.0768 CI[1.005,1.158] P(<=1)=0.017
+      OOS(閾値 202509-202602 → 検証 202603-202609) 1,584件 ROI 1.0941 P(<=1)=0.025
+      ただし**13か月中5か月がマイナス**(0.91-1.37)。薄いエッジなので1日の結果では判断しない。
+      T-60s は締切ちょうどで JV-Link では買えない。執行は netkeiba で T-75s に寄せる。
     abilities は None を返す(確率を推定しないので prediction_log には残らない)。
     """
     if cfg.strategy == "flow":
@@ -219,8 +223,12 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
                             threshold=cfg.flow_threshold, source=cfg.flow_source,
                             thresholds=cfg.flow_thresholds,
                             max_odds=cfg.max_odds or 0.0)
+            # ★実際に使った閾値を記録に残す。thresholds を使うと flow_threshold は 0.0 の
+            #   ままなので、単一値だけ書くと「どの閾値で買ったのか」が後から分からない。
+            thr_note = (",".join(f"{k}:{v:+.4f}" for k, v in sorted(fc.thresholds.items()))
+                        if fc.thresholds else f"{cfg.flow_threshold:+.4f}")
             return None, flow_orders(db, race, fc, cfg.flat_amount,
-                                     f"flow@{cfg.flow_source}:{cfg.flow_threshold:+.4f}")
+                                     f"flow@{cfg.flow_source}:T-{cfg.flow_lead_seconds}s:{thr_note}")
         finally:
             db.close()
     from hro_backtest import harness          # モデル戦略のみ(LightGBM を引き込む)
@@ -399,6 +407,19 @@ def check_timing(cfg: DayConfig) -> None:
     #   発走-120s(スナップ) → 発走-70s(投票開始) → 発走-60s(締切) の順に起きるので、
     #   正しい関係は flow_lead > lead > deadline_lead。
     #   以前ここを >= で書いており、**正しい設定のほうを弾いていた**(2026-09-22 実害)。
+    # ★閾値が決定時点に対応していないと、全レースで「閾値未設定のため見送り」になり
+    #   **1日走りきって1件も買えない**。走り出す前に落とす(check_timing の存在理由と同じ)。
+    if cfg.strategy == "flow" and cfg.flow_thresholds:
+        want = (int(cfg.flow_lead_seconds) if cfg.flow_source == "netkeiba"
+                else int(round(cfg.flow_lead_seconds / 60.0)) * 60)
+        if want not in cfg.flow_thresholds:
+            raise TimingError(
+                f"決定時点 T-{cfg.flow_lead_seconds}s に対応する閾値がありません"
+                f"(--flow-thresholds のキー: {sorted(cfg.flow_thresholds)})。"
+                f"このままでは全レースが見送りになり、1日走って1件も買えません。"
+                f"キー {want} を追加するか --flow-lead-seconds を合わせてください。"
+                + ("" if cfg.flow_source == "netkeiba" else
+                   " ※netkeiba 以外は発表時刻が分格子なので60秒に丸めたキーで引きます。"))
     if cfg.strategy == "flow" and cfg.flow_lead_seconds <= cfg.lead_seconds:
         raise TimingError(
             f"判断に使うスナップショット T-{cfg.flow_lead_seconds}s は、発注時刻 "
