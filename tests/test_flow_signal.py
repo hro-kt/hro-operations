@@ -606,3 +606,19 @@ def test_backtest_does_not_silently_read_another_source():
         pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", q))
         assert "ts_netkeiba_o1" in q
     assert "observed_at" in _SQL_BT_NK and "hasso_time <=" not in _SQL_BT_NK
+
+
+def test_missing_fuku_odds_is_named_as_the_cause(caplog):
+    """★複勝オッズは常に JV-Link(ts_sokuho_o1)由来。netkeiba は単勝しか出さないので、
+    速報ポーリングが止まると全頭落ちて「スコア算出不可」に見える。
+    原因を名指ししないと、動いている netkeiba 側を触って1日溶かす。"""
+    import logging
+
+    from hro_operations.flow_signal import FlowConfig, flow_scores
+
+    rows = [_nk_row("01", 2.0, None, "late", 75), _nk_row("02", 6.0, None, "late", 75),
+            _nk_row("01", 3.0, None, "early", 360), _nk_row("02", 5.0, None, "early", 360)]
+    cfg = FlowConfig(source="netkeiba", lead_seconds=75, flow_minutes=6)
+    with caplog.at_level(logging.WARNING):
+        assert flow_scores(FakeDB(rows), ("2026", "0926", "06", "04", "08", "11"), cfg) == {}
+    assert "複勝オッズ" in caplog.text and "poll-odds" in caplog.text

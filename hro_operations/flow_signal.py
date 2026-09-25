@@ -258,10 +258,15 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     if s_late <= 0 or s_early <= 0:
         return {}
     out: dict[str, dict] = {}
+    n_no_fuku = 0
     for um, xl in late.items():
         xe = early.get(um)
         tl, te = tan_of(xl["tan_odds"]), tan_of(xe["tan_odds"]) if xe else None
+        # ★複勝オッズは**常に JV-Link 側(ts_sokuho_o1)由来**。netkeiba は単勝しか出さない。
+        #   速報ポーリングが止まっていると全頭ここで落ち、「スコア算出不可」に見える。
         fk = _num(xl["fuku_odds_low"])
+        if fk is None:
+            n_no_fuku += 1
         if tl is None or te is None or fk is None:
             continue
         out[um] = {
@@ -273,6 +278,12 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
                            if xl.get("lead_sec") is not None and xe.get("lead_sec") is not None
                            else None),
         }
+    if not out and n_no_fuku:
+        # ★原因を名指しする。ここを黙って空で返すと「netkeiba が取れていない」と
+        #   誤診して、動いている側を触って1日溶かす。
+        log.warning("%s: 複勝オッズ(ts_sokuho_o1)が無いため %d/%d 頭を除外しました。"
+                    "JV-Link の速報ポーリング(poll-odds)が止まっていませんか",
+                    "".join(race), n_no_fuku, len(late))
     return out
 
 
