@@ -70,8 +70,14 @@ class ModelConfig:
     # ★市場をオフセットに置くか。False にすると「市場の再現」を学んで必ず負ける。
     market_offset: bool = True
     place_takeout: float = 0.20      # 複勝の控除率(q の目安に使うだけ)
-    target: str = "return"           # return(純収益の回帰) | hit(複勝圏内の分類)
+    # return(純収益の回帰) | hit(複勝圏内の分類) | rank(レース内の順位学習)
+    # ★rank を足した理由: return/hit は**絶対量**の推定で、そこは市場がほぼ最適。
+    #   flow が効くのは絶対量ではなく**レース内の相対的な動き**を見ているから。
+    #   モデルにも同じ土俵で学ばせる。選択は**レース内で上位k頭**(スコアはレース間で
+    #   比較できないので、大域の分位では切らない)。
+    target: str = "return"
     winsor: float = 10.0             # ★純収益の上限。裾の数件に引きずられないように
+    top_per_race: int = 1            # target=rank のとき、レース内で何頭買うか
     features: list[str] = field(default_factory=lambda: list(FEATURES))
 
 
@@ -164,6 +170,57 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
             q = min(max(q, 1e-4), 1 - 1e-4)
             out.append(math.log(q / (1 - q)))
         return out
+
+    if cfg.target == "rank":
+        import collections
+
+        def _rel(payout: int) -> int:
+            """★配当の大きさを段階で表す。0/1 の二値にすると「当たりやすい人気馬」を
+            学ぶだけになり、flow の利益が生まれている高配当の的中が評価されない。"""
+            if payout <= 0:
+                return 0
+            if payout < 200:
+                return 1
+            return 2 if payout < 500 else 3
+
+        def _grouped(rows):
+            order = collections.OrderedDict()
+            for r in rows:
+                order.setdefault(r["rid"], []).append(r)
+            flat = [r for rs in order.values() for r in rs]
+            return flat, [len(rs) for rs in order.values()], order
+
+        ftr, gtr, _ = _grouped(train)
+        fte, gte, order_te = _grouped(test)
+        rk = lgb.LGBMRanker(
+            objective="lambdarank", num_leaves=cfg.num_leaves,
+            n_estimators=cfg.n_estimators, learning_rate=cfg.learning_rate,
+            min_child_samples=cfg.min_child_samples, label_gain=[0, 1, 3, 7],
+            random_state=cfg.seed, verbose=-1)
+        rk.fit([[r[f] for f in feats] for r in ftr], [_rel(r["payout"]) for r in ftr],
+               group=gtr)
+        for r, v in zip(fte, rk.predict([[r[f] for f in feats] for r in fte])):
+            r["rank_score"] = float(v)
+
+        def _top_per_race(key: str, k: int, label: str) -> dict:
+            bets = []
+            for rs in order_te.values():
+                for r in sorted(rs, key=lambda x: -x[key])[:k]:
+                    bets.append((r["rid"], amount,
+                                 int(round(r["payout"] * amount / 100)), False))
+            rep = summarize_bets(bets, races=len(order_te), races_scored=len(order_te))
+            rep["label"] = label
+            return rep
+
+        k = max(1, cfg.top_per_race)
+        imp = sorted(zip(feats, rk.feature_importances_), key=lambda kv: -kv[1])
+        return {"n_train": len(train), "n_test": len(test),
+                "n_take": k * len(order_te),
+                "model": _top_per_race("rank_score", k, f"モデル(レース内上位{k}頭)"),
+                "edge": _top_per_race("rank_score", k, f"モデル(レース内上位{k}頭)"),
+                "proba": _top_per_race("rank_score", k, f"モデル(レース内上位{k}頭)"),
+                "flow": _top_per_race("flow", k, f"flow 単体(レース内上位{k}頭)"),
+                "importance": imp}
 
     if cfg.target == "return":
         # ★買う基準そのものを直接学ぶ。純収益 = 払戻/賭け金 − 1(外れ = -1)。

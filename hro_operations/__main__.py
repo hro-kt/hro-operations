@@ -657,7 +657,8 @@ def _cmd_flow_model(args) -> int:
                       num_leaves=args.num_leaves, n_estimators=args.n_estimators,
                       min_child_samples=args.min_child_samples,
                       market_offset=not args.no_market_offset,
-                      target=args.target, winsor=args.winsor)
+                      target=args.target, winsor=args.winsor,
+                      top_per_race=args.top_per_race)
 
     def _load(a, b, tag):
         rows, t0 = [], time.monotonic()
@@ -1241,8 +1242,11 @@ def main(argv: list[str] | None = None) -> int:
     p_fm.add_argument("--n-estimators", type=int, default=300)
     p_fm.add_argument("--min-child-samples", type=int, default=200)
     p_fm.add_argument("--amount", type=int, default=100)
-    p_fm.add_argument("--target", choices=("return", "hit"), default="return",
-                      help="return=純収益の回帰(既定) / hit=複勝圏内の分類")
+    p_fm.add_argument("--target", choices=("return", "hit", "rank"), default="return",
+                      help="return=純収益の回帰 / hit=複勝圏内の分類 / "
+                           "rank=レース内の順位学習(flow と同じ土俵)")
+    p_fm.add_argument("--top-per-race", type=int, default=1,
+                      help="target=rank のとき、レース内で何頭買うか")
     p_fm.add_argument("--winsor", type=float, default=10.0,
                       help="純収益の刈り込み上限(裾の数件に引きずられないように)")
     p_fm.add_argument("--no-market-offset", action="store_true",

@@ -82,3 +82,19 @@ def test_default_target_is_net_return():
     c = ModelConfig()
     assert c.target == "return"
     assert c.winsor > 0
+
+
+def test_rank_target_is_available_and_graded():
+    """★rank を足した理由: return/hit は**絶対量**の推定で、そこは市場がほぼ最適。
+    flow が効くのはレース内の相対的な動きを見ているから。同じ土俵で学ばせる。
+    ★配当の段階付けが要る。0/1 の二値にすると『当たりやすい人気馬』を学ぶだけで、
+    flow の利益が生まれている高配当の的中が評価されない。"""
+    import inspect
+
+    from hro_operations import model_flow as m
+
+    src = inspect.getsource(m.train_and_eval)
+    assert '"rank"' in src and "LGBMRanker" in src
+    assert "label_gain" in src          # 段階付けを損失に反映している
+    assert "_top_per_race" in src       # レース内で選ぶ(大域の分位では切らない)
+    assert m.ModelConfig().top_per_race >= 1
