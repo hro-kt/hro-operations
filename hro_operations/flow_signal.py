@@ -753,6 +753,7 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 _SQL_BT = """
 WITH ra AS (
   SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         kyori, track_cd, grade_cd, syusso_tosu,
          to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp AS post,
          to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
                  - make_interval(secs => %(lead)s), 'MMDDHH24MI') AS cut_late,
@@ -772,6 +773,7 @@ late AS (
   SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
          t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
          t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1,
+         t.tan_ninki AS nin1,
          EXTRACT(EPOCH FROM (ra.post
            - to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp))::int AS lead1
   FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
@@ -790,7 +792,10 @@ early AS (
 )
 SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
+       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, l.nin1, h.pay, se.i_jyo_cd,
+       -- スライス用(すべて既に JOIN 済みのテーブルから取るので追加コストは小さい)
+       se.wakuban, se.zogen_fugo, se.zogen_sa, se.ba_taijyu,
+       ra2.kyori, ra2.track_cd, ra2.grade_cd,
        -- ★そのレースの複勝払戻が1行でも存在するか。無い=まだ結果が入っていない。
        --   これを見ないと「未確定」を「全部外れ」として数えてしまう。
        EXISTS (SELECT 1 FROM nl_hr h2
@@ -799,6 +804,7 @@ SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
                   AND h2.bet_type = 'fuku') AS has_payout
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
+JOIN ra ra2 USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
 -- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
 --   払戻表(nl_hr)には行が立たないので、これを見ないと全損として数えてしまう。
 LEFT JOIN nl_se se
@@ -942,6 +948,11 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
                 details.append({"rid": rid, "umaban": x["umaban"], "score": score,
                                 "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                                "ninki": x.get("nin1"), "waku": x.get("wakuban"),
+                                "zogen_fugo": x.get("zogen_fugo"),
+                                "zogen_sa": x.get("zogen_sa"),
+                                "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
+                                "grade_cd": x.get("grade_cd"),
                                 "amount": amount, "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
@@ -949,6 +960,10 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             bets.append((rid, amount, payout, False))
             details.append({"rid": rid, "umaban": x["umaban"], "score": score,
                             "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                            "ninki": x.get("nin1"), "waku": x.get("wakuban"),
+                            "zogen_fugo": x.get("zogen_fugo"), "zogen_sa": x.get("zogen_sa"),
+                            "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
+                            "grade_cd": x.get("grade_cd"),
                             "amount": amount, "payout": payout,
                             "note": "的中" if payout else "外れ"})
 

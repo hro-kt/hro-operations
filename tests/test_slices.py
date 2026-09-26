@@ -48,3 +48,31 @@ def test_refund_is_not_counted_as_a_hit():
 def test_unknown_axis_raises():
     with pytest.raises(ValueError):
         slice_details([_d("2026092606040811", 3.0, 0)], "でたらめ")
+
+
+def test_zogen_bucket_uses_the_sign_field():
+    """★増減の符号は zogen_fugo(+/-)にあり、zogen_sa は絶対値。符号を無視すると
+    増と減が同じ帯に落ち、効果が打ち消し合って見えなくなる。"""
+    from hro_operations.slices import _bucket_zogen
+
+    assert _bucket_zogen({"zogen_fugo": "-", "zogen_sa": "012"}).startswith("1")
+    assert _bucket_zogen({"zogen_fugo": "-", "zogen_sa": "004"}).startswith("2")
+    assert _bucket_zogen({"zogen_fugo": "+", "zogen_sa": "000"}).startswith("3")
+    assert _bucket_zogen({"zogen_fugo": "+", "zogen_sa": "004"}).startswith("4")
+    assert _bucket_zogen({"zogen_fugo": "+", "zogen_sa": "012"}).startswith("5")
+    assert _bucket_zogen({"zogen_sa": ""}).startswith("0")
+
+
+def test_other_buckets():
+    from hro_operations.slices import (_bucket_kyori, _bucket_ninki,
+                                       _bucket_track, _bucket_waku)
+
+    assert _bucket_ninki({"ninki": "01"}).startswith("1")
+    assert _bucket_ninki({"ninki": "12"}).startswith("4")
+    assert _bucket_ninki({"ninki": ""}).startswith("0")
+    assert _bucket_waku({"waku": "3"}) == "3 3枠"
+    assert _bucket_kyori({"kyori": "1200"}).startswith("1")
+    assert _bucket_kyori({"kyori": "2400"}).startswith("4")
+    assert _bucket_track({"track_cd": "11"}) == "1 芝"
+    assert _bucket_track({"track_cd": "23"}) == "2 ダート"
+    assert _bucket_track({"track_cd": "51"}).startswith("3")

@@ -36,6 +36,76 @@ def _bucket_n(v) -> str:
     return "4 16頭〜"
 
 
+def _bucket_zogen(d) -> str:
+    """馬体重増減。★符号は zogen_fugo(+/-)に入っており、zogen_sa は絶対値。
+    符号を無視すると増と減が同じ帯に落ちて、効果が打ち消し合って見えなくなる。
+    """
+    sa = (str(d.get("zogen_sa") or "")).strip()
+    if not sa.isdigit():
+        return "0 不明"
+    v = int(sa)
+    if v == 0:
+        return "3 増減なし"
+    minus = (str(d.get("zogen_fugo") or "")).strip() == "-"
+    v = -v if minus else v
+    if v <= -10:
+        return "1 -10kg以下"
+    if v < 0:
+        return "2 -1〜-9kg"
+    if v < 10:
+        return "4 +1〜+9kg"
+    return "5 +10kg以上"
+
+
+def _bucket_ninki(d) -> str:
+    n = (str(d.get("ninki") or "")).strip()
+    if not n.isdigit() or int(n) <= 0:
+        return "0 不明"
+    v = int(n)
+    if v <= 3:
+        return "1 1-3番人気"
+    if v <= 6:
+        return "2 4-6番人気"
+    if v <= 10:
+        return "3 7-10番人気"
+    return "4 11番人気〜"
+
+
+def _bucket_waku(d) -> str:
+    w = (str(d.get("waku") or "")).strip()
+    if not w.isdigit() or int(w) <= 0:
+        return "0 不明"
+    v = int(w)
+    return f"{v} {v}枠" if v <= 8 else "0 不明"
+
+
+def _bucket_kyori(d) -> str:
+    k = (str(d.get("kyori") or "")).strip()
+    if not k.isdigit():
+        return "0 不明"
+    v = int(k)
+    if v <= 1400:
+        return "1 〜1400m"
+    if v <= 1800:
+        return "2 1600-1800m"
+    if v <= 2200:
+        return "3 2000-2200m"
+    return "4 2400m〜"
+
+
+def _bucket_track(d) -> str:
+    """track_cd: 10番台=芝, 20番台=ダート, 50番台以上=障害(JV-Data)。"""
+    t = (str(d.get("track_cd") or "")).strip()
+    if not t.isdigit():
+        return "0 不明"
+    v = int(t)
+    if 10 <= v <= 19:
+        return "1 芝"
+    if 20 <= v <= 29:
+        return "2 ダート"
+    return "3 障害・その他"
+
+
 AXES = {
     "tan": ("決定時点の単勝オッズ", lambda d: _bucket_odds(float(d["tan"]))),
     "fuku": ("決定時点の複勝オッズ", lambda d: _bucket_odds(float(d["fuku"]))),
@@ -43,6 +113,11 @@ AXES = {
     "jyo": ("競馬場", lambda d: _JYO.get(d["rid"][8:10], d["rid"][8:10])),
     "month": ("月", lambda d: d["rid"][4:6]),
     "lead": ("実測リード", lambda d: f"T-{d.get('lead')}s"),
+    "zogen": ("馬体重増減", _bucket_zogen),
+    "ninki": ("決定時点の単勝人気", _bucket_ninki),
+    "waku": ("枠番", _bucket_waku),
+    "kyori": ("距離", _bucket_kyori),
+    "track": ("馬場(芝/ダ)", _bucket_track),
     "score": ("スコアの大きさ(閾値からの超過)", None),   # 閾値相対なので別扱い
 }
 
