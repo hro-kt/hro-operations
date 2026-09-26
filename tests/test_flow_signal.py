@@ -622,3 +622,26 @@ def test_missing_fuku_odds_is_named_as_the_cause(caplog):
     with caplog.at_level(logging.WARNING):
         assert flow_scores(FakeDB(rows), ("2026", "0926", "06", "04", "08", "11"), cfg) == {}
     assert "複勝オッズ" in caplog.text and "poll-odds" in caplog.text
+
+
+def test_diagnostics_do_not_read_another_source_table():
+    """★netkeiba を指定したのに JV 用の診断SQLを流用すると、**JV のスナップ格子**を
+    表示する。2026-09-26 に実害: netkeiba は30秒刻みなのに「0s,60s,120s…」と出て、
+    診断を信じると原因の切り分けを誤る。"""
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import (
+        _SQL_DIAG_NETKEIBA,
+        _SQL_DIAG_SOKUHO,
+        _SQL_DIAG_TS,
+        _SQL_GRID_NETKEIBA,
+    )
+
+    for q in (_SQL_DIAG_NETKEIBA, _SQL_GRID_NETKEIBA):
+        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", q))
+        assert "ts_netkeiba_o1" in q and "observed_at" in q
+        assert "ts_sokuho_o1" not in q and "FROM ts_o1" not in q
+    assert "ts_netkeiba_o1" not in _SQL_DIAG_TS
+    assert "ts_netkeiba_o1" not in _SQL_DIAG_SOKUHO

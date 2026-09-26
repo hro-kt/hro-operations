@@ -315,6 +315,40 @@ WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
     = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
 """
 
+
+# ★netkeiba は時間軸が observed_at(実時刻)。JV 用の診断SQLを流用すると、
+#   netkeiba を指定したのに **JV のスナップ格子を表示する**(2026-09-26 に実害:
+#   30秒刻みのはずが「0s,60s,120s…」と出て、診断を信じると判断を誤る)。
+_SQL_DIAG_NETKEIBA = """
+SELECT count(*) AS rows,
+       count(DISTINCT t.observed_at) AS snaps,
+       count(DISTINCT t.umaban) AS horses,
+       min(t.observed_at) AS first_ts,
+       max(t.observed_at) AS last_ts,
+       to_char(min(t.observed_at) AT TIME ZONE 'Asia/Tokyo', 'MMDDHH24MISS') AS raw_min,
+       to_char(max(t.observed_at) AT TIME ZONE 'Asia/Tokyo', 'MMDDHH24MISS') AS raw_max
+FROM ts_netkeiba_o1 t
+WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+    = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+"""
+
+_SQL_GRID_NETKEIBA = """
+WITH ra AS (
+  SELECT (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+          AT TIME ZONE 'Asia/Tokyo') AS post
+  FROM nl_ra
+  WHERE (year,month_day,jyo_cd,kaiji,nichiji,race_num)=(%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+    AND hasso_time ~ '^[0-9]{4}$'
+)
+SELECT DISTINCT EXTRACT(EPOCH FROM (ra.post - t.observed_at))::int AS lead_sec
+FROM ts_netkeiba_o1 t, ra
+WHERE (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num)
+    = (%(y)s,%(m)s,%(j)s,%(k)s,%(n)s,%(r)s)
+  AND t.observed_at <= ra.post
+ORDER BY 1
+LIMIT %(lim)s
+"""
+
 _SQL_GRID = """
 -- 発走前のスナップショットが「発走の何秒前」に在るか(格子の粗さを見る)
 WITH ra AS (
@@ -373,7 +407,8 @@ def snapshot_grid(db, race: tuple[str, ...], cfg: FlowConfig, limit: int = 15) -
     (実際に lead 90/120/180 秒で全部同じ結果=スコアほぼ全ゼロになった)。
     """
     y, m, j, k, n, r = race
-    sql = _SQL_GRID if cfg.source == "ts" else _SQL_GRID_SOKUHO
+    sql = {"ts": _SQL_GRID, "sokuho": _SQL_GRID_SOKUHO,
+           "netkeiba": _SQL_GRID_NETKEIBA}[cfg.source]
     return db.query(sql, {"y": y, "m": m, "j": j, "k": k, "n": n, "r": r, "lim": limit})
 
 
@@ -510,7 +545,11 @@ def flow_diagnose(db, race: tuple[str, ...], cfg: FlowConfig) -> dict:
     y, m, j, k, n, r = race
     key = {"y": y, "m": m, "j": j, "k": k, "n": n, "r": r}
     post = db.query(_SQL_POST, key)
-    diag = db.query(_SQL_DIAG_TS if cfg.source == "ts" else _SQL_DIAG_SOKUHO, key)
+    # ★信号源ごとに診断SQLを分ける。流用すると netkeiba を指定したのに JV の格子を
+    #   表示し、「30秒刻みのはずが60秒刻み」と読んで判断を誤る。
+    diag_sql = {"ts": _SQL_DIAG_TS, "sokuho": _SQL_DIAG_SOKUHO,
+                "netkeiba": _SQL_DIAG_NETKEIBA}[cfg.source]
+    diag = db.query(diag_sql, key)
     scores = flow_scores(db, race, cfg)
     return {
         "race_id": "".join(race),
