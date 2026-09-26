@@ -914,15 +914,16 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 n_refund += 1
                 bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
                 details.append({"rid": rid, "umaban": x["umaban"], "score": score,
-                                "lead": lead, "tan": t1, "fuku": f1,
-                                "payout": amount, "note": "返還"})
+                                "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                                "amount": amount, "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
             payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
             bets.append((rid, amount, payout, False))
             details.append({"rid": rid, "umaban": x["umaban"], "score": score,
-                            "lead": lead, "tan": t1, "fuku": f1,
-                            "payout": payout, "note": "的中" if payout else "外れ"})
+                            "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                            "amount": amount, "payout": payout,
+                            "note": "的中" if payout else "外れ"})
 
     rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
                          races_degenerate=n_degenerate, with_ci=with_ci)

@@ -631,6 +631,62 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_slice(args) -> int:
+    """★flow のエッジがどの帯に偏っているかを見る。
+
+    薄いエッジにモデルの自由度を与える前に、構造があるかを確かめる。
+    """
+    import time
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, backtest
+    from .slices import AXES, slice_details
+
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                     threshold=args.flow_threshold, source=args.flow_source)
+    months = _month_chunks(args.d_from, args.d_to)
+    details: list = []
+    db = FeatureDB(load_features_config())
+    t0 = time.monotonic()
+    try:
+        for i, (a, b) in enumerate(months, 1):
+            part = backtest(db, a, b, cfg, amount=args.amount, with_ci=False)
+            details += part.get("details") or []
+            print(f"  [{i}/{len(months)}] {a[:6]} 明細{len(details):,}点 "
+                  f"({time.monotonic() - t0:.0f}s)", end="\r", flush=True)
+    finally:
+        db.close()
+    if not details:
+        print("明細がありません(閾値が高すぎるかデータ不足)")
+        return 1
+
+    axes = [x.strip() for x in args.axes.split(",") if x.strip()]
+    print(f"\n=== flow スライス ({args.d_from}〜{args.d_to}) ===")
+    print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
+          f"/ 閾値 {args.flow_threshold:+.4f} / 全体 {len(details):,} 点")
+    for ax in axes:
+        title = "スコアの大きさ(閾値からの超過)" if ax == "score" else AXES[ax][0]
+        print(f"\n  --- {title} ---")
+        print(f"  {'帯':<22} {'購入':>6} {'的中率':>7} {'回収率':>8}  95%CI")
+        for r in slice_details(details, ax, threshold=args.flow_threshold,
+                               min_bets=args.min_bets):
+            if not r["bets"]:
+                continue
+            ci = r.get("ci")
+            ci_s = (f"[{ci['lo']:.3f}, {ci['hi']:.3f}]" if ci
+                    else f"(本数 {r['bets']} は少なすぎ)")
+            print(f"  {r['name']:<22} {r['bets']:>6} {r['hit_rate']:>7.1%} "
+                  f"{r['roi']:>8.4f}  {ci_s}")
+    print("\n  ※本数と CI を必ず一緒に見ること。片方だけ見て『この帯は強い』と")
+    print("    決めるのが、最も典型的な自滅の仕方。")
+    print("  ※帯を選ぶこと自体が in-sample の選択になる。良い帯が見つかったら")
+    print("    **必ず別期間で確かめる**(--from/--to を分けて2回流す)。")
+    return 0
+
+
 def _cmd_flow_decompose(args) -> int:
     """★flow の利益が DM で説明できる部分から来ているのか、残差から来ているのかを測る。
 
@@ -1087,6 +1143,20 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_fs = sub.add_parser("flow-slice",
+                          help="★flow のエッジがどの帯に偏っているかを見る")
+    p_fs.add_argument("--from", dest="d_from", required=True)
+    p_fs.add_argument("--to", dest="d_to", required=True)
+    p_fs.add_argument("--flow-threshold", type=float, required=True)
+    p_fs.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_fs.add_argument("--flow-minutes", type=int, default=6)
+    p_fs.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
+    p_fs.add_argument("--axes", default="tan,n,score,month",
+                      help="軸(カンマ区切り): tan,fuku,n,jyo,month,lead,score")
+    p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
+    p_fs.add_argument("--amount", type=int, default=100)
+    p_fs.set_defaults(func=_cmd_flow_slice)
 
     p_fd2 = sub.add_parser("flow-decompose",
                            help="★flow の利益が DM由来か残差由来かを分解して測る")
