@@ -74,3 +74,28 @@ def test_missing_dm_or_finish_drops_the_horse():
     r = evaluate(FakeDB(rows), "20260926", "20260926", MiningConfig())
     # 6頭中2頭が欠損 → 4頭では 5頭未満なので使わない
     assert r["races_used"] == 0
+
+
+def test_decompose_splits_flow_into_dm_part_and_residual():
+    """★分解は flow を過不足なく分ける(平均 + DM説明分 + 残差 = flow)。
+    ここがずれると「どちらが効いているか」の判定そのものが嘘になる。"""
+    from hro_operations.mining import decompose_race
+
+    use = [{"dm": 11250, "flow": 0.5}, {"dm": 11260, "flow": 0.2},
+           {"dm": 11270, "flow": -0.1}, {"dm": 11280, "flow": -0.2},
+           {"dm": 11290, "flow": -0.4}]
+    out = decompose_race(use)
+    mean = sum(x["flow"] for x in use) / len(use)
+    for x in out:
+        assert abs(mean + x["dm_part"] + x["resid"] - x["flow"]) < 1e-9
+    # ★DM は小さいほど強い。最速の馬の dm_part が最大になること(符号反転が効いている)
+    assert out[0]["dm_part"] == max(x["dm_part"] for x in out)
+
+
+def test_decompose_needs_variation_in_dm():
+    """全馬の DM が同じなら分解できない(ゼロ除算/無意味な残差を避ける)。"""
+    from hro_operations.mining import decompose_race
+
+    use = [{"dm": 11250, "flow": 0.5}, {"dm": 11250, "flow": 0.2},
+           {"dm": 11250, "flow": -0.1}]
+    assert decompose_race(use) is None

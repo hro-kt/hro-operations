@@ -630,6 +630,53 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_decompose(args) -> int:
+    """★flow の利益が DM で説明できる部分から来ているのか、残差から来ているのかを測る。
+
+    DM由来なら T-360s の時点で同じ判断ができ、締切直前の綱渡りをやめられる。
+    残差由来なら、終盤の金は DM に無い情報で動いていると確定する。
+    """
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .mining import MiningConfig, decompose
+
+    cfg = MiningConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
+                       source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        r = decompose(db, args.d_from, args.d_to, cfg,
+                      quantile=args.quantile, amount=args.amount)
+    finally:
+        db.close()
+    if not r["races_used"]:
+        print("対象レースがありません")
+        return 1
+    print(f"=== flow の分解 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  {args.flow_source} / 決定 発走{args.lead_seconds}秒前 / "
+          f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
+    print(f"  対象 {r['races_seen']:,} → 使用 {r['races_used']:,} レース"
+          f" (除外 {r['skipped']:,} / 未確定 {r['unsettled']:,})")
+    print(f"\n  {'内訳':<28} {'購入':>5} {'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
+    for k in ("flow", "dm_part", "resid", "dm_z"):
+        x = r[k]
+        if not x["bets"]:
+            print(f"  {x['label']:<28} {'0':>5}")
+            continue
+        ci = x.get("ci") or {}
+        print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
+              f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"   {ci.get('p_le_1', 0):.3f}")
+    print("\n  読み方:")
+    print("   DMで説明できる分が勝つ → T-360s の時点で同じ判断ができる。")
+    print("                            **締切直前の綱渡りをやめられる**")
+    print("   残差が勝つ             → 終盤の金は DM に無い情報で動いている。")
+    print("                            追従を速くする以外に道は無い")
+    print("   ※同じレース・同じ分位・同じ複勝決済。違うのは**使った成分だけ**。")
+    return 0
+
+
 def _cmd_mining_eval(args) -> int:
     """DM/TM が (1) 着順を当てるか (2) 終盤のフローを説明するか を同一レースで測る。"""
     from hro_features.config import load_config as load_features_config
@@ -1040,6 +1087,17 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_fd2 = sub.add_parser("flow-decompose",
+                           help="★flow の利益が DM由来か残差由来かを分解して測る")
+    p_fd2.add_argument("--from", dest="d_from", required=True)
+    p_fd2.add_argument("--to", dest="d_to", required=True)
+    p_fd2.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_fd2.add_argument("--lead-seconds", type=int, default=60)
+    p_fd2.add_argument("--flow-minutes", type=int, default=6)
+    p_fd2.add_argument("--quantile", type=float, default=0.95)
+    p_fd2.add_argument("--amount", type=int, default=100)
+    p_fd2.set_defaults(func=_cmd_flow_decompose)
 
     p_me = sub.add_parser("mining-eval",
                           help="JRA-VAN の DM/TM 予想を評価(着順を当てるか/フローを説明するか)")
