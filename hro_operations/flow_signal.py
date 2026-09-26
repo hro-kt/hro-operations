@@ -735,7 +735,11 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             odds=d["fuku_odds"],
             expected_return=0.0, edge=0.0, kelly_fraction=0.0,
             model_version=model_version,
+            # ★決定時点の**単勝**オッズを残す。回収率がオッズ帯で大きく違う
+            #   (20-40倍 1.45 / 全帯 1.08)ので、後から帯別に評価できないと
+            #   ライブの結果を検証できない。odds 欄は発注する複勝の値なので別に持つ。
             reason=(f"flow_tan={d['score']:+.4f}>={thr:+.4f}@T-{lead_used}s "
+                    f"tan={d['tan_odds']:.1f} fuku={d['fuku_odds']:.1f} "
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
         ))

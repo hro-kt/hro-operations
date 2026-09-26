@@ -687,3 +687,19 @@ def test_tan_odds_band_filters_orders():
     assert _in_tan_band(off, None)
     # 帯を指定したのにオッズが取れない馬は買わない(黙って通すと帯の意味が無くなる)
     assert not _in_tan_band(band, None)
+
+
+def test_order_reason_records_the_win_odds():
+    """★回収率がオッズ帯で大きく違う(20-40倍 1.45 / 全帯 1.08)。決定時点の単勝オッズを
+    残さないと、ライブの結果を帯別に評価できない。odds 欄は発注する複勝の値なので別に持つ。"""
+    from hro_operations.flow_signal import FlowConfig, flow_orders
+
+    rows = [_row("01", "0200", "0035", "late"), _row("02", "0600", "0090", "late"),
+            _row("01", "0300", "0035", "early"), _row("02", "0500", "0090", "early")]
+    cfg = FlowConfig(source="sokuho", lead_seconds=60, flow_minutes=6, threshold=0.0)
+    orders = flow_orders(FakeDB(rows), ("2026", "0926", "06", "04", "08", "11"),
+                         cfg, 100, "test")
+    assert orders, "候補が1件も出ていない"
+    o = orders[0]
+    assert "tan=20.0" in o.reason and "fuku=3.5" in o.reason
+    assert o.odds == 3.5                 # 発注は複勝
