@@ -642,6 +642,60 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_model(args) -> int:
+    """flow を特徴量の1つにして、買うべき馬をモデルに選ばせる。"""
+    import time
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .model_flow import ModelConfig, load_rows, train_and_eval
+
+    cfg = ModelConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
+                      source=args.flow_source, quantile=args.quantile,
+                      num_leaves=args.num_leaves, n_estimators=args.n_estimators,
+                      min_child_samples=args.min_child_samples)
+
+    def _load(a, b, tag):
+        rows, t0 = [], time.monotonic()
+        for i, (m0, m1) in enumerate(_month_chunks(a, b), 1):
+            rows += load_rows(db, m0, m1, cfg)
+            print(f"  {tag} {m0[:6]} 累計{len(rows):,}行 "
+                  f"({time.monotonic() - t0:.0f}s)", end="\r", flush=True)
+        return rows
+
+    db = FeatureDB(load_features_config())
+    try:
+        train = _load(args.train_from, args.train_to, "学習")
+        test = _load(args.test_from, args.test_to, "検証")
+    finally:
+        db.close()
+    if not train or not test:
+        print("\n学習/検証データが足りません")
+        return 1
+
+    r = train_and_eval(train, test, cfg, amount=args.amount)
+    print(f"\n=== flow + モデル ===")
+    print(f"  学習 {args.train_from}〜{args.train_to}: {r['n_train']:,} 行")
+    print(f"  検証 {args.test_from}〜{args.test_to}: {r['n_test']:,} 行 "
+          f"→ 上位 {r['n_take']:,} 点を購入(分位 {args.quantile})")
+    print(f"\n  {'選び方':<28} {'購入':>5} {'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
+    for k in ("model", "proba", "flow"):
+        x = r[k]
+        ci = x.get("ci") or {}
+        print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
+              f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"   {ci.get('p_le_1', 0):.3f}")
+    print("\n  --- 特徴量の重要度 ---")
+    for name, v in r["importance"]:
+        mark = "  ★対照(高いと過学習の疑い)" if name == "waku_norm" else ""
+        print(f"  {name:<14} {v:>6}{mark}")
+    print("\n  ※同じ検証期間・同じ本数で比べている。違うのは**選び方だけ**。")
+    print("  ※モデルが flow 単体を超えなければ採用しない。")
+    return 0
+
+
 def _cmd_flow_slice(args) -> int:
     """★flow のエッジがどの帯に偏っているかを見る。
 
@@ -1163,6 +1217,22 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_fm = sub.add_parser("flow-model",
+                          help="★flow を特徴量にしてモデルに選ばせる(軸探索込み)")
+    p_fm.add_argument("--train-from", required=True)
+    p_fm.add_argument("--train-to", required=True)
+    p_fm.add_argument("--test-from", required=True)
+    p_fm.add_argument("--test-to", required=True)
+    p_fm.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_fm.add_argument("--lead-seconds", type=int, default=60)
+    p_fm.add_argument("--flow-minutes", type=int, default=6)
+    p_fm.add_argument("--quantile", type=float, default=0.95)
+    p_fm.add_argument("--num-leaves", type=int, default=15)
+    p_fm.add_argument("--n-estimators", type=int, default=300)
+    p_fm.add_argument("--min-child-samples", type=int, default=200)
+    p_fm.add_argument("--amount", type=int, default=100)
+    p_fm.set_defaults(func=_cmd_flow_model)
 
     p_fs = sub.add_parser("flow-slice",
                           help="★flow のエッジがどの帯に偏っているかを見る")
