@@ -629,6 +629,58 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_mining_eval(args) -> int:
+    """DM/TM が (1) 着順を当てるか (2) 終盤のフローを説明するか を同一レースで測る。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .mining import MiningConfig, evaluate
+
+    cfg = MiningConfig(lead_seconds=args.lead_seconds, flow_minutes=args.flow_minutes,
+                       source=args.flow_source)
+    db = FeatureDB(load_features_config())
+    try:
+        r = evaluate(db, args.d_from, args.d_to, cfg, amount=args.amount)
+    finally:
+        db.close()
+    if not r["races_used"]:
+        print("対象レースがありません(DM/TM と時系列オッズの両方が要ります)")
+        return 1
+    rho = r["rho"]
+
+    def _f(v):
+        return "  --  " if v is None else f"{v:+.3f}"
+
+    print(f"=== DM/TM 評価 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  対象 {r['races_seen']:,} → 使用 {r['races_used']:,} レース"
+          f"(DM/TM・着順・時系列が揃ったもの)")
+    print("\n  --- 順位相関(レース内, 平均) ---")
+    print(f"  DM   ↔ 着順     {_f(rho['dm_finish'])}   ★これが市場を明確に上回るなら"
+          "**結果の漏れ**を疑う")
+    print(f"  TM   ↔ 着順     {_f(rho['tm_finish'])}")
+    print(f"  市場 ↔ 着順     {_f(rho['mkt_finish'])}   (発走{args.lead_seconds}秒前の単勝オッズ)")
+    print(f"\n  DM   ↔ flow     {_f(rho['dm_flow'])}   ★終盤の金が DM の方向へ動いているか")
+    print(f"  TM   ↔ flow     {_f(rho['tm_flow'])}")
+    print(f"  DM   ↔ 市場     {_f(rho['dm_mkt'])}   (高いほど市場に織り込み済み)")
+
+    b = r["dm_top1"]
+    print(f"\n  --- DM 最上位(予想タイム最小)の複勝を1点買い ---")
+    if b["bets"]:
+        ci = b.get("ci") or {}
+        print(f"  購入 {b['bets']:,} / 的中 {b['hits']:,} ({b['hit_rate']:.1%}) "
+              f"回収率 {b['roi']:.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"  P(<=1)={ci.get('p_le_1', 0):.3f}")
+    print("\n  読み方:")
+    print("   DM↔flow が高い   → 終盤の金は DM が見ているものを見ている。")
+    print("                      同じ判断を**数分早くできる**(執行が楽になる)")
+    print("   DM↔flow が低い   → 終盤の金は DM に無い情報で動いている。")
+    print("                      追従を速くする以外に道は無い")
+    print("   ★nl_dm は RACE蓄積版(make_date がレース日の数日後)。中身は事前予想だが、")
+    print("     **前日版か直前版かは区別できない**。実戦で使うなら速報系の取り込みが要る。")
+    return 0
+
+
 def _cmd_flow_horizons(args) -> int:
     """★同一レースでホライズン別＋組み合わせを比較する。
 
@@ -988,6 +1040,16 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_me = sub.add_parser("mining-eval",
+                          help="JRA-VAN の DM/TM 予想を評価(着順を当てるか/フローを説明するか)")
+    p_me.add_argument("--from", dest="d_from", required=True)
+    p_me.add_argument("--to", dest="d_to", required=True)
+    p_me.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_me.add_argument("--lead-seconds", type=int, default=60)
+    p_me.add_argument("--flow-minutes", type=int, default=6)
+    p_me.add_argument("--amount", type=int, default=100)
+    p_me.set_defaults(func=_cmd_mining_eval)
 
     p_fh = sub.add_parser("flow-horizons",
                           help="★同一レースでホライズン別＋組み合わせを比較する")
