@@ -65,3 +65,11 @@ def test_unsettled_and_degenerate_races_are_dropped():
     assert load_rows(FakeDB(unsettled), "20260926", "20260926", ModelConfig()) == []
     same = [{**r, "ht0": r["ht1"]} for r in base]
     assert load_rows(FakeDB(same), "20260926", "20260926", ModelConfig()) == []
+
+
+def test_market_offset_is_on_by_default():
+    """★複勝圏内の確率をそのまま学習させると、モデルは市場を再現することに容量を
+    使い切り、市場とのズレ=誤差を買いに行く(2026-09-25 実測で 0.84 対 flow 1.13 の完敗)。
+    市場の logit を init_score に置き、補正だけを学ばせるのが既定。"""
+    assert ModelConfig().market_offset is True
+    assert 0 < ModelConfig().place_takeout < 1

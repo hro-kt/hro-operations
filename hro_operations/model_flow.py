@@ -1,5 +1,13 @@
 """flow を特徴量の1つにして、買うべき馬をモデルに選ばせる。
 
+★市場をオフセットに置く(ここを外すと必ず負ける)
+  複勝圏内の確率をそのまま学習させると、モデルは**市場を再現すること**に容量を使い切る。
+  オッズを特徴量に入れている以上そうなるし、市場より上手く当てられないので、
+  市場とのズレ=モデルの誤差を買いに行くことになる(2026-09-25 実測: 0.84 / 0.89 対
+  flow 単体 1.13 で完敗)。
+  正しくは市場の推定値 logit(q) を **init_score** に置き、モデルには
+  **市場からの補正だけ**を学ばせる。q は複勝オッズから q≈(1-控除率)/複勝オッズ。
+
 ★目的関数の設計が肝
   複勝の的中確率をそのまま最大化すると**人気馬を選ぶだけ**になる。パリミュチュエルでは
   払戻が最終オッズで決まるので、狙うべきは
@@ -49,6 +57,9 @@ class ModelConfig:
     learning_rate: float = 0.05
     min_child_samples: int = 200
     seed: int = 20260925
+    # ★市場をオフセットに置くか。False にすると「市場の再現」を学んで必ず負ける。
+    market_offset: bool = True
+    place_takeout: float = 0.20      # 複勝の控除率(q の目安に使うだけ)
     features: list[str] = field(default_factory=lambda: list(FEATURES))
 
 
@@ -126,17 +137,37 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
             "lightgbm がありません。hro-operations で `poetry install -E model` してください"
         ) from None
 
+    import math
+
     feats = cfg.features
     xtr = [[r[f] for f in feats] for r in train]
     ytr = [r["hit"] for r in train]
+    xte = [[r[f] for f in feats] for r in test]
+
+    def _market_logit(rows):
+        """複勝オッズから市場の複勝確率を出して logit に。q≈(1-控除率)/複勝オッズ。"""
+        out = []
+        for r in rows:
+            q = (1.0 - cfg.place_takeout) / max(r["fuku_odds"], 1.01)
+            q = min(max(q, 1e-4), 1 - 1e-4)
+            out.append(math.log(q / (1 - q)))
+        return out
+
     model = lgb.LGBMClassifier(
         num_leaves=cfg.num_leaves, n_estimators=cfg.n_estimators,
         learning_rate=cfg.learning_rate, min_child_samples=cfg.min_child_samples,
         random_state=cfg.seed, verbose=-1)
-    model.fit(xtr, ytr)
+    if cfg.market_offset:
+        init_tr = _market_logit(train)
+        model.fit(xtr, ytr, init_score=init_tr)
+        raw = model.predict(xte, raw_score=True)
+        init_te = _market_logit(test)
+        proba = [1.0 / (1.0 + math.exp(-max(min(a + b, 30.0), -30.0)))
+                 for a, b in zip(raw, init_te)]
+    else:
+        model.fit(xtr, ytr)
+        proba = model.predict_proba(xte)[:, 1]
 
-    xte = [[r[f] for f in feats] for r in test]
-    proba = model.predict_proba(xte)[:, 1]
     for r, p in zip(test, proba):
         # ★期待回収率で並べる。確率だけで並べると人気馬を選ぶだけになる。
         r["p"] = float(p)
@@ -151,6 +182,10 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
         rep["label"] = label
         return rep
 
+    for r in test:
+        # 市場だけで並べた場合。オフセットが効いていればモデルはこれを基準に補正する
+        r["mkt_ev"] = (1.0 - cfg.place_takeout)
+        r["edge"] = r["p"] * r["fuku_odds"] - (1.0 - cfg.place_takeout)
     n_take = max(1, int(len(test) * (1 - cfg.quantile)))
     imp = sorted(zip(feats, model.feature_importances_), key=lambda kv: -kv[1])
     return {
@@ -158,5 +193,6 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
         "model": _bet("ev", n_take, "モデル(期待回収率で上位)"),
         "proba": _bet("p", n_take, "モデル(確率だけで上位)"),
         "flow": _bet("flow", n_take, "flow 単体(比較基準)"),
+        "edge": _bet("edge", n_take, "モデル(市場からの上乗せ分)"),
         "importance": imp,
     }
