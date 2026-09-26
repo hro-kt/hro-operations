@@ -645,3 +645,25 @@ def test_diagnostics_do_not_read_another_source_table():
         assert "ts_sokuho_o1" not in q and "FROM ts_o1" not in q
     assert "ts_netkeiba_o1" not in _SQL_DIAG_TS
     assert "ts_netkeiba_o1" not in _SQL_DIAG_SOKUHO
+
+
+def test_netkeiba_compare_sql_columns_match_the_keys_python_reads():
+    """★SQL が日本語の列名を返していて、Python 側の r["n"] が KeyError になった
+    (2026-09-26)。列名とキーの対応をテストで固定する。"""
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import _SQL_NK_COMPARE, netkeiba_compare
+
+    pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", _SQL_NK_COMPARE))
+    needed = ["jyo_cd", "race_num", "minute_key", "n", "nk_values", "jv_values",
+              "agree", "first_at", "last_at"]
+    for col in needed:
+        assert re.search(rf"\bAS {col}\b", _SQL_NK_COMPARE) or f"nk.{col}" in _SQL_NK_COMPARE, col
+
+    class DB:
+        def query(self, _sql, _params):
+            return [dict.fromkeys(needed, 1)]
+
+    assert set(netkeiba_compare(DB(), "20260926")[0]) == set(needed)

@@ -1002,13 +1002,15 @@ jv AS (
   WHERE year = %(y)s AND month_day = %(m)s
     AND tan_odds ~ '^[0-9]+$' AND tan_odds::numeric > 0
 )
+-- ★列名は Python 側が引くキーと一致させる(英語)。表示の日本語は CLI 側で付ける。
+--   ここを日本語にしていたため dict のキーが合わず KeyError になった(2026-09-26)。
 SELECT nk.jyo_cd, nk.race_num, nk.minute_key,
-       count(*) AS 突合数,
-       count(DISTINCT nk.tan_odds) AS netkeiba値数,
-       count(DISTINCT jv.jv_odds) AS 公式値数,
-       count(*) FILTER (WHERE abs(nk.tan_odds - jv.jv_odds) < 0.051) AS 一致,
-       min(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS 最初,
-       max(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS 最後
+       count(*) AS n,
+       count(DISTINCT nk.tan_odds) AS nk_values,
+       count(DISTINCT jv.jv_odds) AS jv_values,
+       count(*) FILTER (WHERE abs(nk.tan_odds - jv.jv_odds) < 0.051) AS agree,
+       min(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS first_at,
+       max(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS last_at
 FROM nk JOIN jv
   ON (jv.jyo_cd, jv.race_num, jv.umaban, jv.minute_key)
    = (nk.jyo_cd, nk.race_num, nk.umaban, nk.minute_key)
