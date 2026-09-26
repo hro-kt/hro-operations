@@ -434,6 +434,33 @@ _COMMANDS = {
 }
 
 
+
+# agent 自身の仮想環境を子プロセスへ漏らさないための変数
+_VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "POETRY_ACTIVE",
+              "PYTHONHOME", "PYTHONPATH")
+
+
+def _child_env(extra: dict) -> dict:
+    """子プロセスの環境。★agent 自身の venv を引き継がせない。
+
+    agent は hro-operations の venv で動く。os.environ をそのまま渡すと VIRTUAL_ENV が
+    残り、`poetry run` が「既に仮想環境が有効」と判断して**別パッケージを
+    hro-operations の venv で実行**する。2026-09-27 に netkeiba_odds(hro-synchronizer)で
+    `ModuleNotFoundError: yaml` として露見した。それまで VM のジョブはほぼ
+    hro-operations 自身を呼ぶものだったので表面化していなかった。
+    PATH からも venv の bin を落とす(そこに別パッケージの実行ファイルは無い)。
+    """
+    env = {k: v for k, v in os.environ.items() if k not in _VENV_VARS}
+    venv = os.environ.get("VIRTUAL_ENV")
+    if venv:
+        bindir = os.path.join(venv, "bin")
+        parts = [p for p in env.get("PATH", "").split(os.pathsep)
+                 if p and os.path.normpath(p) != os.path.normpath(bindir)]
+        env["PATH"] = os.pathsep.join(parts)
+    env.update(extra)
+    return env
+
+
 def _now():
     return datetime.now(timezone.utc)
 
@@ -495,7 +522,7 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
         _finish(conn, job_id, "failed", -1)
         return
 
-    env = {**os.environ, **extra_env}
+    env = _child_env(extra_env)
     _append_log(conn, job_id, f"[agent] $ {' '.join(cmd)}  (cwd={cwd})\n")
 
     # 長時間ジョブ(trio_day/productionize 等)中も ops_agent.last_seen を別接続で更新し続ける。

@@ -29,3 +29,26 @@ def test_netkeiba_odds_job_is_vm_only_and_guards_the_window():
 
     _c, _w, env2 = _b_netkeiba_odds({"state": "/home/azureuser/.netkeiba_state.json"})
     assert env2["NETKEIBA_STATE"].endswith(".netkeiba_state.json")
+
+
+def test_child_env_does_not_leak_the_agents_virtualenv(monkeypatch):
+    """★agent は hro-operations の venv で動く。os.environ をそのまま子へ渡すと
+    VIRTUAL_ENV が残り、`poetry run` が「既に仮想環境が有効」と判断して
+    **別パッケージを hro-operations の venv で実行**する。
+    2026-09-27 に netkeiba_odds(hro-synchronizer)で ModuleNotFoundError: yaml として露見。"""
+    import os
+
+    from hro_operations.agent import _child_env
+
+    monkeypatch.setenv("VIRTUAL_ENV", "/home/u/.venvs/ops")
+    monkeypatch.setenv("POETRY_ACTIVE", "1")
+    monkeypatch.setenv("PYTHONPATH", "/somewhere")
+    monkeypatch.setenv("PATH", os.pathsep.join(
+        ["/home/u/.venvs/ops/bin", "/usr/local/bin", "/usr/bin"]))
+
+    env = _child_env({"ODDS_SPEC": "0B30"})
+    assert "VIRTUAL_ENV" not in env and "POETRY_ACTIVE" not in env
+    assert "PYTHONPATH" not in env
+    assert "/home/u/.venvs/ops/bin" not in env["PATH"].split(os.pathsep)
+    assert "/usr/bin" in env["PATH"].split(os.pathsep)   # 他は残す
+    assert env["ODDS_SPEC"] == "0B30"                    # ジョブ固有の env は通す
