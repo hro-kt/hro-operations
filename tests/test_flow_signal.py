@@ -703,3 +703,28 @@ def test_order_reason_records_the_win_odds():
     o = orders[0]
     assert "tan=20.0" in o.reason and "fuku=3.5" in o.reason
     assert o.odds == 3.5                 # 発注は複勝
+
+
+def test_ninki_is_derived_from_win_odds_not_the_db_column():
+    """★人気は決定時点の単勝オッズ順から導出する。DB の tan_ninki は信号源によって
+    有無が違い(netkeiba は持たない)、そのままだとバックテストとライブで別定義になる。"""
+    from hro_operations.flow_signal import FlowConfig, _in_ninki_band, assign_ninki, flow_scores
+
+    sc = {"03": {"tan_odds": 5.0}, "01": {"tan_odds": 2.0}, "02": {"tan_odds": 5.0}}
+    assign_ninki(sc)
+    assert sc["01"]["ninki"] == 1
+    assert sc["02"]["ninki"] == 2       # 同値は馬番順
+    assert sc["03"]["ninki"] == 3
+
+    rows = [_row("01", "0200", "0035", "late"), _row("02", "0600", "0090", "late"),
+            _row("01", "0300", "0035", "early"), _row("02", "0500", "0090", "early")]
+    got = flow_scores(FakeDB(rows), ("2026", "0926", "06", "04", "08", "11"),
+                      FlowConfig(source="sokuho", lead_seconds=60, flow_minutes=6))
+    assert got["01"]["ninki"] == 1 and got["02"]["ninki"] == 2
+
+    band = FlowConfig(min_ninki=7, max_ninki=10)
+    assert not _in_ninki_band(band, 6)
+    assert _in_ninki_band(band, 7) and _in_ninki_band(band, 10)
+    assert not _in_ninki_band(band, 11)
+    assert not _in_ninki_band(band, None)      # 帯指定時に不明なら買わない
+    assert _in_ninki_band(FlowConfig(), None)  # 帯未指定なら従来どおり

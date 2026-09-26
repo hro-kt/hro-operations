@@ -504,6 +504,8 @@ def _cmd_flow_threshold(args) -> int:
     if getattr(args, "min_tan_odds", 0) or getattr(args, "max_tan_odds", 0):
         band = (f" / 単勝帯 {args.min_tan_odds or 0:g}"
                 f"〜{args.max_tan_odds or float('inf'):g}倍")
+    if getattr(args, "min_ninki", 0) or getattr(args, "max_ninki", 0):
+        band += f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
     print(f"  条件: {args.flow_source}{band} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 分位 {args.quantile}")
     # ★除外0件でも必ず出す。出さないと「除外後に残った数」なのか「そもそもの母数」なのか
@@ -550,7 +552,9 @@ def _cmd_flow_backtest(args) -> int:
     cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
                      source=args.flow_source, threshold=args.flow_threshold,
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
-                     max_tan_odds=getattr(args, "max_tan_odds", 0.0))
+                     max_tan_odds=getattr(args, "max_tan_odds", 0.0),
+                     min_ninki=getattr(args, "min_ninki", 0),
+                     max_ninki=getattr(args, "max_ninki", 0))
     # 月ごとに分割して回す。8ヶ月を1クエリにすると何分かかっているのか分からず、
     # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
     months = _month_chunks(args.d_from, args.d_to)
@@ -654,7 +658,9 @@ def _cmd_flow_slice(args) -> int:
     cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
                      threshold=args.flow_threshold, source=args.flow_source,
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
-                     max_tan_odds=getattr(args, "max_tan_odds", 0.0))
+                     max_tan_odds=getattr(args, "max_tan_odds", 0.0),
+                     min_ninki=getattr(args, "min_ninki", 0),
+                     max_ninki=getattr(args, "max_ninki", 0))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
     db = FeatureDB(load_features_config())
@@ -1150,6 +1156,9 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--min-tan-odds", type=float, default=0.0,
                       help="決定時点の単勝オッズ下限。回収率が帯で大きく違う")
     p_bt.add_argument("--max-tan-odds", type=float, default=0.0, help="同 上限")
+    p_bt.add_argument("--min-ninki", type=int, default=0,
+                      help="決定時点の単勝人気の下限(オッズ順から導出)")
+    p_bt.add_argument("--max-ninki", type=int, default=0, help="同 上限")
     p_bt.add_argument("--amount", type=int, default=100)
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")

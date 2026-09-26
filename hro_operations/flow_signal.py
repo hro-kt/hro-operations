@@ -55,6 +55,10 @@ class FlowConfig:
     #   ★帯は同じデータから見つけたもの。真の OOS 検証は**これから先の期間**でしかできない。
     min_tan_odds: float = 0.0   # >0 でこの倍率未満を除外
     max_tan_odds: float = 0.0   # >0 でこの倍率超を除外
+    # ★人気で絞る。オッズ帯と近い領域を指すが、**頭数で正規化されている**ぶん
+    #   頑健かもしれない(2026-09-25 実測: 7-10番人気が前半1.206/後半1.293で一貫、527本)。
+    min_ninki: int = 0
+    max_ninki: int = 0
     # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
     #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
@@ -287,6 +291,10 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
                            if xl.get("lead_sec") is not None and xe.get("lead_sec") is not None
                            else None),
         }
+    # ★人気は**決定時点の単勝オッズ順**から導出する。DB の tan_ninki は信号源によって
+    #   有無が違い(netkeiba は持たない)、そのままだとバックテストとライブで別物になる。
+    #   定義を1つにしておくこと。
+    assign_ninki(out)
     if not out and n_no_fuku:
         # ★原因を名指しする。ここを黙って空で返すと「netkeiba が取れていない」と
         #   誤診して、動いている側を触って1日溶かす。
@@ -694,6 +702,32 @@ def _in_tan_band(cfg: "FlowConfig", tan: float | None) -> bool:
     return not (cfg.max_tan_odds > 0 and tan > cfg.max_tan_odds)
 
 
+
+
+def assign_ninki(scores: dict[str, dict]) -> None:
+    """決定時点の単勝オッズ順に 1,2,3... を振る(同値は馬番順)。
+
+    ★DB の tan_ninki を使わない。信号源によって有無が違い(netkeiba は持たない)、
+      そのままだとバックテストとライブで**別の定義**になる。
+    """
+    for rank, um in enumerate(
+            sorted(scores, key=lambda u: (scores[u]["tan_odds"], u)), 1):
+        scores[um]["ninki"] = rank
+
+
+def _in_ninki_band(cfg: "FlowConfig", ninki) -> bool:
+    """決定時点の単勝人気が指定帯に入っているか。帯未指定なら常に True。"""
+    if not (cfg.min_ninki > 0 or cfg.max_ninki > 0):
+        return True
+    n = (str(ninki) or "").strip()
+    if not n.isdigit() or int(n) <= 0:
+        return False            # 帯を指定したのに人気が取れない馬は買わない
+    v = int(n)
+    if cfg.min_ninki > 0 and v < cfg.min_ninki:
+        return False
+    return not (cfg.max_ninki > 0 and v > cfg.max_ninki)
+
+
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
     """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
     from hro_moneymanager.models import BetOrder
@@ -728,6 +762,8 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
             continue
         if not _in_tan_band(cfg, d["tan_odds"]):
+            continue
+        if not _in_ninki_band(cfg, d.get("ninki")):
             continue
         orders.append(BetOrder(
             race_id=race_id, selection_id=um, bet_type="place", amount=amount,
@@ -928,6 +964,10 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             n_unsettled += 1
             continue
         n_scored += 1
+        # ★人気は決定時点の単勝オッズ順から導出(live の flow_scores と同じ定義)
+        ninki_of = {r["umaban"]: i for i, r in enumerate(
+            sorted((r for r in rs if tan_of(r["t1"])),
+                   key=lambda r: (tan_of(r["t1"]), r["umaban"])), 1)}
         for x in rs:
             # ★複勝(f1)は JV 由来なので常に _num。単勝だけソース別に読む
             t1, t0, f1 = tan_of(x["t1"]), tan_of(x["t0"]), _num(x["f1"])
@@ -940,6 +980,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 continue
             if not _in_tan_band(cfg, t1):
                 continue
+            if not _in_ninki_band(cfg, ninki_of.get(x["umaban"])):
+                continue
             # 異常区分 1=出走取消 2=発走除外 3=競走除外 は返還(元金が戻る)。
             # 4=競走中止 5=失格 は出走しているので外れ扱いのままでよい。
             lead = x.get("lead1")
@@ -948,7 +990,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
                 details.append({"rid": rid, "umaban": x["umaban"], "score": score,
                                 "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
-                                "ninki": x.get("nin1"), "waku": x.get("wakuban"),
+                                "ninki": ninki_of.get(x["umaban"]), "waku": x.get("wakuban"),
                                 "zogen_fugo": x.get("zogen_fugo"),
                                 "zogen_sa": x.get("zogen_sa"),
                                 "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
@@ -960,7 +1002,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             bets.append((rid, amount, payout, False))
             details.append({"rid": rid, "umaban": x["umaban"], "score": score,
                             "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
-                            "ninki": x.get("nin1"), "waku": x.get("wakuban"),
+                            "ninki": ninki_of.get(x["umaban"]), "waku": x.get("wakuban"),
                             "zogen_fugo": x.get("zogen_fugo"), "zogen_sa": x.get("zogen_sa"),
                             "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
                             "grade_cd": x.get("grade_cd"),
