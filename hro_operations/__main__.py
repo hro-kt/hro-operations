@@ -655,6 +655,55 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_combo(args) -> int:
+    """flow が選んだ馬から組を作って、ワイド・馬連・三連複を評価する。"""
+    import time
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .combos import COMBO_TYPES, evaluate
+    from .model_flow import ModelConfig, load_rows
+
+    cfg = ModelConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                      source=args.flow_source)
+    bets = [x.strip() for x in args.bets.split(",") if x.strip()]
+    db = FeatureDB(load_config := load_features_config())  # noqa: F841
+    rows, t0 = [], time.monotonic()
+    try:
+        for a, b in _month_chunks(args.d_from, args.d_to):
+            rows += load_rows(db, a, b, cfg)
+            print(f"  {a[:6]} 累計{len(rows):,}行 ({time.monotonic() - t0:.0f}s)",
+                  end="\r", flush=True)
+        res = [evaluate(db, rows, args.d_from, args.d_to, bt,
+                        threshold=args.flow_threshold, min_ninki=args.min_ninki,
+                        max_ninki=args.max_ninki, max_combos=args.max_combos,
+                        amount=args.amount) for bt in bets]
+    finally:
+        db.close()
+    band = (f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
+            if (args.min_ninki or args.max_ninki) else "")
+    print(f"\n=== 組み合わせ券{band} ({args.d_from}〜{args.d_to}) ===")
+    print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 閾値 "
+          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組")
+    print(f"\n  {'券種':<12} {'対象R':>6} {'組成R':>6} {'購入':>6} {'的中率':>7} "
+          f"{'回収率':>8}  95%CI            P(<=1)")
+    names = {"wide": "ワイド", "umaren": "馬連", "sanrenfuku": "三連複"}
+    for r in res:
+        if not r["bets"]:
+            print(f"  {names[r['bet']]:<12} {r['races_seen']:>6} "
+                  f"{r['races_with_combo']:>6} {'0':>6}  (組が作れていません)")
+            continue
+        ci = r.get("ci") or {}
+        print(f"  {names[r['bet']]:<12} {r['races_seen']:>6} {r['races_with_combo']:>6} "
+              f"{r['bets']:>6} {r['hit_rate']:>7.1%} {r['roi']:>8.4f}"
+              f"  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]   {ci.get('p_le_1', 0):.3f}")
+    print("\n  ※2頭・3頭が同時に要るので的中率は激減する。本数と分散を一緒に見ること。")
+    print("  ※組が作れたレースだけが分母(1頭しか候補が無いレースは除外)。")
+    return 0
+
+
 def _cmd_flow_sweep(args) -> int:
     """★閾値を下げて本数を増やし、確信度が上がるかを見る。
 
@@ -1292,6 +1341,22 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_cb = sub.add_parser("flow-combo",
+                          help="flow の候補から組を作ってワイド/馬連/三連複を評価")
+    p_cb.add_argument("--from", dest="d_from", required=True)
+    p_cb.add_argument("--to", dest="d_to", required=True)
+    p_cb.add_argument("--flow-threshold", type=float, required=True)
+    p_cb.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_cb.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_cb.add_argument("--flow-minutes", type=int, default=6)
+    p_cb.add_argument("--bets", default="wide,umaren,sanrenfuku")
+    p_cb.add_argument("--max-combos", type=int, default=3,
+                      help="1レースで買う組の上限(スコア上位から)")
+    p_cb.add_argument("--min-ninki", type=int, default=0)
+    p_cb.add_argument("--max-ninki", type=int, default=0)
+    p_cb.add_argument("--amount", type=int, default=100)
+    p_cb.set_defaults(func=_cmd_flow_combo)
 
     p_sw = sub.add_parser("flow-sweep",
                           help="★閾値を下げて本数を増やし、確信度が上がるかを見る")
