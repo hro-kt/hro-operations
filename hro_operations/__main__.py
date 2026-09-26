@@ -749,7 +749,7 @@ def _cmd_flow_slice(args) -> int:
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
           f"/ 閾値 {args.flow_threshold:+.4f} / 全体 {len(details):,} 点")
     for ax in axes:
-        title = "スコアの大きさ(閾値からの超過)" if ax == "score" else AXES[ax][0]
+        title = ("スコアの大きさ(閾値からの超過)" if ax == "score" else AXES[ax][0])
         print(f"\n  --- {title} ---")
         print(f"  {'帯':<22} {'購入':>6} {'的中率':>7} {'回収率':>8}  95%CI")
         for r in slice_details(details, ax, threshold=args.flow_threshold,
@@ -1269,7 +1269,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fs.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_fs.add_argument("--axes", default="tan,zogen,ninki,track",
                       help="軸(カンマ区切り): tan,fuku,n,jyo,month,lead,score,"
-                           "zogen(馬体重増減),ninki(人気),waku(枠),kyori,track(芝ダ)")
+                           "zogen(馬体重増減),ninki(人気),waku(枠),kyori,track(芝ダ),"
+                           "nsig(同一レースで閾値を超えた頭数),toponly(レース最高スコアか)")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)

@@ -118,8 +118,27 @@ AXES = {
     "waku": ("枠番", _bucket_waku),
     "kyori": ("距離", _bucket_kyori),
     "track": ("馬場(芝/ダ)", _bucket_track),
+    "nsig": ("同一レースで閾値を超えた頭数", None),
+    "toponly": ("レース最高スコアかどうか", None),
     "score": ("スコアの大きさ(閾値からの超過)", None),   # 閾値相対なので別扱い
 }
+
+
+# ★レース単位の軸。今日までのスライスは全部「馬の属性」で切っており、
+#   **レースの属性**では切っていない。「レースを見送れる方が強い」ことは分かっている
+#   (大域閾値 1.1281 対 レース内上位1頭 1.0441)が、**どのレースを見送るべきか**は未検証。
+_RACE_AXES = {"nsig", "toponly"}
+
+
+def _race_context(details: list[dict]) -> dict[str, dict]:
+    """レースごとの文脈。閾値を超えた頭数と、そのレースの最高スコア。"""
+    ctx: dict[str, dict] = {}
+    for d in details:
+        c = ctx.setdefault(d["rid"], {"n": 0, "best": None})
+        c["n"] += 1
+        if c["best"] is None or d["score"] > c["best"]:
+            c["best"] = d["score"]
+    return ctx
 
 
 def slice_details(details: list[dict], axis: str, *, threshold: float | None = None,
@@ -128,7 +147,18 @@ def slice_details(details: list[dict], axis: str, *, threshold: float | None = N
 
     ★返還(元金が戻る)は summarize_bets 側で扱う。ここでは賭け金と払戻をそのまま渡す。
     """
-    if axis == "score":
+    if axis in _RACE_AXES:
+        ctx = _race_context(details)
+        if axis == "nsig":
+            def key(d):
+                n = ctx[d["rid"]]["n"]
+                return f"{min(n, 4)} 同レース{n if n < 4 else '4頭以上'}"
+        else:
+            # そのレースで最高スコアの馬か。信号が1頭に集中しているかを見る
+            def key(d):
+                return ("1 レース最高スコア"
+                        if d["score"] >= ctx[d["rid"]]["best"] else "2 それ以外")
+    elif axis == "score":
         if threshold is None:
             raise ValueError("score 軸には閾値が要ります")
         qs = sorted(d["score"] - threshold for d in details)

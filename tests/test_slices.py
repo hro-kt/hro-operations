@@ -76,3 +76,19 @@ def test_other_buckets():
     assert _bucket_track({"track_cd": "11"}) == "1 芝"
     assert _bucket_track({"track_cd": "23"}) == "2 ダート"
     assert _bucket_track({"track_cd": "51"}).startswith("3")
+
+
+def test_race_level_axes():
+    """★レース単位の軸。「レースを見送れる方が強い」ことは分かっているが、
+    どのレースを見送るべきかは未検証。信号が1頭に集中しているレースと
+    散らばっているレースを分けて見る。"""
+    det = [_d("R1", 3.0, 200, "的中", score=0.5),
+           _d("R1", 8.0, 0, score=0.4),
+           _d("R1", 15.0, 0, score=0.35),
+           _d("R2", 5.0, 300, "的中", score=0.6)]
+    ns = {r["name"]: r for r in slice_details(det, "nsig", min_bets=1)}
+    assert ns["3 同レース3"]["bets"] == 3          # R1 は3頭
+    assert ns["1 同レース1"]["bets"] == 1          # R2 は1頭
+    top = {r["name"]: r for r in slice_details(det, "toponly", min_bets=1)}
+    assert top["1 レース最高スコア"]["bets"] == 2   # 各レースの最高が1頭ずつ
+    assert top["2 それ以外"]["bets"] == 2
