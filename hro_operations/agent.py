@@ -398,11 +398,34 @@ def _b_env_check(a: dict):
             os.path.join(_home(), "hro-synchronizer"), {})
 
 
+def _b_netkeiba_odds(a: dict):
+    """netkeiba の単勝オッズ(秒単位)を常駐取得。VM で動かす。
+
+    ★JV-Link を使わないので Windows の1プロセス制約と**競合しない**。
+      信号(単勝)は netkeiba、発注する複勝のオッズは JV-Link(ts_sokuho_o1)という分担。
+      片方でも止まると発注は0件になる(netkeiba は単勝しか出さないため)。
+    ★--within-minutes を 8 より下げないこと。起点(発走6分前)が取れなくなり、
+      そのレースは丸ごと見送りになる。
+    """
+    d = _ymd(a.get("date"), _today_jst())
+    within = max(8, _int(a.get("within_minutes"), 10))
+    cmd = ["poetry", "run", "hro-synchronizer", "netkeiba-odds",
+           "--date", d,
+           "--within-minutes", str(within),
+           "--interval", str(_float(a.get("interval"), 2.0))]
+    env = {}
+    if a.get("state"):
+        env["NETKEIBA_STATE"] = str(a["state"])
+    return (cmd, os.path.join(_home(), "hro-synchronizer"), env)
+
+
 _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
            "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill,
            "flow_day": _b_flow_day, "flow_check": _b_flow_check,
-           "import_results": _b_import_results, "jrdb_load": _b_jrdb_load},
+           "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
+           # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
+           "netkeiba_odds": _b_netkeiba_odds},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
                 "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load,
                 "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
