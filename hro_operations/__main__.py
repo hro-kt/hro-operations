@@ -669,6 +669,9 @@ def _cmd_flow_combo(args) -> int:
     cfg = ModelConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
                       source=args.flow_source)
     bets = [x.strip() for x in args.bets.split(",") if x.strip()]
+    # ★人気の下限は券種で変わりうる。単勝/複勝で決めた 7 を組み合わせ券にそのまま
+    #   当てる理由は無いので、まとめて振る。
+    ninkis = [int(x) for x in str(args.min_ninki).split(",") if x.strip()]
     db = FeatureDB(load_config := load_features_config())  # noqa: F841
     rows, t0 = [], time.monotonic()
     try:
@@ -676,27 +679,34 @@ def _cmd_flow_combo(args) -> int:
             rows += load_rows(db, a, b, cfg)
             print(f"  {a[:6]} 累計{len(rows):,}行 ({time.monotonic() - t0:.0f}s)",
                   end="\r", flush=True)
-        res = [evaluate(db, rows, args.d_from, args.d_to, bt,
-                        threshold=args.flow_threshold, min_ninki=args.min_ninki,
-                        max_ninki=args.max_ninki, max_combos=args.max_combos,
-                        amount=args.amount) for bt in bets]
+        res = []
+        for bt in bets:
+            for mn in ninkis:
+                r = evaluate(db, rows, args.d_from, args.d_to, bt,
+                             threshold=args.flow_threshold, min_ninki=mn,
+                             max_ninki=args.max_ninki, max_combos=args.max_combos,
+                             amount=args.amount, mode=args.mode,
+                             partners=args.partners)
+                r["min_ninki"] = mn
+                res.append(r)
     finally:
         db.close()
-    band = (f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
-            if (args.min_ninki or args.max_ninki) else "")
-    print(f"\n=== 組み合わせ券{band} ({args.d_from}〜{args.d_to}) ===")
+    how = ("軸=候補 / 相手=人気上位%d頭" % args.partners if args.mode == "partners"
+           else "候補どうしで組む")
+    print(f"\n=== 組み合わせ券 ({args.d_from}〜{args.d_to}) ===")
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 閾値 "
-          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組")
-    print(f"\n  {'券種':<12} {'対象R':>6} {'組成R':>6} {'購入':>6} {'的中率':>7} "
-          f"{'回収率':>8}  95%CI            P(<=1)")
+          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}")
+    print(f"\n  {'券種':<10} {'人気下限':>8} {'対象R':>6} {'組成R':>6} {'購入':>6} "
+          f"{'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
     names = {"wide": "ワイド", "umaren": "馬連", "sanrenfuku": "三連複"}
     for r in res:
+        lab = f"{names[r['bet']]:<10} {(r['min_ninki'] or 1):>8}"
         if not r["bets"]:
-            print(f"  {names[r['bet']]:<12} {r['races_seen']:>6} "
-                  f"{r['races_with_combo']:>6} {'0':>6}  (組が作れていません)")
+            print(f"  {lab} {r['races_seen']:>6} {r['races_with_combo']:>6} "
+                  f"{'0':>6}  (組が作れていません)")
             continue
         ci = r.get("ci") or {}
-        print(f"  {names[r['bet']]:<12} {r['races_seen']:>6} {r['races_with_combo']:>6} "
+        print(f"  {lab} {r['races_seen']:>6} {r['races_with_combo']:>6} "
               f"{r['bets']:>6} {r['hit_rate']:>7.1%} {r['roi']:>8.4f}"
               f"  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]   {ci.get('p_le_1', 0):.3f}")
     print("\n  ※2頭・3頭が同時に要るので的中率は激減する。本数と分散を一緒に見ること。")
@@ -1353,8 +1363,15 @@ def main(argv: list[str] | None = None) -> int:
     p_cb.add_argument("--bets", default="wide,umaren,sanrenfuku")
     p_cb.add_argument("--max-combos", type=int, default=3,
                       help="1レースで買う組の上限(スコア上位から)")
-    p_cb.add_argument("--min-ninki", type=int, default=0)
+    p_cb.add_argument("--min-ninki", default="0",
+                      help="軸の人気下限。カンマ区切りでまとめて振れる(例 0,4,6,7)。"
+                           "★単勝/複勝で決めた7を組み合わせ券に当てる理由は無い")
     p_cb.add_argument("--max-ninki", type=int, default=0)
+    p_cb.add_argument("--mode", choices=("partners", "all"), default="partners",
+                      help="partners=軸(候補)×相手(人気上位) / all=候補どうし。"
+                           "★all は両方が候補であることを要求するので対象レースが激減する")
+    p_cb.add_argument("--partners", type=int, default=3,
+                      help="相手に使う人気上位の頭数")
     p_cb.add_argument("--amount", type=int, default=100)
     p_cb.set_defaults(func=_cmd_flow_combo)
 

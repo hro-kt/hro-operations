@@ -5,10 +5,13 @@
   組み合わせ券はその馬が絡む配当がさらに大きい。ただし2頭・3頭が同時に要るので
   的中率は激減する。**本数と分散を必ず一緒に見ること**。
 
-★組の作り方
-  同一レースで閾値を超えた馬(flow 上位)から、スコアの高い順に組を作る。
-  1レースで N 頭が候補なら C(N,2) 組できるが、点数が増えると1点あたりの期待値が
-  薄まるので `--max-combos` で上位から打ち切る。
+★組の作り方は2通り。**partners の方が本質的**。
+  - all : 候補どうしで組む。**両方が候補である**ことを要求するので、組が作れるのは
+          全帯で1,794中531レース(30%)、人気7+では989中255(26%)。分母が構造的に小さい。
+  - partners : **軸＝flow が拾った馬 / 相手＝人気上位N頭**。エッジは1頭ごとに存在するので
+          相手まで候補である必要はない。候補が1頭いれば組めるので対象レースが激減しない。
+          軸がエッジを提供し、相手が的中確率を支える(実際の買い方と同じ形)。
+  点数が増えると1点あたりの期待値が薄まるので `--max-combos` で上位から打ち切る。
 
 ★決済
   nl_hr の確定払戻。組番は馬番2桁の連結(昇順)で、ワイドは1レースに3組当たる。
@@ -48,7 +51,8 @@ def _norm(kumi: str, width: int, n: int) -> str | None:
 
 def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
              threshold: float, min_ninki: int = 0, max_ninki: int = 0,
-             max_combos: int = 3, amount: int = 100) -> dict:
+             max_combos: int = 3, amount: int = 100,
+             mode: str = "partners", partners: int = 3) -> dict:
     """flow の候補から組を作って買った場合の回収率。"""
     if bet not in COMBO_TYPES:
         raise ValueError(f"不明な券種: {bet} ({'|'.join(COMBO_TYPES)})")
@@ -60,28 +64,50 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
         if k:
             pay.setdefault(r["rid"], {})[k] = r["pay"]
 
-    by_race: dict[str, list[dict]] = {}
+    all_by_race: dict[str, list[dict]] = {}
     for r in rows:
-        if min_ninki and r["ninki"] < min_ninki:
-            continue
-        if max_ninki and r["ninki"] > max_ninki:
-            continue
-        if r["flow"] < threshold:
-            continue
-        by_race.setdefault(r["rid"], []).append(r)
+        all_by_race.setdefault(r["rid"], []).append(r)
+
+    def _picks(rs):
+        out = [r for r in rs if r["flow"] >= threshold
+               and not (min_ninki and r["ninki"] < min_ninki)
+               and not (max_ninki and r["ninki"] > max_ninki)]
+        out.sort(key=lambda r: -r["flow"])
+        return out
 
     bets: list[tuple] = []
     n_races = n_used = 0
-    for rid, picks in by_race.items():
+    for rid, rs in all_by_race.items():
+        picks = _picks(rs)
+        if not picks:
+            continue
         n_races += 1
-        if len(picks) < per:
+        combos: list[tuple] = []
+        if mode == "all":
+            if len(picks) >= per:
+                combos = list(combinations(picks, per))
+        else:
+            # ★軸=候補 / 相手=人気上位。相手から軸自身は除く。
+            others = sorted((r for r in rs if r["ninki"] <= partners),
+                            key=lambda r: r["ninki"])
+            for axis in picks:
+                pool = [o for o in others if o["umaban"] != axis["umaban"]]
+                if len(pool) < per - 1:
+                    continue
+                combos += [(axis, *c) for c in combinations(pool, per - 1)]
+        if not combos:
             continue
         if rid not in pay:                 # ★払戻が無い= 未確定。外れとして数えない
             continue
         n_used += 1
-        picks.sort(key=lambda r: -r["flow"])
-        for combo in list(combinations(picks, per))[:max_combos]:
+        seen: set[str] = set()
+        for combo in combos:
             kumi = "".join(sorted(x["umaban"] for x in combo))
+            if kumi in seen:               # ★軸が2頭いると同じ組が重複しうる
+                continue
+            seen.add(kumi)
+            if len(seen) > max_combos:
+                break
             p = pay[rid].get(kumi)
             payout = int(round(int(p) * amount / 100)) if str(p or "").isdigit() else 0
             bets.append((rid, amount, payout, False))
@@ -90,4 +116,5 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
     rep["races_seen"] = n_races
     rep["races_with_combo"] = n_used
     rep["bet"] = bet
+    rep["mode"] = mode
     return rep
