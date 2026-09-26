@@ -656,6 +656,59 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_preflight(args) -> int:
+    """★開催日の朝に、発注に必要な条件が揃っているかを1発で確認する。"""
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .preflight import check
+    from .race_day import DayConfig
+
+    cfg = DayConfig(date=args.date, win_model="", place_model="", results_path="",
+                    strategy="flow", flow_source=args.flow_source,
+                    flow_lead_seconds=args.flow_lead_seconds,
+                    flow_minutes=args.flow_minutes,
+                    flow_thresholds=_parse_thresholds(args.flow_thresholds),
+                    deadline_lead_seconds=args.deadline_lead_seconds,
+                    lead_seconds=args.deadline_lead_seconds
+                    + args.act_before_deadline_seconds)
+    db = FeatureDB(load_features_config())
+    try:
+        r = check(db, args.date, cfg)
+    finally:
+        db.close()
+
+    ra = r["races"]
+    print(f"=== 発注前チェック {args.date} ===")
+    print(f"  レース      : {ra.get('n') or 0} 件 "
+          f"(これから発走 {ra.get('upcoming') or 0} / "
+          f"{ra.get('first_post') or '--'}〜{ra.get('last_post') or '--'})")
+    for label, table in (("netkeiba  ", "ts_netkeiba_o1"), ("速報(JV)  ", "ts_sokuho_o1")):
+        d = r.get(table) or {}
+        if d.get("error"):
+            print(f"  {label}: ✗ {d['error']}")
+            continue
+        age = d.get("age_sec")
+        mark = "✓" if (d.get("rows") or 0) else "✗"
+        print(f"  {label}: {mark} {d.get('rows') or 0:,} 行 / "
+              f"{d.get('races') or 0} レース"
+              + (f" / 最終取得 {age}秒前" if age is not None else " / 取得なし"))
+    tk = r["threshold_key"]
+    print(f"  閾値キー    : 必要 {tk['want']} / 設定 {tk['have']}")
+    print(f"  タイミング  : 判断 T-{args.flow_lead_seconds}s → 投票 T-{r['act_lead']}s "
+          f"→ 締切 T-{args.deadline_lead_seconds}s")
+    if r["problems"]:
+        print("\n  ✗ 発注できません:")
+        for p in r["problems"]:
+            print(f"    - {p}")
+        return 1
+    print("\n  ✓ 条件は揃っています")
+    print("  ※これは**朝の時点**の確認。レース中に poll-odds や netkeiba-odds が")
+    print("    落ちると静かに0件になるので、最初のレースのログで src= も必ず見ること。")
+    return 0
+
+
 def _cmd_flow_combo(args) -> int:
     """flow が選んだ馬から組を作って、ワイド・馬連・三連複を評価する。"""
     import time
@@ -1351,6 +1404,19 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_pf = sub.add_parser("preflight",
+                          help="★開催日の朝に、発注に必要な条件が揃っているかを確認")
+    p_pf.add_argument("--date", required=True, help="YYYYMMDD")
+    p_pf.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"),
+                      default="netkeiba")
+    p_pf.add_argument("--flow-lead-seconds", type=int, default=75)
+    p_pf.add_argument("--flow-minutes", type=int, default=6)
+    p_pf.add_argument("--flow-thresholds", default=None,
+                      help='例 \'{"75": 0.1533}\'')
+    p_pf.add_argument("--deadline-lead-seconds", type=int, default=60)
+    p_pf.add_argument("--act-before-deadline-seconds", type=int, default=10)
+    p_pf.set_defaults(func=_cmd_preflight)
 
     p_cb = sub.add_parser("flow-combo",
                           help="flow の候補から組を作ってワイド/馬連/三連複を評価")
