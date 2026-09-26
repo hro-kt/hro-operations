@@ -645,6 +645,56 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_sweep(args) -> int:
+    """★閾値を下げて本数を増やし、確信度が上がるかを見る。
+
+    期間はもう伸ばせない(JRA-VAN の 0B41 保持が約1年)。本数を増やす手段は
+    閾値を下げることだけ。「スコアの大きさは効かない」が正しければ、
+    広げても回収率は落ちず本数だけ増え、CI が締まる。
+    """
+    import time
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .model_flow import ModelConfig, load_rows, sweep_quantiles
+
+    cfg = ModelConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                      source=args.flow_source, bet_type=args.bet_type)
+    qs = [float(x) for x in args.quantiles.split(",") if x.strip()]
+    db = FeatureDB(load_features_config())
+    rows, t0 = [], time.monotonic()
+    try:
+        for a, b in _month_chunks(args.d_from, args.d_to):
+            rows += load_rows(db, a, b, cfg)
+            print(f"  {a[:6]} 累計{len(rows):,}行 ({time.monotonic() - t0:.0f}s)",
+                  end="\r", flush=True)
+    finally:
+        db.close()
+    res = sweep_quantiles(rows, qs, min_ninki=args.min_ninki,
+                          max_ninki=args.max_ninki, amount=args.amount)
+    if not res:
+        print("\n対象がありません")
+        return 1
+    ken = {"fuku": "複勝", "tan": "単勝"}[args.bet_type]
+    band = (f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
+            if (args.min_ninki or args.max_ninki) else "")
+    print(f"\n=== 閾値スイープ {ken}{band} ({args.d_from}〜{args.d_to}) ===")
+    print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
+          f"/ 対象 {len(rows):,} 行")
+    print(f"\n  {'分位':>6} {'閾値':>9} {'購入':>6} {'的中率':>7} {'回収率':>8}"
+          f"  95%CI            P(<=1)")
+    for r in res:
+        ci = r.get("ci") or {}
+        print(f"  {r['quantile']:>6.2f} {r['threshold']:>+9.4f} {r['bets']:>6} "
+              f"{r['hit_rate']:>7.1%} {r['roi']:>8.4f}"
+              f"  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]   {ci.get('p_le_1', 0):.3f}")
+    print("\n  ※回収率が保たれたまま本数が増えるなら、広げた方が確信度が上がる。")
+    print("    落ちるなら『スコアの大きさは効かない』という前提の方が誤り。")
+    return 0
+
+
 def _cmd_flow_model(args) -> int:
     """flow を特徴量の1つにして、買うべき馬をモデルに選ばせる。"""
     import time
@@ -1233,6 +1283,20 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_sw = sub.add_parser("flow-sweep",
+                          help="★閾値を下げて本数を増やし、確信度が上がるかを見る")
+    p_sw.add_argument("--from", dest="d_from", required=True)
+    p_sw.add_argument("--to", dest="d_to", required=True)
+    p_sw.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_sw.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_sw.add_argument("--flow-minutes", type=int, default=6)
+    p_sw.add_argument("--quantiles", default="0.95,0.90,0.85,0.80,0.70")
+    p_sw.add_argument("--min-ninki", type=int, default=0)
+    p_sw.add_argument("--max-ninki", type=int, default=0)
+    p_sw.add_argument("--bet-type", choices=("fuku", "tan"), default="fuku")
+    p_sw.add_argument("--amount", type=int, default=100)
+    p_sw.set_defaults(func=_cmd_flow_sweep)
 
     p_fm = sub.add_parser("flow-model",
                           help="★flow を特徴量にしてモデルに選ばせる(軸探索込み)")

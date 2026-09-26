@@ -98,3 +98,19 @@ def test_rank_target_is_available_and_graded():
     assert "label_gain" in src          # 段階付けを損失に反映している
     assert "_top_per_race" in src       # レース内で選ぶ(大域の分位では切らない)
     assert m.ModelConfig().top_per_race >= 1
+
+
+def test_sweep_widens_the_sample_by_lowering_the_threshold():
+    """★期間はもう伸ばせない(JRA-VAN の 0B41 保持が約1年)。本数を増やす手段は
+    閾値を下げることだけ。分位を下げるほど本数が単調に増えること、
+    人気帯で絞り込めることを固定する。"""
+    from hro_operations.model_flow import sweep_quantiles
+
+    rows = [{"rid": f"R{i // 3}", "flow": i * 0.01, "ninki": (i % 10) + 1,
+             "payout": 150 if i % 4 == 0 else 0} for i in range(60)]
+    res = sweep_quantiles(rows, [0.95, 0.90, 0.80])
+    assert [r["bets"] for r in res] == sorted(r["bets"] for r in res)
+    assert res[0]["threshold"] > res[-1]["threshold"]
+
+    narrowed = sweep_quantiles(rows, [0.90], min_ninki=7)
+    assert narrowed[0]["bets"] < res[1]["bets"]

@@ -75,6 +75,7 @@ class ModelConfig:
     #   flow が効くのは絶対量ではなく**レース内の相対的な動き**を見ているから。
     #   モデルにも同じ土俵で学ばせる。選択は**レース内で上位k頭**(スコアはレース間で
     #   比較できないので、大域の分位では切らない)。
+    bet_type: str = "fuku"           # fuku | tan(払戻の参照先)
     target: str = "return"
     winsor: float = 10.0             # ★純収益の上限。裾の数件に引きずられないように
     top_per_race: int = 1            # target=rank のとき、レース内で何頭買うか
@@ -92,7 +93,10 @@ def _f(v, default=0.0) -> float:
 def load_rows(db, d_from: str, d_to: str, cfg: ModelConfig) -> list[dict]:
     """期間の全馬について特徴量と結果を作る(閾値で絞らない)。"""
     table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
-    rows = db.query(_SQL_BT.replace("{TABLE}", table),
+    if cfg.bet_type not in ("fuku", "tan"):
+        raise ValueError(f"不明な券種: {cfg.bet_type!r}")
+    # ★{BET} の差し込みを忘れると SQL が壊れる(券種をプレースホルダ化した際の取りこぼし)
+    rows = db.query(_SQL_BT.replace("{TABLE}", table).replace("{BET}", f"'{cfg.bet_type}'"),
                     {"d0": d_from, "d1": d_to,
                      "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
     by_race: dict[str, list[dict]] = {}
@@ -299,3 +303,32 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
         "edge": _bet("edge", n_take, "モデル(市場からの上乗せ分)"),
         "importance": imp,
     }
+
+def sweep_quantiles(rows: list[dict], quantiles: list[float], *,
+                    min_ninki: int = 0, max_ninki: int = 0,
+                    amount: int = 100) -> list[dict]:
+    """1回のデータ読み込みで複数の分位を評価する。
+
+    ★期間はもう伸ばせない(JRA-VAN の 0B41 保持が約1年)。本数を増やすには
+      **閾値を下げる**しかない。「スコアの大きさは効かない」(超過量の上位25%が
+      前半最高・後半最低で逆転)が正しければ、上位5%を10%や15%に広げても
+      回収率は落ちず本数だけ増え、CI が締まる。落ちるならその前提が誤り。
+    """
+    use = [r for r in rows
+           if (not min_ninki or r["ninki"] >= min_ninki)
+           and (not max_ninki or r["ninki"] <= max_ninki)]
+    if not use:
+        return []
+    vals = sorted(r["flow"] for r in use)
+    out = []
+    for q in quantiles:
+        thr = vals[min(len(vals) - 1, int(len(vals) * q))]
+        picked = [r for r in use if r["flow"] >= thr]
+        bets = [(r["rid"], amount, int(round(r["payout"] * amount / 100)), False)
+                for r in picked]
+        rep = summarize_bets(bets, races=len({r["rid"] for r in use}),
+                             races_scored=len({r["rid"] for r in use}))
+        rep["quantile"] = q
+        rep["threshold"] = thr
+        out.append(rep)
+    return out
