@@ -747,3 +747,22 @@ def test_bet_type_switches_the_payout_lookup():
         pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", built))
         assert built.count("'tan'") == 2      # has_payout と払戻 JOIN の両方
     assert FlowConfig().bet_type == "fuku"
+
+
+def test_live_orders_use_the_configured_bet_type():
+    """★単勝×人気7+×上位5% が OOS 1.6690(P=0.007)で複勝(1.0768)を大きく上回ったので
+    券種を可変にした。バックテストの券種名(nl_hr)と hro_buyer の券種名は**別物**なので、
+    変換を通すこと(fuku→place / tan→win)。既定は従来どおり複勝。"""
+    from hro_operations.flow_signal import _BET_TYPE, FlowConfig, flow_orders
+
+    assert _BET_TYPE == {"fuku": "place", "tan": "win"}
+    assert FlowConfig().bet_type == "fuku"
+
+    rows = [_row("01", "0200", "0035", "late"), _row("02", "0600", "0090", "late"),
+            _row("01", "0300", "0035", "early"), _row("02", "0500", "0090", "early")]
+    key = ("2026", "0926", "06", "04", "08", "11")
+    base = dict(source="sokuho", lead_seconds=60, flow_minutes=6, threshold=0.0)
+    assert flow_orders(FakeDB(rows), key, FlowConfig(**base), 100, "t")[0].bet_type == "place"
+    win = flow_orders(FakeDB(rows), key, FlowConfig(bet_type="tan", **base), 100, "t")[0]
+    assert win.bet_type == "win"
+    assert "ken=win" in win.reason and "ninki=" in win.reason

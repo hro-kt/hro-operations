@@ -63,7 +63,7 @@ class FlowConfig:
     #   良い可能性がある**(配当が大きい)。確定払戻は nl_hr に年単位で揃っているので
     #   測るだけなら安い。live の発注は現状 place 固定なので、採用するなら
     #   flow_orders の bet_type も変える必要がある。
-    bet_type: str = "fuku"      # fuku | tan
+    bet_type: str = "fuku"      # fuku | tan(バックテストの払戻参照先)
     # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
     #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
@@ -720,6 +720,10 @@ def assign_ninki(scores: dict[str, dict]) -> None:
         scores[um]["ninki"] = rank
 
 
+# バックテストの券種名(nl_hr の bet_type)→ hro_buyer の券種名
+_BET_TYPE = {"fuku": "place", "tan": "win"}
+
+
 def _in_ninki_band(cfg: "FlowConfig", ninki) -> bool:
     """決定時点の単勝人気が指定帯に入っているか。帯未指定なら常に True。"""
     if not (cfg.min_ninki > 0 or cfg.max_ninki > 0):
@@ -771,7 +775,10 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         if not _in_ninki_band(cfg, d.get("ninki")):
             continue
         orders.append(BetOrder(
-            race_id=race_id, selection_id=um, bet_type="place", amount=amount,
+            # ★券種は設定から取る。単勝×人気7+×上位5% が OOS で 1.6690(P=0.007)と
+            #   複勝(1.0768)を大きく上回ったため可変にした。既定は従来どおり複勝。
+            race_id=race_id, selection_id=um, bet_type=_BET_TYPE[cfg.bet_type],
+            amount=amount,
             probability=0.0,                 # flow は確率を推定しない(順位/閾値で選ぶ)
             odds=d["fuku_odds"],
             expected_return=0.0, edge=0.0, kelly_fraction=0.0,
@@ -781,6 +788,7 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             #   ライブの結果を検証できない。odds 欄は発注する複勝の値なので別に持つ。
             reason=(f"flow_tan={d['score']:+.4f}>={thr:+.4f}@T-{lead_used}s "
                     f"tan={d['tan_odds']:.1f} fuku={d['fuku_odds']:.1f} "
+                    f"ninki={d.get('ninki')} ken={_BET_TYPE[cfg.bet_type]} "
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
         ))

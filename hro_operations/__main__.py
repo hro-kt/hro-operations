@@ -102,6 +102,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                         "(検証 ROI 1.174 P(ROI<=1)=0.001 8/8ヶ月, docs/2026-09_flow_signal.md)")
     p.add_argument("--flow-threshold", type=float, default=0.0,
                    help="flow スコアの絶対閾値(fit 期間の分位から決めた値)")
+    p.add_argument("--flow-bet-type", choices=("fuku", "tan"), default="fuku",
+                   help="買う券種。tan=単勝。★単勝は IPAT の画面遷移が未検証なので"
+                        "dry-vote で確認してから live にすること")
+    p.add_argument("--flow-min-ninki", type=int, default=0,
+                   help="決定時点の単勝人気の下限(オッズ順から導出)")
+    p.add_argument("--flow-max-ninki", type=int, default=0)
     p.add_argument("--flow-thresholds", default=None,
                    help='リード別の閾値 JSON 例 \'{"120":0.1631,"180":0.08}\'。'
                         "配信遅れで決定時点がレースごとに変わるため、実際に使った"
@@ -176,6 +182,9 @@ def _cfg(args):
         strategy=args.strategy,
         flow_threshold=args.flow_threshold,
         flow_thresholds=_parse_thresholds(args.flow_thresholds),
+        flow_bet_type=getattr(args, "flow_bet_type", "fuku"),
+        flow_min_ninki=getattr(args, "flow_min_ninki", 0),
+        flow_max_ninki=getattr(args, "flow_max_ninki", 0),
         flow_lead_seconds=args.flow_lead_seconds,
         flow_minutes=args.flow_minutes,
         flow_source=args.flow_source,

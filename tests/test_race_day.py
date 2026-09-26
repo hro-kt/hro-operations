@@ -25,3 +25,17 @@ def test_check_timing_rejects_threshold_without_matching_lead():
     grid = DayConfig(flow_source="sokuho", flow_lead_seconds=118,
                      flow_thresholds={120: 0.15}, **base)
     check_timing(grid)
+
+
+def test_run_day_passes_bet_type_and_ninki_band_to_the_signal():
+    """★単勝×人気7+ を live で使えるようにした。DayConfig から FlowConfig へ
+    渡し漏れると、設定したのに**黙って複勝・全帯で走る**(2026-09-26 に信号源で
+    同じ事故を起こしている)。"""
+    from hro_operations.race_day import DayConfig
+
+    cfg = DayConfig(date="20260927", win_model="", place_model="",
+                    results_path="/tmp/r.jsonl", strategy="flow",
+                    flow_bet_type="tan", flow_min_ninki=7)
+    assert cfg.flow_bet_type == "tan" and cfg.flow_min_ninki == 7
+    assert DayConfig(date="x", win_model="", place_model="",
+                     results_path="x").flow_bet_type == "fuku"
