@@ -1,6 +1,16 @@
 """flow を特徴量の1つにして、買うべき馬をモデルに選ばせる。
 
-★市場をオフセットに置く(ここを外すと必ず負ける)
+★目的変数は**純収益**にする(確率×オッズで並べてはいけない)
+  確率を当てて `p × 複勝オッズ` で並べると、高配当馬では確率のわずかな誤差が
+  オッズ倍されて増幅される。実測(2026-09-25): 的中12.7%・回収 0.8316 で、
+  モデルは「穴馬で確率をわずかに上振れさせたもの」=雑音を拾っていた。
+  対して flow は EV を見ず**レース内のシェア変化**という相対量で並べており、
+  オッズ水準の誤差に影響されない(的中42.4%・1.1281)。
+  → 目的変数を **純収益 = 払戻/賭け金 − 1** にして直接回帰する。これが買う基準そのもの。
+  ★払戻は裾が非常に重い(複勝で20倍超が出る)。L2 だと数件の大穴に引きずられるので
+    **Huber 損失 + 上側の刈り込み**を併用する。
+
+★市場をオフセットに置く(分類のときだけ意味がある)
   複勝圏内の確率をそのまま学習させると、モデルは**市場を再現すること**に容量を使い切る。
   オッズを特徴量に入れている以上そうなるし、市場より上手く当てられないので、
   市場とのズレ=モデルの誤差を買いに行くことになる(2026-09-25 実測: 0.84 / 0.89 対
@@ -60,6 +70,8 @@ class ModelConfig:
     # ★市場をオフセットに置くか。False にすると「市場の再現」を学んで必ず負ける。
     market_offset: bool = True
     place_takeout: float = 0.20      # 複勝の控除率(q の目安に使うだけ)
+    target: str = "return"           # return(純収益の回帰) | hit(複勝圏内の分類)
+    winsor: float = 10.0             # ★純収益の上限。裾の数件に引きずられないように
     features: list[str] = field(default_factory=lambda: list(FEATURES))
 
 
@@ -152,6 +164,40 @@ def train_and_eval(train: list[dict], test: list[dict], cfg: ModelConfig, *,
             q = min(max(q, 1e-4), 1 - 1e-4)
             out.append(math.log(q / (1 - q)))
         return out
+
+    if cfg.target == "return":
+        # ★買う基準そのものを直接学ぶ。純収益 = 払戻/賭け金 − 1(外れ = -1)。
+        #   裾が重いので Huber + 刈り込み。
+        ytr_r = [min(r["payout"] / 100.0 - 1.0, cfg.winsor) for r in train]
+        reg = lgb.LGBMRegressor(
+            objective="huber", num_leaves=cfg.num_leaves,
+            n_estimators=cfg.n_estimators, learning_rate=cfg.learning_rate,
+            min_child_samples=cfg.min_child_samples,
+            random_state=cfg.seed, verbose=-1)
+        reg.fit(xtr, ytr_r)
+        pred = reg.predict(xte)
+        for r, v in zip(test, pred):
+            r["p"] = 0.0
+            r["ev"] = float(v)          # 予測純収益そのもので並べる
+            r["edge"] = float(v)
+        imp = sorted(zip(feats, reg.feature_importances_), key=lambda kv: -kv[1])
+        n_take = max(1, int(len(test) * (1 - cfg.quantile)))
+
+        def _bet_r(key: str, label: str) -> dict:
+            picked = sorted(test, key=lambda r: -r[key])[:n_take]
+            bets = [(r["rid"], amount, int(round(r["payout"] * amount / 100)), False)
+                    for r in picked]
+            rep = summarize_bets(bets, races=len({r["rid"] for r in test}),
+                                 races_scored=len({r["rid"] for r in test}))
+            rep["label"] = label
+            return rep
+
+        return {"n_train": len(train), "n_test": len(test), "n_take": n_take,
+                "model": _bet_r("ev", "モデル(純収益の予測で上位)"),
+                "edge": _bet_r("ev", "同上"),
+                "proba": _bet_r("ev", "同上"),
+                "flow": _bet_r("flow", "flow 単体(比較基準)"),
+                "importance": imp}
 
     model = lgb.LGBMClassifier(
         num_leaves=cfg.num_leaves, n_estimators=cfg.n_estimators,

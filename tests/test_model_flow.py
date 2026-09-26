@@ -73,3 +73,12 @@ def test_market_offset_is_on_by_default():
     市場の logit を init_score に置き、補正だけを学ばせるのが既定。"""
     assert ModelConfig().market_offset is True
     assert 0 < ModelConfig().place_takeout < 1
+
+
+def test_default_target_is_net_return():
+    """★確率を当てて p×オッズ で並べると、高配当馬で誤差がオッズ倍されて増幅する
+    (実測 0.8316 / 的中12.7%)。買う基準そのもの=純収益を直接回帰する。
+    払戻は裾が重いので刈り込みを持つ。"""
+    c = ModelConfig()
+    assert c.target == "return"
+    assert c.winsor > 0

@@ -656,7 +656,8 @@ def _cmd_flow_model(args) -> int:
                       source=args.flow_source, quantile=args.quantile,
                       num_leaves=args.num_leaves, n_estimators=args.n_estimators,
                       min_child_samples=args.min_child_samples,
-                      market_offset=not args.no_market_offset)
+                      market_offset=not args.no_market_offset,
+                      target=args.target, winsor=args.winsor)
 
     def _load(a, b, tag):
         rows, t0 = [], time.monotonic()
@@ -679,11 +680,17 @@ def _cmd_flow_model(args) -> int:
     r = train_and_eval(train, test, cfg, amount=args.amount)
     print(f"\n=== flow + モデル ===")
     print(f"  学習 {args.train_from}〜{args.train_to}: {r['n_train']:,} 行")
-    print(f"  市場オフセット: {'あり' if not args.no_market_offset else '**なし**'}")
+    print(f"  目的変数: {args.target}"
+          + (f" / 市場オフセット: {'あり' if not args.no_market_offset else '**なし**'}"
+             if args.target == "hit" else f" / 刈り込み +{args.winsor:g}"))
     print(f"  検証 {args.test_from}〜{args.test_to}: {r['n_test']:,} 行 "
           f"→ 上位 {r['n_take']:,} 点を購入(分位 {args.quantile})")
     print(f"\n  {'選び方':<28} {'購入':>5} {'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
+    seen = set()
     for k in ("model", "edge", "proba", "flow"):
+        if r[k]["label"] in seen:
+            continue
+        seen.add(r[k]["label"])
         x = r[k]
         ci = x.get("ci") or {}
         print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
@@ -1234,6 +1241,10 @@ def main(argv: list[str] | None = None) -> int:
     p_fm.add_argument("--n-estimators", type=int, default=300)
     p_fm.add_argument("--min-child-samples", type=int, default=200)
     p_fm.add_argument("--amount", type=int, default=100)
+    p_fm.add_argument("--target", choices=("return", "hit"), default="return",
+                      help="return=純収益の回帰(既定) / hit=複勝圏内の分類")
+    p_fm.add_argument("--winsor", type=float, default=10.0,
+                      help="純収益の刈り込み上限(裾の数件に引きずられないように)")
     p_fm.add_argument("--no-market-offset", action="store_true",
                       help="市場をオフセットに置かない(比較用。これだと市場の再現を学ぶ)")
     p_fm.set_defaults(func=_cmd_flow_model)
