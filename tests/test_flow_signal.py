@@ -667,3 +667,23 @@ def test_netkeiba_compare_sql_columns_match_the_keys_python_reads():
             return [dict.fromkeys(needed, 1)]
 
     assert set(netkeiba_compare(DB(), "20260926")[0]) == set(needed)
+
+
+def test_tan_odds_band_filters_orders():
+    """★回収率はオッズ帯で大きく違う(2026-09-25 実測, 3期間):
+    2.0-4.0倍 1.038/1.025/1.046 / 20-40倍 1.584/1.255/1.566 / 40倍超 0.546/0.903/2.617。
+    帯で絞れること、帯未指定なら従来どおり全通しであることを固定する。"""
+    from hro_operations.flow_signal import FlowConfig, _in_tan_band
+
+    band = FlowConfig(min_tan_odds=20.0, max_tan_odds=40.0)
+    assert not _in_tan_band(band, 19.9)
+    assert _in_tan_band(band, 20.0)
+    assert _in_tan_band(band, 40.0)
+    assert not _in_tan_band(band, 40.1)
+
+    # 帯未指定なら全通し(既存の挙動を変えない)
+    off = FlowConfig()
+    assert _in_tan_band(off, 1.1) and _in_tan_band(off, 999.0)
+    assert _in_tan_band(off, None)
+    # 帯を指定したのにオッズが取れない馬は買わない(黙って通すと帯の意味が無くなる)
+    assert not _in_tan_band(band, None)

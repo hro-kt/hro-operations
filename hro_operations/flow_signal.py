@@ -46,6 +46,15 @@ class FlowConfig:
     threshold: float = 0.0      # スコアの絶対閾値(fit 期間の分位から決めた値)
     source: str = "ts"          # ts | sokuho
     max_odds: float = 0.0       # >0 で複勝オッズ上限(荒れすぎを弾く)
+    # ★決定時点の**単勝**オッズで帯を絞る。回収率がオッズ帯で大きく違うため
+    #   (2026-09-25 実測, ts@T-60s を3期間に分割):
+    #     2.0-4.0倍  1.038 / 1.025 / 1.046   ← 小さいが極めて安定(的中67-71%)
+    #     4.0-20倍   前後で入れ替わり一貫性なし
+    #     20-40倍    1.584 / 1.255 / 1.566   ← 大きい(347本で平均1.45)
+    #     40倍超     0.546 / 0.903 / 2.617   ← 人気-穴バイアスで不安定
+    #   ★帯は同じデータから見つけたもの。真の OOS 検証は**これから先の期間**でしかできない。
+    min_tan_odds: float = 0.0   # >0 でこの倍率未満を除外
+    max_tan_odds: float = 0.0   # >0 でこの倍率超を除外
     # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
     #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
@@ -675,6 +684,16 @@ def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
             "races_skewed_window": n_skewed}
 
 
+
+def _in_tan_band(cfg: "FlowConfig", tan: float | None) -> bool:
+    """決定時点の単勝オッズが指定帯に入っているか。帯未指定なら常に True。"""
+    if tan is None:
+        return not (cfg.min_tan_odds > 0 or cfg.max_tan_odds > 0)
+    if cfg.min_tan_odds > 0 and tan < cfg.min_tan_odds:
+        return False
+    return not (cfg.max_tan_odds > 0 and tan > cfg.max_tan_odds)
+
+
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
     """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
     from hro_moneymanager.models import BetOrder
@@ -707,6 +726,8 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         if d["score"] < thr:
             continue
         if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
+            continue
+        if not _in_tan_band(cfg, d["tan_odds"]):
             continue
         orders.append(BetOrder(
             race_id=race_id, selection_id=um, bet_type="place", amount=amount,
@@ -906,6 +927,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             if score < cfg.threshold:
                 continue
             if max_odds is not None and t1 > max_odds:
+                continue
+            if not _in_tan_band(cfg, t1):
                 continue
             # 異常区分 1=出走取消 2=発走除外 3=競走除外 は返還(元金が戻る)。
             # 4=競走中止 5=失格 は出走しているので外れ扱いのままでよい。
