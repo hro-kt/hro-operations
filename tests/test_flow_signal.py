@@ -657,8 +657,8 @@ def test_netkeiba_compare_sql_columns_match_the_keys_python_reads():
     from hro_operations.flow_signal import _SQL_NK_COMPARE, netkeiba_compare
 
     pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", _SQL_NK_COMPARE))
-    needed = ["jyo_cd", "race_num", "minute_key", "n", "nk_values", "jv_values",
-              "agree", "first_at", "last_at"]
+    needed = ["jyo_cd", "race_num", "minute_key", "n", "nk_snaps", "horses",
+              "nk_pairs", "jv_values", "agree", "first_at", "last_at"]
     for col in needed:
         assert re.search(rf"\bAS {col}\b", _SQL_NK_COMPARE) or f"nk.{col}" in _SQL_NK_COMPARE, col
 

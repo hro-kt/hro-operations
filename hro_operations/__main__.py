@@ -822,21 +822,27 @@ def _cmd_netkeiba_compare(args) -> int:
 
     n = sum(r["n"] for r in rows)
     agree = sum(r["agree"] for r in rows)
-    multi = sum(1 for r in rows if (r["nk_values"] or 0) > 1)
+    multi = sum(1 for r in rows if (r["nk_snaps"] or 0) > 1)
+    moved = sum(1 for r in rows if (r["nk_pairs"] or 0) > (r["horses"] or 0))
+    snaps = sum(r["nk_snaps"] or 0 for r in rows)
     print(f"=== {args.date} netkeiba × 公式速報 ===")
-    print(f"  突合: {n:,} 点 / 値が一致 {agree:,} ({agree / n:.1%})")
-    print(f"  発表分ごとの標本: {len(rows):,} / うち netkeiba が分内で動いた {multi:,} "
-          f"({multi / len(rows):.1%})")
-    print("\n  場  R  発表時刻  突合  nk値数 公式値数  一致   最初〜最後")
+    print(f"  突合: {n:,} 点 / 同じ分で値が一致 {agree:,} ({agree / n:.1%})")
+    print(f"  公式の発表分: {len(rows):,}  netkeiba のスナップ: {snaps:,} "
+          f"(1分あたり {snaps / len(rows):.2f} 点)")
+    print(f"  1分に2点以上あった分: {multi:,} ({multi / len(rows):.1%})")
+    print(f"  ★馬ごとに値が動いた分: {moved:,} ({moved / len(rows):.1%}) "
+          f"← これが『公式より細かい』の実体")
+    print("\n  場  R  発表時刻  突合 nk点数 頭数 馬×値 公式値数  一致   最初〜最後")
     for r in rows[:40]:
         print(f"  {r['jyo_cd']} {r['race_num']}  {r['minute_key']}  {r['n']:>4} "
-              f"{r['nk_values']:>6} {r['jv_values']:>7}  {r['agree']:>4}   "
-              f"{r['first_at']}〜{r['last_at']}")
+              f"{r['nk_snaps']:>5} {r['horses']:>4} {r['nk_pairs']:>5} "
+              f"{r['jv_values']:>7}  {r['agree']:>4}   {r['first_at']}〜{r['last_at']}")
     print("\n  読み方:")
-    print("   一致率が高い          → 同じプールを見ている(信用できる)")
-    print("   nk値数が 1 のまま      → 分内では動いていない(公式と同じ粒度。足す意味なし)")
-    print("   nk値数が 2 以上        → 分の途中でも動いている(netkeiba の方が細かい)")
-    print("   一致率が低い          → 別物を見ている。補間か予想オッズを掴んでいる疑い")
+    print("   馬×値 > 頭数           → 分の途中で値が動いている(netkeiba の方が細かい)")
+    print("   馬×値 = 頭数           → 分内は1値のみ(公式と同じ粒度。足す意味なし)")
+    print("   ★一致率は netkeiba が1分に2点あると**上限が約50%**になる。")
+    print("     片方だけが公式の発表時刻と重なるため。低い=外れ、ではない。")
+    print("   一致が極端に低い(<20%) → 別物を見ている。補間か予想オッズを掴んでいる疑い")
     return 0
 
 

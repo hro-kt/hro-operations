@@ -1003,10 +1003,14 @@ jv AS (
     AND tan_odds ~ '^[0-9]+$' AND tan_odds::numeric > 0
 )
 -- ★列名は Python 側が引くキーと一致させる(英語)。表示の日本語は CLI 側で付ける。
---   ここを日本語にしていたため dict のキーが合わず KeyError になった(2026-09-26)。
+-- ★「netkeiba が分内で動いたか」は **馬ごとに値が2つ以上あるか** で判定する。
+--   全馬を通じた distinct 値数で見ると頭数とほぼ同じ値になり、常に「動いた」に見える
+--   (2026-09-26 に誤読した)。nk_pairs > horses が真の判定。
 SELECT nk.jyo_cd, nk.race_num, nk.minute_key,
        count(*) AS n,
-       count(DISTINCT nk.tan_odds) AS nk_values,
+       count(DISTINCT nk.observed_at) AS nk_snaps,
+       count(DISTINCT nk.umaban) AS horses,
+       count(DISTINCT (nk.umaban, nk.tan_odds)) AS nk_pairs,
        count(DISTINCT jv.jv_odds) AS jv_values,
        count(*) FILTER (WHERE abs(nk.tan_odds - jv.jv_odds) < 0.051) AS agree,
        min(nk.observed_at AT TIME ZONE 'Asia/Tokyo')::time(0) AS first_at,
@@ -1024,11 +1028,12 @@ def netkeiba_compare(db, date: str) -> list[dict]:
 
     読み方:
       - 一致 / 突合数 が高い          → 同じプールを見ている(信用できる)
-      - netkeiba値数 が 1 のまま      → 分内では動いていない(公式と同じ粒度)
-      - netkeiba値数 が 2 以上        → 分の途中でも動いている(こちらが速い)
+      - nk_snaps が 2 以上            → 1分に2点以上ある(公式より細かい)
+      - nk_pairs > horses             → **馬ごとに値が動いている**(本当に細かい)
+      - 一致率は netkeiba が1分に2点あると上限が約50%になる。低い=外れ、ではない
     """
-    cols = ["jyo_cd", "race_num", "minute_key", "n", "nk_values", "jv_values",
-            "agree", "first_at", "last_at"]
+    cols = ["jyo_cd", "race_num", "minute_key", "n", "nk_snaps", "horses",
+            "nk_pairs", "jv_values", "agree", "first_at", "last_at"]
     rows = db.query(_SQL_NK_COMPARE, {"y": date[:4], "m": date[4:8]})
     if rows and isinstance(rows[0], dict):
         return rows
