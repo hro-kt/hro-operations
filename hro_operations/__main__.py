@@ -628,6 +628,63 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_horizons(args) -> int:
+    """★同一レースでホライズン別＋組み合わせを比較する。
+
+    別々に走らせた数字を並べると、信号の差とレース構成の差が混ざる。
+    """
+    import sys
+
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .horizons import HorizonConfig, evaluate
+
+    origins = [int(x) for x in args.origins.split(",") if x.strip()]
+    cfg = HorizonConfig(source=args.flow_source, lead_seconds=args.lead_seconds,
+                        origins=origins, quantile=args.quantile)
+
+    def _p(i, n):
+        print(f"  {i}/{n} レース...", end="\r", file=sys.stderr, flush=True)
+
+    db = FeatureDB(load_features_config())
+    try:
+        r = evaluate(db, args.d_from, args.d_to, cfg, amount=args.amount, progress=_p)
+    finally:
+        db.close()
+
+    print(f"\n=== ホライズン比較 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  {args.flow_source} / 決定時点 発走{args.lead_seconds}秒前 / 分位 {args.quantile}")
+    print(f"  対象 {r['races_seen']:,} → **全ホライズンで測れて決済済み "
+          f"{r['races_used']:,} レース** "
+          f"(測れず {r['no_score']:,} / 未確定 {r['unsettled']:,})")
+    if not r["races_used"]:
+        print("  共通のレースがありません")
+        return 1
+
+    def _line(x, thr=None):
+        if not x["bets"]:
+            print(f"  {x['label']:<28} {'0':>5}")
+            return
+        ci = x.get("ci") or {}
+        t = f"{thr:+.4f}" if thr is not None else "     -"
+        print(f"  {x['label']:<28} {x['bets']:>5} {x['hit_rate']:>7.1%} "
+              f"{x['roi']:>8.4f}  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]"
+              f"   {ci.get('p_le_1', 0):.3f}  {t}")
+
+    print(f"\n  {'設定':<28} {'購入':>5} {'的中率':>7} {'回収率':>8}  95%CI"
+          f"            P(<=1)  閾値")
+    for cut in origins:
+        _line(r["per_horizon"][cut], r["thresholds"][cut])
+    print("  " + "-" * 76)
+    for k in ("all", "any", "combo"):
+        _line(r[k])
+    print("\n  ※同じレース・同じ分位・同じ複勝決済。違うのは**使った価格経路だけ**。")
+    print("  ※AND は本数が減るぶん CI が広がる。本数と回収率を一緒に見ること。")
+    return 0
+
+
 def _cmd_money_vs_flow(args) -> int:
     """★同一レースで馬連の板と単勝シェアを戦わせる。
 
@@ -931,6 +988,19 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_fh = sub.add_parser("flow-horizons",
+                          help="★同一レースでホライズン別＋組み合わせを比較する")
+    p_fh.add_argument("--from", dest="d_from", required=True)
+    p_fh.add_argument("--to", dest="d_to", required=True)
+    p_fh.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
+    p_fh.add_argument("--lead-seconds", type=int, default=60, help="決定時点(発走-これ秒)")
+    p_fh.add_argument("--origins", default="120,180,360,600,900",
+                      help="起点(発走-これ秒)をカンマ区切りで。ts は発走近傍が 0/60/360 秒"
+                           "しか無いので 120/180 は 360 に落ちる点に注意")
+    p_fh.add_argument("--quantile", type=float, default=0.95)
+    p_fh.add_argument("--amount", type=int, default=100)
+    p_fh.set_defaults(func=_cmd_flow_horizons)
 
     p_mv = sub.add_parser("money-vs-flow",
                           help="★同一レースで馬連の板と単勝シェアを比べる")
