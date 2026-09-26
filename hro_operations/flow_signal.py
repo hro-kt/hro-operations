@@ -59,6 +59,11 @@ class FlowConfig:
     #   頑健かもしれない(2026-09-25 実測: 7-10番人気が前半1.206/後半1.293で一貫、527本)。
     min_ninki: int = 0
     max_ninki: int = 0
+    # ★買う券種。エッジは人気7番以降=中穴に集中しているので、**単勝の方が効率が
+    #   良い可能性がある**(配当が大きい)。確定払戻は nl_hr に年単位で揃っているので
+    #   測るだけなら安い。live の発注は現状 place 固定なので、採用するなら
+    #   flow_orders の bet_type も変える必要がある。
+    bet_type: str = "fuku"      # fuku | tan
     # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
     #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
@@ -837,7 +842,7 @@ SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        EXISTS (SELECT 1 FROM nl_hr h2
                 WHERE (h2.year,h2.month_day,h2.jyo_cd,h2.kaiji,h2.nichiji,h2.race_num)
                     = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
-                  AND h2.bet_type = 'fuku') AS has_payout
+                  AND h2.bet_type = {BET}) AS has_payout
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 JOIN ra ra2 USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
@@ -849,7 +854,7 @@ LEFT JOIN nl_se se
 LEFT JOIN nl_hr h
   ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
- AND h.bet_type = 'fuku'
+ AND h.bet_type = {BET}
  AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
 """
 
@@ -907,7 +912,7 @@ SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        EXISTS (SELECT 1 FROM nl_hr h2
                 WHERE (h2.year,h2.month_day,h2.jyo_cd,h2.kaiji,h2.nichiji,h2.race_num)
                     = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
-                  AND h2.bet_type = 'fuku') AS has_payout
+                  AND h2.bet_type = {BET}) AS has_payout
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 -- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
@@ -918,7 +923,7 @@ LEFT JOIN nl_se se
 LEFT JOIN nl_hr h
   ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
- AND h.bet_type = 'fuku'
+ AND h.bet_type = {BET}
  AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
 LEFT JOIN fk USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 """
@@ -933,12 +938,15 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     オッズでは払われない。判断に使うのはスナップのオッズ、決済は必ず確定払戻。
     レース単位でブートストラップして CI を出す(同一レース内の馬は独立でない)。
     """
+    if cfg.bet_type not in ("fuku", "tan"):
+        raise ValueError(f"不明な券種: {cfg.bet_type!r} (fuku|tan)")
     if cfg.source == "netkeiba":
         sql = _SQL_BT_NK
     elif cfg.source in ("ts", "sokuho"):
         sql = _SQL_BT.replace("{TABLE}", "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1")
     else:
         raise ValueError(f"不明な flow 信号源: {cfg.source!r}")
+    sql = sql.replace("{BET}", f"'{cfg.bet_type}'")
     tan_of = _tan_reader(cfg.source)
     rows = db.query(sql, {"d0": d_from, "d1": d_to,
                           "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})

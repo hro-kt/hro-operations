@@ -603,7 +603,8 @@ def test_backtest_does_not_silently_read_another_source():
     from hro_operations.flow_signal import _SQL_BT_NK, _SQL_NETKEIBA
 
     for q in (_SQL_NETKEIBA, _SQL_BT_NK):
-        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", q))
+        built = q.replace("{BET}", "'fuku'")      # 券種は差し込んでから検査する
+        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", built))
         assert "ts_netkeiba_o1" in q
     assert "observed_at" in _SQL_BT_NK and "hasso_time <=" not in _SQL_BT_NK
 
@@ -728,3 +729,21 @@ def test_ninki_is_derived_from_win_odds_not_the_db_column():
     assert not _in_ninki_band(band, 11)
     assert not _in_ninki_band(band, None)      # 帯指定時に不明なら買わない
     assert _in_ninki_band(FlowConfig(), None)  # 帯未指定なら従来どおり
+
+
+def test_bet_type_switches_the_payout_lookup():
+    """★エッジは人気7番以降=中穴に集中している。単勝は配当が大きいぶん効率が
+    良い可能性があり、確定払戻は nl_hr に年単位で揃っているので測るだけなら安い。
+    券種の差し込みが両方の SQL に効いていることを固定する。"""
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import _SQL_BT, _SQL_BT_NK, FlowConfig
+
+    for q in (_SQL_BT, _SQL_BT_NK):
+        assert "{BET}" in q and "'fuku'" not in q
+        built = q.replace("{TABLE}", "ts_o1").replace("{BET}", "'tan'")
+        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", built))
+        assert built.count("'tan'") == 2      # has_payout と払戻 JOIN の両方
+    assert FlowConfig().bet_type == "fuku"

@@ -554,7 +554,8 @@ def _cmd_flow_backtest(args) -> int:
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
-                     max_ninki=getattr(args, "max_ninki", 0))
+                     max_ninki=getattr(args, "max_ninki", 0),
+                     bet_type=getattr(args, "bet_type", "fuku"))
     # 月ごとに分割して回す。8ヶ月を1クエリにすると何分かかっているのか分からず、
     # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
     months = _month_chunks(args.d_from, args.d_to)
@@ -587,7 +588,8 @@ def _cmd_flow_backtest(args) -> int:
     r["details"] = details
     r["races_unsettled"] = unsettled
 
-    print(f"=== flow_tan 複勝 回収率 ({args.d_from}〜{args.d_to}) ===")
+    ken = {"fuku": "複勝", "tan": "単勝"}[getattr(args, "bet_type", "fuku")]
+    print(f"=== flow_tan {ken} 回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 閾値 {args.flow_threshold:+.4f}"
           + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
@@ -724,7 +726,8 @@ def _cmd_flow_slice(args) -> int:
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
-                     max_ninki=getattr(args, "max_ninki", 0))
+                     max_ninki=getattr(args, "max_ninki", 0),
+                     bet_type=getattr(args, "bet_type", "fuku"))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
     db = FeatureDB(load_features_config())
@@ -1223,6 +1226,9 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--min-ninki", type=int, default=0,
                       help="決定時点の単勝人気の下限(オッズ順から導出)")
     p_bt.add_argument("--max-ninki", type=int, default=0, help="同 上限")
+    p_bt.add_argument("--bet-type", choices=("fuku", "tan"), default="fuku",
+                      help="買う券種。エッジは中穴に集中しているので単勝の方が"
+                           "効率が良い可能性がある")
     p_bt.add_argument("--amount", type=int, default=100)
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
