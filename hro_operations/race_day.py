@@ -12,7 +12,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -307,6 +309,34 @@ def _buyer_config(cfg: DayConfig) -> BuyerConfig:
     )
 
 
+
+def check_recipe_verified(cfg: DayConfig) -> None:
+    """live の前に IPAT レシピが検証済みかを確かめる。
+
+    ★verified の判定は**最終送信の直前**で行われる。そこで落ちると、ログイン・画面遷移・
+      確認まで済ませた末に送信だけ拒否され、しかも**その時点では締切を過ぎている**ので
+      その場で直しても間に合わない。2026-09-27 に開催中の全件がこれで失敗した。
+      走り出す前に落とす(check_timing と同じ考え方)。
+    """
+    path = os.path.expanduser(cfg.ipat_recipe or "")
+    if not path:
+        raise TimingError("live には --ipat-recipe が必要です")
+    if not os.path.exists(path):
+        raise TimingError(f"IPAT レシピがありません: {path}")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            recipe = json.load(fh)
+    except Exception as e:  # noqa: BLE001 - 読めない時点で live は始められない
+        raise TimingError(f"IPAT レシピを読めません: {path} ({e})") from e
+    if not recipe.get("verified"):
+        raise TimingError(
+            f"IPAT レシピが未検証です(verified=false): {path}\n"
+            "  `hro-buyer ipat dry-vote` で確認画面が意図どおりか確かめ、"
+            "そのファイルの \"verified\" を true にしてください。\n"
+            "  ★このまま走ると、確認画面まで進んだ末に**送信だけ拒否**され、"
+            "締切を過ぎてから気付くことになります。")
+
+
 def build_day_executor(cfg: DayConfig):
     """開催日を通して使う executor を作る(live のみ。paper/dry_run は None=レース毎に自動構築)。
 
@@ -316,6 +346,7 @@ def build_day_executor(cfg: DayConfig):
     """
     if cfg.mode != MODE_LIVE:
         return None
+    check_recipe_verified(cfg)
     from hro_buyer.__main__ import build_live_executor
     pg = PostgresConfig.from_env()
     return build_live_executor(
