@@ -52,3 +52,22 @@ def test_child_env_does_not_leak_the_agents_virtualenv(monkeypatch):
     assert "/home/u/.venvs/ops/bin" not in env["PATH"].split(os.pathsep)
     assert "/usr/bin" in env["PATH"].split(os.pathsep)   # 他は残す
     assert env["ODDS_SPEC"] == "0B30"                    # ジョブ固有の env は通す
+
+
+def test_threshold_grid_check_is_source_aware():
+    """★60秒格子は JV-Link(発表時刻が分刻み)の制約。netkeiba は実時刻なので 75 が正しい。
+    信号源を見ずに弾いていたため、正しい netkeiba 設定でランナーが起動できなかった
+    (2026-09-27 に実害。フロントだけ直して agent を直し忘れた)。"""
+    import pytest
+
+    from hro_operations.agent import _flow_day_params, _thresholds
+
+    assert _thresholds({"75": 0.1533}, "netkeiba") == {75: 0.1533}
+    assert _thresholds({"120": 0.1583}, "sokuho") == {120: 0.1583}
+    with pytest.raises(ValueError, match="60秒の倍数"):
+        _thresholds({"75": 0.1533}, "sokuho")
+
+    p = _flow_day_params({"source": "netkeiba", "thresholds": '{"75": 0.1533}',
+                          "lead_seconds": 75})
+    assert p["source"] == "netkeiba" and p["thresholds"] == {75: 0.1533}
+    assert p["flow_lead"] == 75

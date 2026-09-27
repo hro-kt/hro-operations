@@ -198,7 +198,11 @@ def _float(v, default: float) -> float:
         return default
 
 
-def _thresholds(raw) -> dict[int, float] | None:
+# 実時刻で動く信号源(発表時刻の分格子に縛られない)
+GRID_FREE_SOURCES = {"netkeiba"}
+
+
+def _thresholds(raw, source: str = "sokuho") -> dict[int, float] | None:
     """{リード秒: 閾値} を正規化する。UI からは文字列キーで来る。"""
     if not raw:
         return None
@@ -213,8 +217,14 @@ def _thresholds(raw) -> dict[int, float] | None:
     out: dict[int, float] = {}
     for k, v in raw.items():
         lead = int(k)
-        if lead % 60:
-            raise ValueError(f"リードは60秒の倍数で指定してください(発表時刻が分格子): {lead}")
+        # ★60秒格子の制約は JV-Link(発表時刻が分刻み)の話。netkeiba は実時刻なので
+        #   75 のような値が正しい。信号源を見ずに弾いていたため、正しい netkeiba 設定で
+        #   ランナーが起動できなかった(2026-09-27 に実害。フロントだけ直して
+        #   ここを直し忘れていた)。
+        if lead % 60 and source not in GRID_FREE_SOURCES:
+            raise ValueError(
+                f"リードは60秒の倍数で指定してください(発表時刻が分格子): {lead}"
+                f" ※信号源={source}。netkeiba なら秒単位で指定できます")
         out[lead] = float(v)
     return out
 
@@ -228,20 +238,22 @@ def _flow_day_params(a: dict) -> dict:
     「1日走りきって0件」という最悪の壊れ方をするので、投入時点で落とす。
     """
     d = _ymd(a.get("date"), _today_jst())
+    # ★信号源を先に解決する。閾値の格子検査が信号源に依存するため(netkeiba は実時刻)。
+    src = (a.get("source") if a.get("source") in ("ts", "sokuho", "netkeiba")
+           else "sokuho")
     p = {
         "date": d,
         "threshold": _float(a.get("threshold"), 0.2802),
         # リード別の閾値 {リード秒: 閾値}。これを渡すと、実測リードに対応する値が
         # 無いレースは**見送る**。「T-120s が間に合ったレースだけ買う」運用はこれで実現する。
-        "thresholds": _thresholds(a.get("thresholds")),
+        "thresholds": _thresholds(a.get("thresholds"), src),
         # 既定は「締切30秒前に投票開始」で実際に使える組。発表時刻は分刻みなので、
         # 発走-90s の時点で存在する最新スナップは 発走-120s のもの。ts(0B41)は
         # 発走近傍が 0/60/360秒しか無く 120 を指定しても 360 に落ちるため sokuho を既定にする。
         # ★許可された値だけ通し、知らない値は sokuho に落とす。以前は
         #   `"ts" if ... else "sokuho"` と書いており、netkeiba を指定しても**黙って
         #   sokuho で走っていた**(別ソースの結果を netkeiba の成績として記録する事故)。
-        "source": (a.get("source") if a.get("source") in ("ts", "sokuho", "netkeiba")
-                   else "sokuho"),
+        "source": src,
         "flow_lead": _int(a.get("lead_seconds"), 120),
         "flow_min": _int(a.get("flow_minutes"), 6),
         "act_lead": 0,          # 下で締切基準から解決する
