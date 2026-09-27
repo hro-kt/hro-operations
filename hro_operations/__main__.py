@@ -657,6 +657,69 @@ def _money_cfg(args):
 
 
 
+
+def _cmd_flow_picks(args) -> int:
+    """その日の設定で**何を買っていたか**を一覧する(払戻は要らない)。
+
+    ★開催当日〜数日は払戻(nl_hr)が来ないので回収率は出せない。しかし「どの馬を
+      どのオッズで何点買っていたか」は分かる。設定を変えたときの影響(本数・オッズ帯)を
+      開催直後に確かめるための道具。
+    ★発注と**同じ関数(flow_orders)**を通す。別実装にすると乖離して意味が無くなる。
+    """
+    from hro_features.config import load_config as load_features_config
+    from hro_features.db import FeatureDB
+
+    from .flow_signal import FlowConfig, flow_orders
+    from .race_day import day_races
+
+    cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
+                     threshold=args.flow_threshold, source=args.flow_source,
+                     thresholds=_parse_thresholds(args.flow_thresholds),
+                     bet_type=args.bet_type,
+                     min_ninki=args.min_ninki, max_ninki=args.max_ninki)
+    db = FeatureDB(load_features_config())
+    try:
+        races = [r for r, _h in day_races(db, args.date)]
+        rows = []
+        for race in races:
+            for o in flow_orders(db, race, cfg, args.amount, "picks"):
+                rows.append(o)
+    finally:
+        db.close()
+
+    ken = {"fuku": "複勝", "tan": "単勝"}[args.bet_type]
+    band = (f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
+            if (args.min_ninki or args.max_ninki) else "")
+    print(f"=== {args.date} の買い目 ({ken}{band}) ===")
+    print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
+          f"/ 対象 {len(races)} レース")
+    if not rows:
+        print("  該当なし(閾値が高い / スナップ不足 / 帯に入る馬がいない)")
+        return 0
+
+    import re
+    print(f"\n  {'レース':<17} {'馬番':>3} {'スコア':>9} {'単勝':>7} {'人気':>4} {'T-秒':>5}")
+    tans = []
+    for o in rows:
+        m = re.search(r"tan=([\d.]+).*?ninki=(\d+).*?@T-(\d+)s", o.reason) or \
+            re.search(r"@T-(\d+)s.*?tan=([\d.]+).*?ninki=(\d+)", o.reason)
+        tan = float(re.search(r"tan=([\d.]+)", o.reason).group(1))
+        nin = re.search(r"ninki=(\d+)", o.reason)
+        lead = re.search(r"@T-(\d+)s", o.reason)
+        sc = re.search(r"flow_tan=([+\-\d.]+)", o.reason)
+        tans.append(tan)
+        print(f"  {o.race_id:<17} {o.selection_id:>3} {sc.group(1) if sc else '?':>9} "
+              f"{tan:>7.1f} {nin.group(1) if nin else '?':>4} "
+              f"{lead.group(1) if lead else '?':>5}")
+    tans.sort()
+    mid = tans[len(tans) // 2]
+    print(f"\n  合計 {len(rows)} 点 / 投資 {len(rows) * args.amount:,}円")
+    print(f"  単勝オッズ: 最小 {tans[0]:.1f} / 中央 {mid:.1f} / 最大 {tans[-1]:.1f}")
+    print("  ※払戻は開催の3〜5日後に配信される。回収率はそれから "
+          "(hro-ops flow-backtest)。")
+    return 0
+
+
 def _cmd_preflight(args) -> int:
     """★開催日の朝に、発注に必要な条件が揃っているかを1発で確認する。"""
     from hro_features.config import load_config as load_features_config
@@ -1404,6 +1467,20 @@ def main(argv: list[str] | None = None) -> int:
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
+
+    p_pk = sub.add_parser("flow-picks",
+                          help="その日の設定で**何を買っていたか**を一覧(払戻不要)")
+    p_pk.add_argument("--date", required=True)
+    p_pk.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="netkeiba")
+    p_pk.add_argument("--flow-lead-seconds", type=int, default=80)
+    p_pk.add_argument("--flow-minutes", type=int, default=6)
+    p_pk.add_argument("--flow-threshold", type=float, default=0.0)
+    p_pk.add_argument("--flow-thresholds", default=None, help='例 \'{"80": 0.1533}\'')
+    p_pk.add_argument("--bet-type", choices=("fuku", "tan"), default="fuku")
+    p_pk.add_argument("--min-ninki", type=int, default=0)
+    p_pk.add_argument("--max-ninki", type=int, default=0)
+    p_pk.add_argument("--amount", type=int, default=100)
+    p_pk.set_defaults(func=_cmd_flow_picks)
 
     p_pf = sub.add_parser("preflight",
                           help="★開催日の朝に、発注に必要な条件が揃っているかを確認")
