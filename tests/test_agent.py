@@ -87,7 +87,8 @@ def test_cancel_is_checked_outside_the_output_loop():
     assert "_canceled(" in hb, "心拍スレッドでキャンセルを見ていない"
     assert "_kill(" in hb, "心拍スレッドからプロセスを止めていない"
     # 出力ループ側では DB を見に行かない(ブロック中は到達しないので意味が無い)
-    loop = src[src.index("for line in proc.stdout"):src.index("code = proc.wait()")]
+    # ★コメント中にも同じ文言があるので**最後の出現**を使う
+    loop = src[src.rindex("for line in proc.stdout"):src.index("code = proc.wait()")]
     assert "_canceled(" not in loop
     assert "cancel_flag.is_set()" in loop
 
