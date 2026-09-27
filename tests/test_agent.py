@@ -71,3 +71,38 @@ def test_threshold_grid_check_is_source_aware():
                           "lead_seconds": 75})
     assert p["source"] == "netkeiba" and p["thresholds"] == {75: 0.1533}
     assert p["flow_lead"] == 75
+
+
+def test_cancel_is_checked_outside_the_output_loop():
+    """★キャンセルは**心拍スレッド**で見る必要がある。出力ループ
+    (`for line in proc.stdout`)は readline でブロックするので、無言で待機するジョブ
+    (flow ランナーはレース間で数分沈黙する)では**次に何か出力されるまで効かない**。
+    2026-09-27 に「中止を押しても消えない」として実害。"""
+    import inspect
+
+    from hro_operations import agent
+
+    src = inspect.getsource(agent._run_job)
+    hb = src[src.index("def _hb_loop"):src.index("hb_thread = threading.Thread")]
+    assert "_canceled(" in hb, "心拍スレッドでキャンセルを見ていない"
+    assert "_kill(" in hb, "心拍スレッドからプロセスを止めていない"
+    # 出力ループ側では DB を見に行かない(ブロック中は到達しないので意味が無い)
+    loop = src[src.index("for line in proc.stdout"):src.index("code = proc.wait()")]
+    assert "_canceled(" not in loop
+    assert "cancel_flag.is_set()" in loop
+
+
+def test_kill_falls_back_when_killpg_is_unavailable():
+    """★Windows には killpg が無い。フォールバックが無いとキャンセルが効かない。"""
+    from hro_operations.agent import _kill
+
+    class P:
+        pid = -1                      # os.getpgid が失敗する
+        terminated = False
+
+        def terminate(self):
+            P.terminated = True
+
+    _kill([P()])
+    assert P.terminated
+    _kill([])                         # 起動前でも落ちないこと

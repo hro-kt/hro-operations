@@ -452,6 +452,23 @@ _VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "POETRY_ACTIVE",
               "PYTHONHOME", "PYTHONPATH")
 
 
+
+def _kill(proc_ref: list) -> None:
+    """プロセスグループごと止める。★start_new_session=True で分離してあるので、
+    子(poetry → python → ブラウザ)まで一括で落とせる。"""
+    if not proc_ref:
+        return
+    proc = proc_ref[0]
+    try:
+        import signal
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except Exception:       # noqa: BLE001 - Windows など killpg が無い環境
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+
+
 def _child_env(extra: dict) -> dict:
     """子プロセスの環境。★agent 自身の venv を引き継がせない。
 
@@ -541,6 +558,11 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
     # メイン conn はログのストリーミングで占有されるため、これが無いと実行中ずっと offline に誤表示。
     import psycopg
     stop_hb = threading.Event()
+    # ★キャンセルは**この別スレッド**で見る。出力ループ(`for line in proc.stdout`)は
+    #   readline でブロックするので、無言で待機するジョブ(flow ランナーはレース間で
+    #   数分沈黙する)では**次に何か出力されるまでキャンセルが効かない**。
+    #   2026-09-27 に「中止を押しても消えない」として実害。
+    cancel_flag = threading.Event()
 
     def _hb_loop() -> None:
         hb = None
@@ -549,6 +571,9 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
                 if hb is None or hb.closed:
                     hb = psycopg.connect(_conninfo(), autocommit=True)
                 _heartbeat(hb, server, job_id)   # agent(ops_agent.last_seen)
+                if not cancel_flag.is_set() and _canceled(hb, job_id):
+                    cancel_flag.set()
+                    _kill(proc_ref)
                 # ジョブ自体の生存も更新(無出力の長時間ジョブでも heartbeat_at が新しく保たれる)。
                 hb.execute("UPDATE ops_job SET heartbeat_at=now() WHERE id=%s AND status='running'",
                            (job_id,))
@@ -565,6 +590,7 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
             except Exception:
                 pass
 
+    proc_ref: list = []          # 起動前にキャンセルが来ても壊れないよう list で渡す
     hb_thread = threading.Thread(target=_hb_loop, daemon=True)
     hb_thread.start()
     try:
@@ -572,31 +598,28 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
             proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True, bufsize=1,
                                      start_new_session=True)  # プロセスグループ化(cancelで一括停止)
+            proc_ref.append(proc)
         except Exception as e:
             _append_log(conn, job_id, f"[agent] 起動失敗: {e}\n")
             _finish(conn, job_id, "failed", -1)
             return
 
         buf, last_flush = [], time.monotonic()
-        canceled = False
         assert proc.stdout is not None
         for line in proc.stdout:
             buf.append(line)
             if time.monotonic() - last_flush > 2.0 or len(buf) >= 40:
                 _append_log(conn, job_id, "".join(buf)); buf.clear(); last_flush = time.monotonic()
-                if _canceled(conn, job_id):
-                    canceled = True
-                    _append_log(conn, job_id, "[agent] cancel要求 → プロセスグループ停止\n")
-                    try:
-                        import signal
-                        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                    except Exception:
-                        proc.terminate()
+                if cancel_flag.is_set():
                     break
         if buf:
             _append_log(conn, job_id, "".join(buf))
         code = proc.wait()
-        _finish(conn, job_id, "canceled" if canceled else ("done" if code == 0 else "failed"), code)
+        if cancel_flag.is_set():
+            _append_log(conn, job_id, "[agent] cancel要求 → プロセスグループ停止\n")
+        _finish(conn, job_id,
+                "canceled" if cancel_flag.is_set() else ("done" if code == 0 else "failed"),
+                code)
     finally:
         stop_hb.set()
 
