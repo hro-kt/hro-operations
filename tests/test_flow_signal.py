@@ -788,3 +788,26 @@ def test_normalize_divides_by_the_race_noise_level():
     # 符号と順位は変わらない(同一レース内では単調変換)
     assert (nrm["01"]["score"] > nrm["02"]["score"]) == (raw["01"]["score"] > raw["02"]["score"])
     assert FlowConfig().normalize is False      # 既定は従来どおり
+
+
+def test_small_fields_are_excluded_when_min_horses_is_set():
+    """★複勝は**出走8頭以上で3着まで、5〜7頭は2着まで、4頭以下は発売なし**。
+    2着までの複勝は別物なので、混ぜると条件の違うレースをまとめて最適化することになる。
+    単勝には関係ないので既定は 0(制限なし)。"""
+    from hro_operations.flow_signal import FlowConfig, flow_orders
+
+    # 6頭立て(複勝は2着まで)
+    rows = []
+    for i, (t1, t0) in enumerate(
+            [("0020", "0030"), ("0060", "0050"), ("0080", "0070"),
+             ("0100", "0090"), ("0200", "0180"), ("0300", "0280")], 1):
+        um = f"{i:02d}"
+        rows.append(_row(um, t1, "0035", "late"))
+        rows.append(_row(um, t0, "0035", "early"))
+    key = ("2026", "0926", "06", "04", "08", "11")
+    base = dict(source="sokuho", lead_seconds=60, flow_minutes=6, threshold=0.0)
+
+    assert flow_orders(FakeDB(rows), key, FlowConfig(**base), 100, "t")      # 制限なしなら買う
+    assert flow_orders(FakeDB(rows), key, FlowConfig(min_horses=6, **base), 100, "t")
+    assert not flow_orders(FakeDB(rows), key, FlowConfig(min_horses=8, **base), 100, "t")
+    assert FlowConfig().min_horses == 0

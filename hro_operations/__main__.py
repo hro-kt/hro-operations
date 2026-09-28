@@ -108,6 +108,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--flow-min-ninki", type=int, default=0,
                    help="決定時点の単勝人気の下限(オッズ順から導出)")
     p.add_argument("--flow-max-ninki", type=int, default=0)
+    p.add_argument("--flow-min-horses", type=int, default=0,
+                   help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで/"
+                        "4頭以下は発売なし。複勝を買うなら 8 を指定する")
     p.add_argument("--flow-thresholds", default=None,
                    help='リード別の閾値 JSON 例 \'{"120":0.1631,"180":0.08}\'。'
                         "配信遅れで決定時点がレースごとに変わるため、実際に使った"
@@ -185,6 +188,7 @@ def _cfg(args):
         flow_bet_type=getattr(args, "flow_bet_type", "fuku"),
         flow_min_ninki=getattr(args, "flow_min_ninki", 0),
         flow_max_ninki=getattr(args, "flow_max_ninki", 0),
+        flow_min_horses=getattr(args, "flow_min_horses", 0),
         flow_lead_seconds=args.flow_lead_seconds,
         flow_minutes=args.flow_minutes,
         flow_source=args.flow_source,
@@ -566,7 +570,8 @@ def _cmd_flow_backtest(args) -> int:
                      min_ninki=getattr(args, "min_ninki", 0),
                      max_ninki=getattr(args, "max_ninki", 0),
                      bet_type=getattr(args, "bet_type", "fuku"),
-                     normalize=getattr(args, "normalize", False))
+                     normalize=getattr(args, "normalize", False),
+                     min_horses=getattr(args, "min_horses", 0))
     # 月ごとに分割して回す。8ヶ月を1クエリにすると何分かかっているのか分からず、
     # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
     months = _month_chunks(args.d_from, args.d_to)
@@ -966,7 +971,8 @@ def _cmd_flow_slice(args) -> int:
                      min_ninki=getattr(args, "min_ninki", 0),
                      max_ninki=getattr(args, "max_ninki", 0),
                      bet_type=getattr(args, "bet_type", "fuku"),
-                     normalize=getattr(args, "normalize", False))
+                     normalize=getattr(args, "normalize", False),
+                     min_horses=getattr(args, "min_horses", 0))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
     db = FeatureDB(load_features_config())
@@ -1474,6 +1480,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="買う券種。エッジは中穴に集中しているので単勝の方が"
                            "効率が良い可能性がある")
     p_bt.add_argument("--amount", type=int, default=100)
+    p_bt.add_argument("--min-horses", type=int, default=0,
+                      help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで")
     p_bt.add_argument("--normalize", action="store_true",
                       help="そのレースの値動き総量で割る(S/N比にする)")
     p_bt.add_argument("--show-bets", action="store_true",

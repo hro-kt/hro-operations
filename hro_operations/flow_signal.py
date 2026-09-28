@@ -59,6 +59,11 @@ class FlowConfig:
     #   頑健かもしれない(2026-09-25 実測: 7-10番人気が前半1.206/後半1.293で一貫、527本)。
     min_ninki: int = 0
     max_ninki: int = 0
+    # ★出走頭数の下限。**複勝は出走8頭以上で3着まで、5〜7頭は2着まで、
+    #   4頭以下は発売なし**。2着までの複勝は別物なので混ぜると条件の違うレースを
+    #   まとめて最適化することになる。複勝を買うなら 8 を指定する。
+    #   (単勝には関係ないので既定は 0 = 制限なし)
+    min_horses: int = 0
     # ★そのレースの値動き総量で正規化するか(S/N比にする)。
     #   実測(2026-09-29, ts@T-60s を2期間): 値動きが**小さい**レースほど回収率が高い
     #     下位25% 1.182/1.235 → 下位50% 1.060/1.212 → 上位25% 0.994/0.985(単調・両期間一致)
@@ -781,6 +786,12 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
                     "(決定 T-%ss / 起点 T-%ss)",
                     race_id, got, want, lead_used, first.get("lead_early"))
         return []
+    # ★複勝の払戻対象頭数はレースの出走頭数で変わる(8頭以上=3着まで / 5〜7頭=2着まで /
+    #   4頭以下=発売なし)。2着までのレースを混ぜると条件が揃わない。
+    if cfg.min_horses > 0 and len(sc) < cfg.min_horses:
+        log.info("%s: 出走 %d 頭は下限 %d 頭未満のため見送り(複勝の払戻対象が変わる)",
+                 race_id, len(sc), cfg.min_horses)
+        return []
     thr = threshold_for(cfg, lead_used)
     if thr is None:
         log.warning("%s: 実測リード T-%ss の閾値が未設定のため見送り(設定: %s)",
@@ -987,7 +998,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
 
     bets: list[tuple] = []                    # (rid, 賭け金, 払戻, 返還フラグ)
     details: list[dict] = []                  # 1点ずつの明細(目視確認用)
-    n_races = n_scored = n_degenerate = n_refund = n_unsettled = 0
+    n_races = n_scored = n_degenerate = n_refund = n_unsettled = n_small = 0
     for rid, rs in by_race.items():
         n_races += 1
         if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
@@ -1000,6 +1011,9 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
         # ★払戻が1行も無いレースは「未確定」。外れとして数えると回収率が0に張り付く。
         if not rs[0].get("has_payout", True):
             n_unsettled += 1
+            continue
+        if cfg.min_horses > 0 and len(rs) < cfg.min_horses:
+            n_small += 1            # 複勝の払戻対象頭数が違うレースは混ぜない
             continue
         n_scored += 1
         # ★そのレースで市場がどれだけ動いたか(全頭のシェア変化の総量)。
@@ -1062,6 +1076,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                          races_degenerate=n_degenerate, with_ci=with_ci)
     rep["details"] = details
     rep["races_unsettled"] = n_unsettled
+    rep["races_small_field"] = n_small
     return rep
 
 

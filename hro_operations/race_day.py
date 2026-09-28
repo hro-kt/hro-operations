@@ -99,6 +99,9 @@ class DayConfig:
     flow_bet_type: str = "fuku"      # fuku | tan
     flow_min_ninki: int = 0
     flow_max_ninki: int = 0
+    # ★複勝は出走8頭以上で3着まで、5〜7頭は2着まで、4頭以下は発売なし。
+    #   複勝を買うなら 8 を指定して条件を揃える。
+    flow_min_horses: int = 0
     flow_lead_seconds: int = 60      # 決定時点 = 発走 − これ秒(0B41 の格子は T−60s)
     flow_minutes: int = 6            # フロー起点 = 発走 − これ分
     # ts(公式時系列 0B41) | sokuho(自前ポーリング 0B30) | netkeiba(実時刻・秒単位)
@@ -232,6 +235,7 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
                             thresholds=cfg.flow_thresholds,
                             bet_type=cfg.flow_bet_type,
                             min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
+                            min_horses=cfg.flow_min_horses,
                             max_odds=cfg.max_odds or 0.0)
             # ★実際に使った閾値を記録に残す。thresholds を使うと flow_threshold は 0.0 の
             #   ままなので、単一値だけ書くと「どの閾値で買ったのか」が後から分からない。
