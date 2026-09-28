@@ -878,6 +878,21 @@ SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        -- スライス用(すべて既に JOIN 済みのテーブルから取るので追加コストは小さい)
        se.wakuban, se.zogen_fugo, se.zogen_sa, se.ba_taijyu,
        ra2.kyori, ra2.track_cd, ra2.grade_cd,
+       -- ★公表イベント。終盤の資金移動の一部は「情報を持った金」ではなく
+       --   **公開ニュースへの反応**かもしれない。雑音なら除外、織り込み不足なら
+       --   むしろ狙い目、と行動が変わるので測れるようにする。
+       EXISTS (SELECT 1 FROM nl_jc jc
+                WHERE (jc.year,jc.month_day,jc.jyo_cd,jc.kaiji,jc.nichiji,jc.race_num,
+                       jc.umaban)
+                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,
+                       l.umaban)) AS has_jc,
+       EXISTS (SELECT 1 FROM nl_cc cc
+                WHERE (cc.year,cc.month_day,cc.jyo_cd,cc.kaiji,cc.nichiji,cc.race_num)
+                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)) AS has_cc,
+       -- ★天候/馬場の変更は**開催単位**(race_num を持たない)
+       EXISTS (SELECT 1 FROM nl_we we
+                WHERE (we.year,we.month_day,we.jyo_cd,we.kaiji,we.nichiji)
+                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji)) AS has_we,
        -- ★そのレースの複勝払戻が1行でも存在するか。無い=まだ結果が入っていない。
        --   これを見ないと「未確定」を「全部外れ」として数えてしまう。
        EXISTS (SELECT 1 FROM nl_hr h2
@@ -1058,6 +1073,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                                 "zogen_sa": x.get("zogen_sa"),
                                 "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
                                 "grade_cd": x.get("grade_cd"),
+                                "has_jc": x.get("has_jc"), "has_cc": x.get("has_cc"),
+                                "has_we": x.get("has_we"),
                                 "amount": amount, "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
@@ -1069,6 +1086,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                             "zogen_fugo": x.get("zogen_fugo"), "zogen_sa": x.get("zogen_sa"),
                             "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
                             "grade_cd": x.get("grade_cd"),
+                            "has_jc": x.get("has_jc"), "has_cc": x.get("has_cc"),
+                            "has_we": x.get("has_we"),
                             "amount": amount, "payout": payout,
                             "note": "的中" if payout else "外れ"})
 

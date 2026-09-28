@@ -122,6 +122,12 @@ AXES = {
     "toponly": ("レース最高スコアかどうか", None),
     "move": ("そのレースの値動き総量(全頭のシェア変化の和)", None),
     "raceno": ("レース番号", lambda d: f"{int(d['rid'][14:16]):02d}R"),
+    # ★公表イベント。終盤の動きが「情報を持った金」なのか「公開ニュースへの反応」なのか
+    "jc": ("その馬の騎手変更", lambda d: "1 変更あり" if d.get("has_jc") else "2 なし"),
+    "cc": ("そのレースのコース/距離変更",
+           lambda d: "1 変更あり" if d.get("has_cc") else "2 なし"),
+    "we": ("その開催の天候/馬場変更",
+           lambda d: "1 変更あり" if d.get("has_we") else "2 なし"),
     "gradecd": ("グレード", lambda d: (str(d.get("grade_cd") or "").strip() or "(条件)")),
     "score": ("スコアの大きさ(閾値からの超過)", None),   # 閾値相対なので別扱い
 }

@@ -115,3 +115,16 @@ def test_raceno_axis():
     det = [_d("2026092706040901", 5.0, 0), _d("2026092706040912", 5.0, 0)]
     out = {r["name"]: r for r in slice_details(det, "raceno", min_bets=1)}
     assert set(out) == {"01R", "12R"}
+
+
+def test_public_news_axes():
+    """★終盤の資金移動が「情報を持った金」なのか「公開ニュース(騎手変更・馬場変更)への
+    反応」なのかで、除外すべきか狙うべきかが逆になる。"""
+    det = [_d("R1", 5.0, 0), _d("R2", 5.0, 0)]
+    det[0].update(has_jc=True, has_cc=False, has_we=True)
+    det[1].update(has_jc=False, has_cc=False, has_we=False)
+    for ax, expect in (("jc", {"1 変更あり", "2 なし"}),
+                       ("cc", {"2 なし"}),
+                       ("we", {"1 変更あり", "2 なし"})):
+        got = {r["name"] for r in slice_details(det, ax, min_bets=1)}
+        assert got == expect, (ax, got)
