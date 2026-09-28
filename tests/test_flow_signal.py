@@ -766,3 +766,25 @@ def test_live_orders_use_the_configured_bet_type():
     win = flow_orders(FakeDB(rows), key, FlowConfig(bet_type="tan", **base), 100, "t")[0]
     assert win.bet_type == "win"
     assert "ken=win" in win.reason and "ninki=" in win.reason
+
+
+def test_normalize_divides_by_the_race_noise_level():
+    """★実測(2026-09-29, ts@T-60s を2期間): レース全体の値動きが**小さい**ほど回収率が高い
+    (下位25% 1.182/1.235 → 上位25% 0.994/0.985、単調・両期間一致)。
+    race_move はノイズの水準、flow はシグナル。割れば S/N 比になる。
+    ★尺度が変わるので閾値は必ず取り直す。"""
+    from hro_operations.flow_signal import FlowConfig, flow_scores
+
+    rows = [_row("01", "0020", "0035", "late"), _row("02", "0060", "0090", "late"),
+            _row("01", "0030", "0035", "early"), _row("02", "0050", "0090", "early")]
+    key = ("2026", "0926", "06", "04", "08", "11")
+    base = dict(source="sokuho", lead_seconds=60, flow_minutes=6)
+
+    raw = flow_scores(FakeDB(rows), key, FlowConfig(**base))
+    nrm = flow_scores(FakeDB(rows), key, FlowConfig(normalize=True, **base))
+    move = raw["01"]["race_move"]
+    assert move > 0
+    assert abs(nrm["01"]["score"] - raw["01"]["score"] / move) < 1e-9
+    # 符号と順位は変わらない(同一レース内では単調変換)
+    assert (nrm["01"]["score"] > nrm["02"]["score"]) == (raw["01"]["score"] > raw["02"]["score"])
+    assert FlowConfig().normalize is False      # 既定は従来どおり

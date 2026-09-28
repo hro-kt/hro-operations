@@ -478,6 +478,7 @@ def _cmd_flow_threshold(args) -> int:
         results = []
         for lead in leads:
             cfg = FlowConfig(lead_seconds=lead, flow_minutes=args.flow_minutes,
+                             normalize=getattr(args, "normalize", False),
                              source=args.flow_source)
             results.append((lead, threshold_from(db, races, cfg, args.quantile)))
     finally:
@@ -564,7 +565,8 @@ def _cmd_flow_backtest(args) -> int:
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
                      max_ninki=getattr(args, "max_ninki", 0),
-                     bet_type=getattr(args, "bet_type", "fuku"))
+                     bet_type=getattr(args, "bet_type", "fuku"),
+                     normalize=getattr(args, "normalize", False))
     # 月ごとに分割して回す。8ヶ月を1クエリにすると何分かかっているのか分からず、
     # 途中で止めることもできない。合算しても結果は同じ(レースは月を跨がない)。
     months = _month_chunks(args.d_from, args.d_to)
@@ -961,7 +963,8 @@ def _cmd_flow_slice(args) -> int:
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
                      max_ninki=getattr(args, "max_ninki", 0),
-                     bet_type=getattr(args, "bet_type", "fuku"))
+                     bet_type=getattr(args, "bet_type", "fuku"),
+                     normalize=getattr(args, "normalize", False))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
     db = FeatureDB(load_features_config())
@@ -1444,6 +1447,9 @@ def main(argv: list[str] | None = None) -> int:
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
     p_th.add_argument("--flow-minutes", type=int, default=6)
     p_th.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho")
+    p_th.add_argument("--normalize", action="store_true",
+                      help="そのレースの値動き総量で割る(S/N比にする)。★尺度が変わるので"
+                           "閾値も必ずこれ付きで取り直すこと")
     p_th.set_defaults(func=_cmd_flow_threshold)
 
     p_bt = sub.add_parser("flow-backtest",
@@ -1466,6 +1472,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="買う券種。エッジは中穴に集中しているので単勝の方が"
                            "効率が良い可能性がある")
     p_bt.add_argument("--amount", type=int, default=100)
+    p_bt.add_argument("--normalize", action="store_true",
+                      help="そのレースの値動き総量で割る(S/N比にする)")
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)

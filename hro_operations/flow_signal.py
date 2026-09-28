@@ -59,6 +59,13 @@ class FlowConfig:
     #   頑健かもしれない(2026-09-25 実測: 7-10番人気が前半1.206/後半1.293で一貫、527本)。
     min_ninki: int = 0
     max_ninki: int = 0
+    # ★そのレースの値動き総量で正規化するか(S/N比にする)。
+    #   実測(2026-09-29, ts@T-60s を2期間): 値動きが**小さい**レースほど回収率が高い
+    #     下位25% 1.182/1.235 → 下位50% 1.060/1.212 → 上位25% 0.994/0.985(単調・両期間一致)
+    #   race_move はレース全体の変動量=**ノイズの水準**、flow はその馬の変動量=シグナル。
+    #   盤面が荒れている中の1頭の動きは薄く、静かな盤面で動いたら情報、という読み。
+    #   ★正規化すると尺度が変わるので**閾値を必ず取り直す**こと。
+    normalize: bool = False
     # ★買う券種。エッジは人気7番以降=中穴に集中しているので、**単勝の方が効率が
     #   良い可能性がある**(配当が大きい)。確定払戻は nl_hr に年単位で揃っているので
     #   測るだけなら安い。live の発注は現状 place 固定なので、採用するなら
@@ -300,6 +307,21 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     #   有無が違い(netkeiba は持たない)、そのままだとバックテストとライブで別物になる。
     #   定義を1つにしておくこと。
     assign_ninki(out)
+    # ★レース全体の値動き総量(ノイズの水準)。正規化にも診断にも使う。
+    move = sum(abs(d["share_late"] - d["share_early"]) for d in out.values()) \
+        if out and "share_late" in next(iter(out.values())) else None
+    if move is None:
+        move = 0.0
+        for um, xl in late.items():
+            xe = early.get(um)
+            tl, te = tan_of(xl["tan_odds"]), tan_of(xe["tan_odds"]) if xe else None
+            if tl and te:
+                move += abs((1.0 / tl) / s_late - (1.0 / te) / s_early)
+    for d in out.values():
+        d["race_move"] = move
+        if cfg.normalize:
+            # ★0除算を避ける。動きが皆無なら信号も無いので 0 にする
+            d["score"] = (d["score"] / move) if move > 1e-9 else 0.0
     if not out and n_no_fuku:
         # ★原因を名指しする。ここを黙って空で返すと「netkeiba が取れていない」と
         #   誤診して、動いている側を触って1日溶かす。
@@ -999,6 +1021,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             if t1 is None or t0 is None or f1 is None:
                 continue
             score = _logit((1.0 / t1) / s1) - _logit((1.0 / t0) / s0)
+            if cfg.normalize:
+                score = (score / race_move) if race_move > 1e-9 else 0.0
             if score < cfg.threshold:
                 continue
             if max_odds is not None and t1 > max_odds:
