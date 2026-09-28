@@ -983,7 +983,9 @@ def _cmd_flow_slice(args) -> int:
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
           f"/ 閾値 {args.flow_threshold:+.4f} / 全体 {len(details):,} 点")
     for ax in axes:
-        title = ("スコアの大きさ(閾値からの超過)" if ax == "score" else AXES[ax][0])
+        # ★診断の道具が KeyError で止まるのは筋が悪い。未登録の軸は名前をそのまま出す。
+        title = ("スコアの大きさ(閾値からの超過)" if ax == "score"
+                 else (AXES.get(ax) or (ax,))[0])
         print(f"\n  --- {title} ---")
         print(f"  {'帯':<22} {'購入':>6} {'的中率':>7} {'回収率':>8}  95%CI")
         for r in slice_details(details, ax, threshold=args.flow_threshold,
