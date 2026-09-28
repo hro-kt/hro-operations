@@ -114,3 +114,21 @@ def test_sweep_widens_the_sample_by_lowering_the_threshold():
 
     narrowed = sweep_quantiles(rows, [0.90], min_ninki=7)
     assert narrowed[0]["bets"] < res[1]["bets"]
+
+
+def test_load_rows_can_normalize_by_race_noise():
+    """★正規化は人気帯とは**独立した軸**。組み合わせて初めて価値が出るかを
+    sweep で測れるようにする。race_move が 0 のレースは信号も無いので 0 にする。"""
+    rows = [_row("01", "0020", "0030", "150"), _row("02", "0060", "0050", ""),
+            _row("03", "0080", "0070", ""), _row("04", "0100", "0090", ""),
+            _row("05", "0200", "0180", "")]
+    raw = load_rows(FakeDB(rows), "20260926", "20260926", ModelConfig())
+    nrm = load_rows(FakeDB(rows), "20260926", "20260926",
+                    ModelConfig(normalize=True))
+    d0 = {r["umaban"]: r for r in raw}
+    d1 = {r["umaban"]: r for r in nrm}
+    move = d0["01"]["race_move"]
+    assert move > 0
+    assert abs(d1["01"]["flow"] - d0["01"]["flow"] / move) < 1e-9
+    # 同一レース内の順位は変わらない(効くとすればレース間の比較)
+    assert (d1["01"]["flow"] > d1["05"]["flow"]) == (d0["01"]["flow"] > d0["05"]["flow"])

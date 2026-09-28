@@ -76,6 +76,9 @@ class ModelConfig:
     #   モデルにも同じ土俵で学ばせる。選択は**レース内で上位k頭**(スコアはレース間で
     #   比較できないので、大域の分位では切らない)。
     bet_type: str = "fuku"           # fuku | tan(払戻の参照先)
+    # ★そのレースの値動き総量で割る(S/N比)。人気帯とは**独立した軸**なので、
+    #   組み合わせて初めて価値が出るかを見るために sweep でも振れるようにする。
+    normalize: bool = False
     target: str = "return"
     winsor: float = 10.0             # ★純収益の上限。裾の数件に引きずられないように
     top_per_race: int = 1            # target=rank のとき、レース内で何頭買うか
@@ -119,6 +122,9 @@ def load_rows(db, d_from: str, d_to: str, cfg: ModelConfig) -> list[dict]:
         rank = {x["umaban"]: i for i, x in enumerate(
             sorted(ok, key=lambda r: (_num(r["t1"]), r["umaban"])), 1)}
         n = len(ok)
+        # ★レース全体の値動き総量(ノイズの水準)。正規化に使う。
+        move = sum(abs((1.0 / _num(x["t1"])) / s1 - (1.0 / _num(x["t0"])) / s0)
+                   for x in ok)
         for x in ok:
             t1, t0, f1 = _num(x["t1"]), _num(x["t0"]), _num(x["f1"])
             sl, se = (1.0 / t1) / s1, (1.0 / t0) / s0
@@ -130,7 +136,10 @@ def load_rows(db, d_from: str, d_to: str, cfg: ModelConfig) -> list[dict]:
             track = (str(x.get("track_cd") or "")).strip()
             out.append({
                 "rid": rid, "ymd": x["ymd"], "umaban": x["umaban"],
-                "flow": _logit(sl) - _logit(se),
+                "flow": ((_logit(sl) - _logit(se)) / move
+                         if cfg.normalize and move > 1e-9
+                         else (0.0 if cfg.normalize else _logit(sl) - _logit(se))),
+                "race_move": move,
                 "share_late": sl, "share_early": se, "d_share": sl - se,
                 "log_tan": __import__("math").log(t1),
                 "log_fuku": __import__("math").log(f1),

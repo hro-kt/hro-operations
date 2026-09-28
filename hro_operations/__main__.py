@@ -847,7 +847,8 @@ def _cmd_flow_sweep(args) -> int:
     from .model_flow import ModelConfig, load_rows, sweep_quantiles
 
     cfg = ModelConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
-                      source=args.flow_source, bet_type=args.bet_type)
+                      source=args.flow_source, bet_type=args.bet_type,
+                      normalize=args.normalize)
     qs = [float(x) for x in args.quantiles.split(",") if x.strip()]
     db = FeatureDB(load_features_config())
     rows, t0 = [], time.monotonic()
@@ -866,6 +867,7 @@ def _cmd_flow_sweep(args) -> int:
     ken = {"fuku": "複勝", "tan": "単勝"}[args.bet_type]
     band = (f" / 人気 {args.min_ninki or 1}〜{args.max_ninki or '∞'}番"
             if (args.min_ninki or args.max_ninki) else "")
+    band += " / 正規化あり" if args.normalize else ""
     print(f"\n=== 閾値スイープ {ken}{band} ({args.d_from}〜{args.d_to}) ===")
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 起点{args.flow_minutes}分 "
           f"/ 対象 {len(rows):,} 行")
@@ -1539,6 +1541,8 @@ def main(argv: list[str] | None = None) -> int:
     p_sw.add_argument("--min-ninki", type=int, default=0)
     p_sw.add_argument("--max-ninki", type=int, default=0)
     p_sw.add_argument("--bet-type", choices=("fuku", "tan"), default="fuku")
+    p_sw.add_argument("--normalize", action="store_true",
+                      help="そのレースの値動き総量で割る(S/N比)。人気帯とは独立した軸")
     p_sw.add_argument("--amount", type=int, default=100)
     p_sw.set_defaults(func=_cmd_flow_sweep)
 
