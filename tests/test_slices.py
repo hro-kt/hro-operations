@@ -92,3 +92,26 @@ def test_race_level_axes():
     top = {r["name"]: r for r in slice_details(det, "toponly", min_bets=1)}
     assert top["1 レース最高スコア"]["bets"] == 2   # 各レースの最高が1頭ずつ
     assert top["2 それ以外"]["bets"] == 2
+
+
+def test_move_axis_measures_how_much_the_market_moved():
+    """★「そのレースで市場がどれだけ動いたか」で切る。ほとんど動いていないレースの
+    flow は雑音のはず、という仮説を測るための軸。絶対値の尺度は窓・信号源で変わるので
+    四分位で切る。"""
+    det = [_d(f"R{i}", 5.0, 150 if i % 2 else 0, "的中" if i % 2 else "外れ")
+           for i in range(1, 9)]
+    for i, d in enumerate(det, 1):
+        d["race_move"] = 0.1 * i
+    out = {r["name"]: r for r in slice_details(det, "move", min_bets=1)}
+    assert len(out) == 4 and all(r["bets"] == 2 for r in out.values())
+
+    # race_move が無い明細でも落ちない(0 として扱う)
+    for d in det:
+        d.pop("race_move")
+    assert slice_details(det, "move", min_bets=1)
+
+
+def test_raceno_axis():
+    det = [_d("2026092706040901", 5.0, 0), _d("2026092706040912", 5.0, 0)]
+    out = {r["name"]: r for r in slice_details(det, "raceno", min_bets=1)}
+    assert set(out) == {"01R", "12R"}

@@ -120,6 +120,9 @@ AXES = {
     "track": ("馬場(芝/ダ)", _bucket_track),
     "nsig": ("同一レースで閾値を超えた頭数", None),
     "toponly": ("レース最高スコアかどうか", None),
+    "move": ("そのレースの値動き総量(全頭のシェア変化の和)", None),
+    "raceno": ("レース番号", lambda d: f"{int(d['rid'][14:16]):02d}R"),
+    "gradecd": ("グレード", lambda d: (str(d.get("grade_cd") or "").strip() or "(条件)")),
     "score": ("スコアの大きさ(閾値からの超過)", None),   # 閾値相対なので別扱い
 }
 
@@ -128,6 +131,9 @@ AXES = {
 #   **レースの属性**では切っていない。「レースを見送れる方が強い」ことは分かっている
 #   (大域閾値 1.1281 対 レース内上位1頭 1.0441)が、**どのレースを見送るべきか**は未検証。
 _RACE_AXES = {"nsig", "toponly"}
+
+# 四分位で切る軸(絶対値の尺度が設定で変わるものは分位で見るしかない)
+_QUARTILE_AXES = {"score", "move"}
 
 
 def _race_context(details: list[dict]) -> dict[str, dict]:
@@ -158,14 +164,21 @@ def slice_details(details: list[dict], axis: str, *, threshold: float | None = N
             def key(d):
                 return ("1 レース最高スコア"
                         if d["score"] >= ctx[d["rid"]]["best"] else "2 それ以外")
-    elif axis == "score":
-        if threshold is None:
+    elif axis in _QUARTILE_AXES:
+        if axis == "score" and threshold is None:
             raise ValueError("score 軸には閾値が要ります")
-        qs = sorted(d["score"] - threshold for d in details)
+
+        def _val(d):
+            # ★move は「そのレースで市場がどれだけ動いたか」(全頭のシェア変化の総量)。
+            #   ほとんど動いていないレースの flow は雑音のはず、という仮説を測る軸。
+            return ((d["score"] - threshold) if axis == "score"
+                    else float(d.get("race_move") or 0.0))
+
+        qs = sorted(_val(d) for d in details)
 
         def _b(d):
-            x = d["score"] - threshold
-            # 超過量を4分位で割る(絶対値はリード・信号源で尺度が変わるため)
+            x = _val(d)
+            # 絶対値の尺度はリード・信号源・窓で変わるので四分位で切る
             for i, q in enumerate((0.25, 0.5, 0.75), 1):
                 if x < qs[int(len(qs) * q)]:
                     return f"{i} 下位{int(q * 100)}%まで"

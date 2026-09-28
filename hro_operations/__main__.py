@@ -1568,7 +1568,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fs.add_argument("--axes", default="tan,zogen,ninki,track",
                       help="軸(カンマ区切り): tan,fuku,n,jyo,month,lead,score,"
                            "zogen(馬体重増減),ninki(人気),waku(枠),kyori,track(芝ダ),"
-                           "nsig(同一レースで閾値を超えた頭数),toponly(レース最高スコアか)")
+                           "nsig(同一レースで閾値を超えた頭数),toponly(レース最高スコアか),"
+                           "move(そのレースの値動き総量),raceno,gradecd")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)

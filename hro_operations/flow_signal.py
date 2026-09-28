@@ -980,6 +980,15 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             n_unsettled += 1
             continue
         n_scored += 1
+        # ★そのレースで市場がどれだけ動いたか(全頭のシェア変化の総量)。
+        #   ほとんど動いていないレースの flow は雑音のはずで、大きく動いたレースなら
+        #   情報が入っている可能性が高い。「いつ効くのか」を切る軸として使う。
+        #   総変動 = Σ|share_late - share_early|(0〜2 の範囲)。
+        race_move = 0.0
+        for _x in rs:
+            _t1, _t0 = tan_of(_x["t1"]), tan_of(_x["t0"])
+            if _t1 and _t0:
+                race_move += abs((1.0 / _t1) / s1 - (1.0 / _t0) / s0)
         # ★人気は決定時点の単勝オッズ順から導出(live の flow_scores と同じ定義)
         ninki_of = {r["umaban"]: i for i, r in enumerate(
             sorted((r for r in rs if tan_of(r["t1"])),
@@ -1005,7 +1014,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                 n_refund += 1
                 bets.append((rid, amount, amount, True))     # 返還: 元金が戻る
                 details.append({"rid": rid, "umaban": x["umaban"], "score": score,
-                                "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                                "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs), "race_move": race_move,
                                 "ninki": ninki_of.get(x["umaban"]), "waku": x.get("wakuban"),
                                 "zogen_fugo": x.get("zogen_fugo"),
                                 "zogen_sa": x.get("zogen_sa"),
@@ -1017,7 +1026,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             payout = int(round(int(pay) * amount / 100)) if pay not in (None, "") else 0
             bets.append((rid, amount, payout, False))
             details.append({"rid": rid, "umaban": x["umaban"], "score": score,
-                            "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs),
+                            "lead": lead, "tan": t1, "fuku": f1, "n_horses": len(rs), "race_move": race_move,
                             "ninki": ninki_of.get(x["umaban"]), "waku": x.get("wakuban"),
                             "zogen_fugo": x.get("zogen_fugo"), "zogen_sa": x.get("zogen_sa"),
                             "kyori": x.get("kyori"), "track_cd": x.get("track_cd"),
