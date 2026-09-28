@@ -1592,7 +1592,8 @@ def main(argv: list[str] | None = None) -> int:
                            "zogen(馬体重増減),ninki(人気),waku(枠),kyori,track(芝ダ),"
                            "nsig(同一レースで閾値を超えた頭数),toponly(レース最高スコアか),"
                            "move(そのレースの値動き総量),raceno,gradecd,"
-                           "jc(騎手変更),cc(コース変更),we(天候馬場変更)")
+                           "jc(騎手変更),cc(コース変更),we(天候馬場変更),"
+                           "chokyo(坂路4Fのレース内順位)")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)

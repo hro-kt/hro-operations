@@ -890,6 +890,7 @@ SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
                 WHERE (cc.year,cc.month_day,cc.jyo_cd,cc.kaiji,cc.nichiji,cc.race_num)
                     = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)) AS has_cc,
        -- ★天候/馬場の変更は**開催単位**(race_num を持たない)
+       hc.haron_time_4f AS chokyo_4f, hc.chokyo_date,
        EXISTS (SELECT 1 FROM nl_we we
                 WHERE (we.year,we.month_day,we.jyo_cd,we.kaiji,we.nichiji)
                     = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji)) AS has_we,
@@ -907,6 +908,18 @@ JOIN ra ra2 USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
 LEFT JOIN nl_se se
   ON (se.year,se.month_day,se.jyo_cd,se.kaiji,se.nichiji,se.race_num,se.umaban)
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)
+-- ★坂路調教。市場とは独立した唯一の大規模データ(5,560,062行)。
+--   その馬の**レース前で最も新しい**追い切りを1本だけ取る。
+--   索引 idx_nl_hc_horse_date (ketto_num, chokyo_date DESC) が無いと全走査になる。
+--   ★美浦/栗東の坂路のみ。ウッドチップだけの馬や外国馬は行が無い(= データなしも情報)。
+LEFT JOIN LATERAL (
+  SELECT hc0.haron_time_4f, hc0.chokyo_date
+  FROM nl_hc hc0
+  WHERE hc0.ketto_num = se.ketto_num
+    AND hc0.chokyo_date < l.year||l.month_day
+    AND hc0.haron_time_4f ~ '^[0-9]+$' AND hc0.haron_time_4f::int > 0
+  ORDER BY hc0.chokyo_date DESC, hc0.chokyo_time DESC
+  LIMIT 1) hc ON true
 LEFT JOIN nl_hr h
   ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
@@ -1040,6 +1053,15 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             _t1, _t0 = tan_of(_x["t1"]), tan_of(_x["t0"])
             if _t1 and _t0:
                 race_move += abs((1.0 / _t1) / s1 - (1.0 / _t0) / s0)
+        # ★坂路4Fの**レース内順位**(速い順)。時計の絶対値は時期・馬場で動くので、
+        #   同一レース内での相対化が最も素直。データが無い馬は順位を付けない。
+        def _4f(x):
+            v = (str(x.get("chokyo_4f") or "")).strip()
+            return int(v) if v.isdigit() and int(v) > 0 else None
+
+        _worked = [x for x in rs if _4f(x) is not None]
+        chokyo_rank = {x["umaban"]: i for i, x in enumerate(
+            sorted(_worked, key=lambda r: (_4f(r), r["umaban"])), 1)}
         # ★人気は決定時点の単勝オッズ順から導出(live の flow_scores と同じ定義)
         ninki_of = {r["umaban"]: i for i, r in enumerate(
             sorted((r for r in rs if tan_of(r["t1"])),
@@ -1075,6 +1097,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                                 "grade_cd": x.get("grade_cd"),
                                 "has_jc": x.get("has_jc"), "has_cc": x.get("has_cc"),
                                 "has_we": x.get("has_we"),
+                                "chokyo_rank": chokyo_rank.get(x["umaban"]),
+                                "chokyo_n": len(chokyo_rank),
                                 "amount": amount, "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
@@ -1088,6 +1112,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                             "grade_cd": x.get("grade_cd"),
                             "has_jc": x.get("has_jc"), "has_cc": x.get("has_cc"),
                             "has_we": x.get("has_we"),
+                            "chokyo_rank": chokyo_rank.get(x["umaban"]),
+                            "chokyo_n": len(chokyo_rank),
                             "amount": amount, "payout": payout,
                             "note": "的中" if payout else "外れ"})
 

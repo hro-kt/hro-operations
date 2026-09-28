@@ -106,6 +106,24 @@ def _bucket_track(d) -> str:
     return "3 障害・その他"
 
 
+def _bucket_chokyo(d) -> str:
+    """坂路4Fの**レース内順位**(速い順)。
+
+    ★時計の絶対値は時期・馬場・トレセンで動くので、同一レース内での相対化が最も素直。
+    ★美浦/栗東の坂路のみ。ウッドチップだけの馬や外国馬は行が無く「データなし」に落ちる。
+      それ自体が情報でありうるので、除外せず1つの帯として見る。
+    """
+    r = d.get("chokyo_rank")
+    n = d.get("chokyo_n") or 0
+    if not r or not n:
+        return "0 追い切りデータなし"
+    if r <= 3:
+        return "1 レース内1-3位"
+    if r <= 6:
+        return "2 4-6位"
+    return "3 7位以下"
+
+
 AXES = {
     "tan": ("決定時点の単勝オッズ", lambda d: _bucket_odds(float(d["tan"]))),
     "fuku": ("決定時点の複勝オッズ", lambda d: _bucket_odds(float(d["fuku"]))),
@@ -123,6 +141,7 @@ AXES = {
     "move": ("そのレースの値動き総量(全頭のシェア変化の和)", None),
     "raceno": ("レース番号", lambda d: f"{int(d['rid'][14:16]):02d}R"),
     # ★公表イベント。終盤の動きが「情報を持った金」なのか「公開ニュースへの反応」なのか
+    "chokyo": ("坂路4Fのレース内順位", _bucket_chokyo),
     "jc": ("その馬の騎手変更", lambda d: "1 変更あり" if d.get("has_jc") else "2 なし"),
     "cc": ("そのレースのコース/距離変更",
            lambda d: "1 変更あり" if d.get("has_cc") else "2 なし"),

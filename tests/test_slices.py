@@ -128,3 +128,16 @@ def test_public_news_axes():
                        ("we", {"1 変更あり", "2 なし"})):
         got = {r["name"] for r in slice_details(det, ax, min_bets=1)}
         assert got == expect, (ax, got)
+
+
+def test_chokyo_axis_ranks_within_the_race():
+    """★坂路時計の絶対値は時期・馬場・トレセンで動く。同一レース内の順位で見る。
+    ★美浦/栗東の坂路のみなので、ウッドチップだけの馬や外国馬は行が無い。
+    「データなし」も1つの帯として残す(それ自体が情報でありうる)。"""
+    from hro_operations.slices import _bucket_chokyo
+
+    assert _bucket_chokyo({"chokyo_rank": 1, "chokyo_n": 10}).startswith("1")
+    assert _bucket_chokyo({"chokyo_rank": 5, "chokyo_n": 10}).startswith("2")
+    assert _bucket_chokyo({"chokyo_rank": 9, "chokyo_n": 10}).startswith("3")
+    assert _bucket_chokyo({"chokyo_rank": None, "chokyo_n": 10}).startswith("0")
+    assert _bucket_chokyo({}).startswith("0")
