@@ -332,6 +332,19 @@ def check_recipe_verified(cfg: DayConfig) -> None:
             recipe = json.load(fh)
     except Exception as e:  # noqa: BLE001 - 読めない時点で live は始められない
         raise TimingError(f"IPAT レシピを読めません: {path} ({e})") from e
+    # ★verified は**版に紐づける**。組み込みレシピが更新されたのにファイルが古いままだと、
+    #   画面と手順が食い違ったまま「検証済み」として送信してしまう。
+    #   版が上がったら検証をやり直す(お金が動くので摩擦は正しい)。
+    try:
+        from hro_buyer.ipat import RECIPE_VERSION
+    except ModuleNotFoundError:
+        RECIPE_VERSION = None
+    ver = recipe.get("version")
+    if RECIPE_VERSION is not None and ver != RECIPE_VERSION:
+        raise TimingError(
+            f"IPAT レシピが古い版です(ファイル {ver} / 組み込み {RECIPE_VERSION}): {path}\n"
+            "  `hro-buyer ipat show-recipe --out <path>` で作り直し、"
+            "`dry-vote --set-verified` で確認し直してください。")
     if not recipe.get("verified"):
         raise TimingError(
             f"IPAT レシピが未検証です(verified=false): {path}\n"

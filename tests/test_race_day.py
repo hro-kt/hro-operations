@@ -73,3 +73,31 @@ def test_live_refuses_to_start_with_an_unverified_recipe(tmp_path):
     broken.write_text("{", encoding="utf-8")
     with pytest.raises(TimingError, match="読めません"):
         check_recipe_verified(_cfg(broken))
+
+
+def test_live_refuses_a_stale_recipe_even_if_verified(tmp_path):
+    """★verified は**版に紐づける**。組み込みレシピが更新されたのにファイルが古いままだと、
+    画面と手順が食い違ったまま「検証済み」として送信してしまう。
+    版が上がったら検証をやり直す(お金が動くので摩擦は正しい)。"""
+    import json
+
+    import pytest
+
+    from hro_buyer.ipat import RECIPE_VERSION
+    from hro_operations.race_day import DayConfig, TimingError, check_recipe_verified
+
+    def _cfg(p):
+        return DayConfig(date="20261003", win_model="", place_model="",
+                         results_path="", strategy="flow", mode="live",
+                         ipat_recipe=str(p))
+
+    old = tmp_path / "old.json"
+    old.write_text(json.dumps({"verified": True, "version": RECIPE_VERSION - 1}),
+                   encoding="utf-8")
+    with pytest.raises(TimingError, match="古い版"):
+        check_recipe_verified(_cfg(old))
+
+    cur = tmp_path / "cur.json"
+    cur.write_text(json.dumps({"verified": True, "version": RECIPE_VERSION}),
+                   encoding="utf-8")
+    check_recipe_verified(_cfg(cur))
