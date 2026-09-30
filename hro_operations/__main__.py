@@ -1542,7 +1542,7 @@ def main(argv: list[str] | None = None) -> int:
                           help="★閾値を下げて本数を増やし、確信度が上がるかを見る")
     p_sw.add_argument("--from", dest="d_from", required=True)
     p_sw.add_argument("--to", dest="d_to", required=True)
-    p_sw.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_sw.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_sw.add_argument("--flow-lead-seconds", type=int, default=60)
     p_sw.add_argument("--flow-minutes", type=int, default=6)
     p_sw.add_argument("--quantiles", default="0.95,0.90,0.85,0.80,0.70")

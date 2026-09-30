@@ -132,3 +132,26 @@ def test_load_rows_can_normalize_by_race_noise():
     assert abs(d1["01"]["flow"] - d0["01"]["flow"] / move) < 1e-9
     # 同一レース内の順位は変わらない(効くとすればレース間の比較)
     assert (d1["01"]["flow"] > d1["05"]["flow"]) == (d0["01"]["flow"] > d0["05"]["flow"])
+
+
+def test_load_rows_uses_the_netkeiba_sql_for_netkeiba():
+    """★信号源ごとに SQL を選ぶ。ここが ts/sokuho しか見ていなかったため、
+    flow-sweep で netkeiba を指定しても**黙って ts_sokuho_o1 を読んでいた**。
+    別ソースの数字を netkeiba の成績として報告する事故(2026-10-01 に発見)。"""
+    import pytest
+
+    from hro_operations.model_flow import ModelConfig, load_rows
+
+    seen = {}
+
+    class DB:
+        def query(self, sql, _params):
+            seen["sql"] = sql
+            return []
+
+    load_rows(DB(), "20260926", "20260927", ModelConfig(source="netkeiba"))
+    assert "ts_netkeiba_o1" in seen["sql"] and "ts_sokuho_o1" in seen["sql"]  # 複勝は JV
+    load_rows(DB(), "20260926", "20260927", ModelConfig(source="ts"))
+    assert "ts_netkeiba_o1" not in seen["sql"]
+    with pytest.raises(ValueError):
+        load_rows(DB(), "1", "2", ModelConfig(source="でたらめ"))

@@ -40,7 +40,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .flow_signal import _SQL_BT, _logit, _num, summarize_bets
+from .flow_signal import _SQL_BT, _SQL_BT_NK, _logit, _num, _tan_reader, summarize_bets
 
 # 決定時点で live に取れる特徴量。★ここに増やすときは「T-75s に本当に手元にあるか」を
 # 必ず確認する。nl_se 由来(zogen 等)は RACE蓄積なので **入れない**。
@@ -95,11 +95,19 @@ def _f(v, default=0.0) -> float:
 
 def load_rows(db, d_from: str, d_to: str, cfg: ModelConfig) -> list[dict]:
     """期間の全馬について特徴量と結果を作る(閾値で絞らない)。"""
-    table = "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1"
     if cfg.bet_type not in ("fuku", "tan"):
         raise ValueError(f"不明な券種: {cfg.bet_type!r}")
+    # ★信号源ごとに SQL を選ぶ。netkeiba は時間軸が observed_at で専用 SQL が要る。
+    #   ここが ts/sokuho しか見ていなかったため、flow-sweep で netkeiba を指定しても
+    #   **黙って ts_sokuho_o1 を読んでいた**(2026-10-01 に発見)。
+    if cfg.source == "netkeiba":
+        sql = _SQL_BT_NK
+    elif cfg.source in ("ts", "sokuho"):
+        sql = _SQL_BT.replace("{TABLE}", "ts_o1" if cfg.source == "ts" else "ts_sokuho_o1")
+    else:
+        raise ValueError(f"不明な信号源: {cfg.source!r}")
     # ★{BET} の差し込みを忘れると SQL が壊れる(券種をプレースホルダ化した際の取りこぼし)
-    rows = db.query(_SQL_BT.replace("{TABLE}", table).replace("{BET}", f"'{cfg.bet_type}'"),
+    rows = db.query(sql.replace("{BET}", f"'{cfg.bet_type}'"),
                     {"d0": d_from, "d1": d_to,
                      "lead": cfg.lead_seconds, "flow": cfg.flow_minutes})
     by_race: dict[str, list[dict]] = {}
@@ -112,21 +120,23 @@ def load_rows(db, d_from: str, d_to: str, cfg: ModelConfig) -> list[dict]:
             continue                                  # 測れていない
         if not rs[0].get("has_payout", True):
             continue                                  # 未確定は学習にも評価にも使わない
-        ok = [x for x in rs if _num(x["t1"]) and _num(x["t0"]) and _num(x["f1"])]
+        # ★netkeiba の単勝は NUMERIC(JV は10倍整数文字列)。同じ関数で読むと全頭落ちる
+        tan_of = _tan_reader(cfg.source)
+        ok = [x for x in rs if tan_of(x["t1"]) and tan_of(x["t0"]) and _num(x["f1"])]
         if len(ok) < 5:
             continue
-        s1 = sum(1.0 / _num(x["t1"]) for x in ok)
-        s0 = sum(1.0 / _num(x["t0"]) for x in ok)
+        s1 = sum(1.0 / tan_of(x["t1"]) for x in ok)
+        s0 = sum(1.0 / tan_of(x["t0"]) for x in ok)
         if s1 <= 0 or s0 <= 0:
             continue
         rank = {x["umaban"]: i for i, x in enumerate(
-            sorted(ok, key=lambda r: (_num(r["t1"]), r["umaban"])), 1)}
+            sorted(ok, key=lambda r: (tan_of(r["t1"]), r["umaban"])), 1)}
         n = len(ok)
         # ★レース全体の値動き総量(ノイズの水準)。正規化に使う。
-        move = sum(abs((1.0 / _num(x["t1"])) / s1 - (1.0 / _num(x["t0"])) / s0)
+        move = sum(abs((1.0 / tan_of(x["t1"])) / s1 - (1.0 / tan_of(x["t0"])) / s0)
                    for x in ok)
         for x in ok:
-            t1, t0, f1 = _num(x["t1"]), _num(x["t0"]), _num(x["f1"])
+            t1, t0, f1 = tan_of(x["t1"]), tan_of(x["t0"]), _num(x["f1"])
             sl, se = (1.0 / t1) / s1, (1.0 / t0) / s0
             # ★返還(出走取消/除外)は勝ちでも負けでもない。学習から外す。
             if str(x.get("i_jyo_cd") or "").strip() in ("1", "2", "3"):
