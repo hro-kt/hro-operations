@@ -832,49 +832,13 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 
 # --- バックテスト: 期間まるごとを1クエリで引く(レースごとに往復すると遅すぎる) ---
 # 候補CSVもモデルも要らない。flow は model-free なので、スナップ2本と払戻だけで完結する。
-_SQL_BT = """
-WITH ra AS (
-  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
-         kyori, track_cd, grade_cd, syusso_tosu,
-         to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp AS post,
-         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
-                 - make_interval(secs => %(lead)s), 'MMDDHH24MI') AS cut_late,
-         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
-                 - make_interval(mins => %(flow)s), 'MMDDHH24MI') AS cut_early
-  FROM nl_ra
-  WHERE jyo_cd BETWEEN '01' AND '10'            -- ★JRA のみ(地方/海外を混ぜない)
-    AND year||month_day BETWEEN %(d0)s AND %(d1)s
-    AND hasso_time ~ '^[0-9]{4}$'
-),
--- ★ORDER BY は **hasso_time(MMDDHHMI の文字列)**で行う。ここを計算した timestamp に
---   すると主キー (…,race_num,umaban,hasso_time,source_spec) の索引が使えず、全期間の
---   スナップ数百万行を2回ソートすることになって終わらない。文字列順=時刻順なので
---   索引のまま最新1本が取れる(年跨ぎのみ順序が崩れるが、決定時点は発走の数分前で
---   同日のスナップを指すため実害は無い。取れなければ races_scored に出ない)。
-late AS (
-  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
-         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
-         t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1,
-         t.tan_ninki AS nin1,
-         EXTRACT(EPOCH FROM (ra.post
-           - to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp))::int AS lead1
-  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
-  WHERE t.hasso_time <= ra.cut_late
-  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
-           t.hasso_time DESC
-),
-early AS (
-  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
-         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
-         t.tan_odds AS t0, t.hasso_time AS ht0
-  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
-  WHERE t.hasso_time <= ra.cut_early
-  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
-           t.hasso_time DESC
-)
-SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
+# ★_SQL_BT と _SQL_BT_NK は **末尾(SELECT と JOIN)を共有する**。以前は NK 側が
+#   コピーだったため、_SQL_BT への修正が片方にしか当たらず腐った
+#   (2026-10-01: NK 側だけ `LEFT JOIN fk USING` が残り、nl_se の year と衝突して
+#    AmbiguousColumn。作った時から壊れていて、一度も走らせていなかったので露見しなかった)。
+_BT_TAIL = """SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, l.f1, e.t0, l.ht1, e.ht0, l.lead1, l.nin1, h.pay, se.i_jyo_cd,
+       l.t1, {F1}, e.t0, l.ht1, e.ht0, l.lead1, l.nin1, h.pay, se.i_jyo_cd,
        -- スライス用(すべて既に JOIN 済みのテーブルから取るので追加コストは小さい)
        se.wakuban, se.zogen_fugo, se.zogen_sa, se.ba_taijyu,
        ra2.kyori, ra2.track_cd, ra2.grade_cd,
@@ -925,16 +889,57 @@ LEFT JOIN nl_hr h
    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
  AND h.bet_type = {BET}
  AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
-"""
+{EXTRA_JOIN}"""
 
-
-
-# ★netkeiba 用。時間軸が **observed_at(実時刻)** なので、分格子前提の _SQL_BT は使えない。
-#   ここを分けずに {TABLE} を差し替えるだけにすると、netkeiba を指定したのに
-#   ts_sokuho_o1 を読んで「別ソースの数字を netkeiba の成績として報告する」ことになる。
-_SQL_BT_NK = """
+_SQL_BT = """
 WITH ra AS (
   SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         kyori, track_cd, grade_cd, syusso_tosu,
+         to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp AS post,
+         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+                 - make_interval(secs => %(lead)s), 'MMDDHH24MI') AS cut_late,
+         to_char(to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+                 - make_interval(mins => %(flow)s), 'MMDDHH24MI') AS cut_early
+  FROM nl_ra
+  WHERE jyo_cd BETWEEN '01' AND '10'            -- ★JRA のみ(地方/海外を混ぜない)
+    AND year||month_day BETWEEN %(d0)s AND %(d1)s
+    AND hasso_time ~ '^[0-9]{4}$'
+),
+-- ★ORDER BY は **hasso_time(MMDDHHMI の文字列)**で行う。ここを計算した timestamp に
+--   すると主キー (…,race_num,umaban,hasso_time,source_spec) の索引が使えず、全期間の
+--   スナップ数百万行を2回ソートすることになって終わらない。文字列順=時刻順なので
+--   索引のまま最新1本が取れる(年跨ぎのみ順序が崩れるが、決定時点は発走の数分前で
+--   同日のスナップを指すため実害は無い。取れなければ races_scored に出ない)。
+late AS (
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1,
+         t.tan_ninki AS nin1,
+         EXTRACT(EPOCH FROM (ra.post
+           - to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp))::int AS lead1
+  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.hasso_time <= ra.cut_late
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.hasso_time DESC
+),
+early AS (
+  SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
+         t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+         t.tan_odds AS t0, t.hasso_time AS ht0
+  FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+  WHERE t.hasso_time <= ra.cut_early
+  ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
+           t.hasso_time DESC
+)
+""" + _BT_TAIL.replace("{F1}", "l.f1").replace("{EXTRA_JOIN}", "")
+
+# netkeiba は複勝を持たないので JV(ts_sokuho_o1)の直近値を fk CTE から添える。
+# ★USING ではなく ON で結合する(左側に nl_se の同名列があり USING は曖昧になる)。
+_SQL_BT_NK = """
+WITH ra AS (
+  -- ★共有する末尾(_BT_TAIL)が ra2.kyori 等を参照する。列を _SQL_BT と揃えること。
+  SELECT year, month_day, jyo_cd, kaiji, nichiji, race_num,
+         kyori, track_cd, grade_cd, syusso_tosu,
          (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
           AT TIME ZONE 'Asia/Tokyo') AS post
   FROM nl_ra
@@ -973,29 +978,19 @@ early AS (
   ORDER BY t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
            t.observed_at DESC
 )
-SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
-       l.year||l.month_day AS ymd, l.umaban,
-       l.t1, fk.f1, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
-       -- ★そのレースの複勝払戻が1行でも存在するか。無い=まだ結果が入っていない。
-       --   これを見ないと「未確定」を「全部外れ」として数えてしまう。
-       EXISTS (SELECT 1 FROM nl_hr h2
-                WHERE (h2.year,h2.month_day,h2.jyo_cd,h2.kaiji,h2.nichiji,h2.race_num)
-                    = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
-                  AND h2.bet_type = {BET}) AS has_payout
-FROM late l
-JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
--- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
---   払戻表(nl_hr)には行が立たないので、これを見ないと全損として数えてしまう。
-LEFT JOIN nl_se se
-  ON (se.year,se.month_day,se.jyo_cd,se.kaiji,se.nichiji,se.race_num,se.umaban)
-   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)
-LEFT JOIN nl_hr h
-  ON (h.year,h.month_day,h.jyo_cd,h.kaiji,h.nichiji,h.race_num)
-   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num)
- AND h.bet_type = {BET}
- AND regexp_replace(h.kumi,'[^0-9]','','g') = l.umaban
-LEFT JOIN fk USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
-"""
+""" + _BT_TAIL.replace("{F1}", "fk.f1").replace(
+    "{EXTRA_JOIN}",
+    "LEFT JOIN fk\n"
+    "  ON (fk.year,fk.month_day,fk.jyo_cd,fk.kaiji,fk.nichiji,fk.race_num,fk.umaban)\n"
+    "   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)")
+
+
+
+
+# ★netkeiba 用。時間軸が **observed_at(実時刻)** なので、分格子前提の _SQL_BT は使えない。
+#   ここを分けずに {TABLE} を差し替えるだけにすると、netkeiba を指定したのに
+#   ts_sokuho_o1 を読んで「別ソースの数字を netkeiba の成績として報告する」ことになる。
+
 
 
 def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,

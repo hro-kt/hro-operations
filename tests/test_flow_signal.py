@@ -811,3 +811,29 @@ def test_small_fields_are_excluded_when_min_horses_is_set():
     assert flow_orders(FakeDB(rows), key, FlowConfig(min_horses=6, **base), 100, "t")
     assert not flow_orders(FakeDB(rows), key, FlowConfig(min_horses=8, **base), 100, "t")
     assert FlowConfig().min_horses == 0
+
+
+def test_backtest_sqls_share_the_tail_and_resolve_every_column():
+    """★_SQL_BT と _SQL_BT_NK は末尾(SELECT と JOIN)を共有する。以前は NK 側がコピーで、
+    _SQL_BT への修正が片方にしか当たらず腐った(2026-10-01: NK だけ
+    `LEFT JOIN fk USING` が残り nl_se の year と衝突して AmbiguousColumn。
+    作った時から壊れていて、一度も走らせていなかったので露見しなかった)。
+
+    ★pglast のパースは**列を解決しない**。末尾が参照する別名(ra2.kyori 等)を
+    両方の ra CTE が持っていることを明示的に確かめる。
+    """
+    import re
+
+    import pglast
+
+    from hro_operations.flow_signal import _BT_TAIL, _SQL_BT, _SQL_BT_NK
+
+    for q in (_SQL_BT, _SQL_BT_NK):
+        built = q.replace("{TABLE}", "ts_o1").replace("{BET}", "'fuku'")
+        pglast.parse_sql(re.sub(r"%\((\w+)\)s", r"$1", built))
+        ra = built[built.index("WITH ra AS ("):built.index("),", built.index("WITH ra AS ("))]
+        for col in ("kyori", "track_cd", "grade_cd"):
+            assert f"ra2.{col}" not in _BT_TAIL or col in ra, f"{col} が ra CTE に無い"
+        # ★fk は ON で結合する(USING は左側の同名列と衝突する)
+        assert "JOIN fk USING" not in built
+    assert "{F1}" in _BT_TAIL and "{EXTRA_JOIN}" in _BT_TAIL
