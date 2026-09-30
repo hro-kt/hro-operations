@@ -57,13 +57,19 @@ def test_live_refuses_to_start_with_an_unverified_recipe(tmp_path):
                          results_path="", strategy="flow", mode="live",
                          ipat_recipe=str(p))
 
+    from hro_buyer.ipat import RECIPE_VERSION as _V
+
     ng = tmp_path / "ng.json"
-    ng.write_text(json.dumps({"verified": False}), encoding="utf-8")
+    ng.write_text(json.dumps({"verified": False, "version": _V}), encoding="utf-8")
     with pytest.raises(TimingError, match="未検証"):
         check_recipe_verified(_cfg(ng))
 
+    from hro_buyer.ipat import RECIPE_VERSION
+
     ok = tmp_path / "ok.json"
-    ok.write_text(json.dumps({"verified": True}), encoding="utf-8")
+    # ★verified だけでは通らない。版も一致していること(古いレシピの検出が本来の役目)
+    ok.write_text(json.dumps({"verified": True, "version": RECIPE_VERSION}),
+                  encoding="utf-8")
     check_recipe_verified(_cfg(ok))
 
     with pytest.raises(TimingError, match="ありません"):
