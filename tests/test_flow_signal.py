@@ -837,3 +837,25 @@ def test_backtest_sqls_share_the_tail_and_resolve_every_column():
         # ★fk は ON で結合する(USING は左側の同名列と衝突する)
         assert "JOIN fk USING" not in built
     assert "{F1}" in _BT_TAIL and "{EXTRA_JOIN}" in _BT_TAIL
+
+
+def test_shared_tail_only_references_columns_both_ctes_provide():
+    """★末尾を共有する以上、そこが参照する l./e. の列は**両方の CTE**が出していないと
+    実行時に UndefinedColumn になる。2026-10-01 に l.nin1 で落ちた(しかも nin1 は
+    Python 側で一度も読んでいない死んだ列だった)。
+    pglast のパースは列を解決しないので、ここで機械的に照合する。"""
+    import re
+
+    from hro_operations.flow_signal import _BT_TAIL, _SQL_BT, _SQL_BT_NK
+
+    refs = set(re.findall(r"\b([le])\.([a-z_0-9]+)", _BT_TAIL))
+    for name, q in (("BT", _SQL_BT), ("NK", _SQL_BT_NK)):
+        for alias, cte in (("l", "late"), ("e", "early")):
+            body = q[q.index(cte + " AS ("):]
+            body = body[:body.index("\n)")]
+            outs = set(re.findall(r"AS ([a-z_0-9]+)", body)) | \
+                set(re.findall(r"t\.([a-z_0-9]+)", body))
+            for a, col in refs:
+                if a != alias:
+                    continue
+                assert col in outs, f"{name}.{cte} が {alias}.{col} を出していない"

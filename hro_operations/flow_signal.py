@@ -838,7 +838,7 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 #    AmbiguousColumn。作った時から壊れていて、一度も走らせていなかったので露見しなかった)。
 _BT_TAIL = """SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
-       l.t1, {F1}, e.t0, l.ht1, e.ht0, l.lead1, l.nin1, h.pay, se.i_jyo_cd,
+       l.t1, {F1}, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
        -- スライス用(すべて既に JOIN 済みのテーブルから取るので追加コストは小さい)
        se.wakuban, se.zogen_fugo, se.zogen_sa, se.ba_taijyu,
        ra2.kyori, ra2.track_cd, ra2.grade_cd,
@@ -914,7 +914,6 @@ late AS (
   SELECT DISTINCT ON (t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban)
          t.year,t.month_day,t.jyo_cd,t.kaiji,t.nichiji,t.race_num,t.umaban,
          t.tan_odds AS t1, t.fuku_odds_low AS f1, t.hasso_time AS ht1,
-         t.tan_ninki AS nin1,
          EXTRACT(EPOCH FROM (ra.post
            - to_timestamp(t.year||t.hasso_time,'YYYYMMDDHH24MI')::timestamp))::int AS lead1
   FROM {TABLE} t JOIN ra USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
