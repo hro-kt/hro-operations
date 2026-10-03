@@ -998,3 +998,29 @@ def test_coverage_warning_fires_when_the_data_is_narrower(capsys):
 
     _warn_coverage("20260802", "20260809", races, "ts")
     assert "⚠" not in capsys.readouterr().out
+
+
+def test_order_reason_survives_missing_place_odds():
+    """★単勝では複勝オッズが None でありうる(31256e0)。理由文の整形で落とさない。
+
+    2026-10-04 に flow-picks が TypeError で止まった。発注直前ではなく
+    BetOrder 生成時なので、live でも同じ場所で落ちていた。
+    """
+    from hro_operations.flow_signal import FlowConfig, flow_orders
+
+    cfg = FlowConfig(source="netkeiba", bet_type="tan", min_ninki=7,
+                     thresholds={90: -9.0}, lead_seconds=90, flow_minutes=6)
+    sc = _scores(cfg, {})          # 複勝オッズ無し
+    assert sc, "前提: 単勝なら複勝オッズ無しでもスコアは出る"
+
+    class _DB2:
+        def query(self, _s, _p):
+            tan_late = {"01": 2.0, "02": 5.0, "03": 9.0, "04": 20.0,
+                        "05": 30.0, "06": 40.0, "07": 50.0, "08": 60.0}
+            return _rows(tan_late, {k: v * 1.1 for k, v in tan_late.items()}, {})
+
+    orders = flow_orders(_DB2(), ("2026", "1004", "08", "04", "02", "05"),
+                         cfg, 1000, "test")
+    assert orders, "候補が出ていない"
+    assert all("fuku=-" in o.reason for o in orders)
+    assert all(o.bet_type == "win" and o.odds > 0 for o in orders)

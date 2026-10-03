@@ -854,8 +854,11 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             # ★決定時点の**単勝**オッズを残す。回収率がオッズ帯で大きく違う
             #   (20-40倍 1.45 / 全帯 1.08)ので、後から帯別に評価できないと
             #   ライブの結果を検証できない。odds 欄は発注する複勝の値なので別に持つ。
+            # ★fuku_odds は単勝のとき None でありうる(速報ポーリングが止まっていても
+            #   単勝は買えるようにしたため)。整形で落とさない。
             reason=(f"flow_tan={d['score']:+.4f}>={thr:+.4f}@T-{lead_used}s "
-                    f"tan={d['tan_odds']:.1f} fuku={d['fuku_odds']:.1f} "
+                    f"tan={d['tan_odds']:.1f} "
+                    f"fuku={'-' if d['fuku_odds'] is None else format(d['fuku_odds'], '.1f')} "
                     f"ninki={d.get('ninki')} ken={_BET_TYPE[cfg.bet_type]} "
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
