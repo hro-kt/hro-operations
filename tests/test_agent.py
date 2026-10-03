@@ -94,7 +94,7 @@ def test_cancel_is_checked_outside_the_output_loop():
 
 
 def test_kill_falls_back_when_killpg_is_unavailable():
-    """★Windows には killpg が無い。フォールバックが無いとキャンセルが効かない。"""
+    """POSIX で killpg が使えない場合のフォールバック(Windows は別テスト)。"""
     from hro_operations.agent import _kill
 
     class P:
@@ -107,3 +107,111 @@ def test_kill_falls_back_when_killpg_is_unavailable():
     _kill([P()])
     assert P.terminated
     _kill([])                         # 起動前でも落ちないこと
+
+
+def test_max_per_race_is_passed_to_run_day():
+    """★いまの executor は注文ごとに「投票→確認→送信→受付」を1周するので、
+    同一レースで複数選ばれると2件目以降が締切を超えて捨てられる
+    (2026-10-03 に実害: 3件中1件のみ成立)。上限を渡せること。"""
+    from hro_operations.agent import _b_flow_day_windows, _flow_day_params
+
+    assert _flow_day_params({"max_per_race": 1})["max_per_race"] == 1
+    assert _flow_day_params({})["max_per_race"] == 0        # 既定は無制限
+
+    cmd, _cwd, _env = _b_flow_day_windows(
+        {"source": "netkeiba", "thresholds": '{"90": 0.15}', "lead_seconds": 90,
+         "max_per_race": 1, "mode": "paper"})
+    i = cmd.index("--flow-max-per-race")
+    assert cmd[i + 1] == "1"
+
+
+def test_kill_on_windows_takes_the_whole_process_tree(monkeypatch):
+    """★Windows で terminate() だけでは**直下の子しか死なない**。
+
+    起動は `poetry run hro-ops run-day` なので、プロセス木は
+    poetry.exe → python.exe → node.exe(Playwright) → ブラウザ。
+    terminate() で死ぬのは poetry.exe だけで、ブラウザが残り続ける。
+    start_new_session=True も Windows では無視されるので、
+    「プロセスグループにしてある」という前提は成り立っていなかった。
+    """
+    import hro_operations.agent as agent
+
+    calls = []
+    monkeypatch.setattr(agent.os, "name", "nt")
+    monkeypatch.setattr(agent.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd))
+
+    class P:
+        pid = 4242
+        terminated = False
+
+        def terminate(self):
+            P.terminated = True
+
+    agent._kill([P()])
+    assert calls == [["taskkill", "/T", "/F", "/PID", "4242"]], calls
+    assert not P.terminated, "Windows で terminate() に落ちている(子孫が残る)"
+
+
+class _FakeConn:
+    """execute した SQL とパラメータを記録するだけの接続。"""
+
+    def __init__(self, returning=()):
+        self.sql = []
+        self._returning = list(returning)
+
+    def execute(self, sql, params=None):
+        self.sql.append((" ".join(sql.split()), params))
+        self_ = self
+
+        class _Cur:
+            def fetchall(self):
+                return self_._returning
+
+            def fetchone(self):
+                return self_._returning[0] if self_._returning else None
+
+        return _Cur()
+
+    def commit(self):
+        pass
+
+
+def test_reclaim_at_startup_ignores_heartbeat_age():
+    """★エージェントが今起動した以上、自分名義の running は存在し得ない。
+
+    2026-10-03 に Windows Update が 13:42 と 13:51 の2回 VM を再起動し、当日の
+    runner が消えたのに ops_job の行は running のまま残った。heartbeat_at は
+    書いていたのに**読む側が無かった**のが原因。
+    """
+    from hro_operations.agent import _reclaim
+
+    c = _FakeConn(returning=[(1,), (2,)])
+    n = _reclaim(c, "win1", stale_sec=180, startup=True)
+    sql, params = c.sql[0]
+    assert n == 2
+    assert "status='failed'" in sql and "status='running'" in sql
+    assert "heartbeat_at" not in sql, "起動時の一掃で心拍の新しさを見てはいけない"
+    assert params[1:] == ("win1",)
+
+
+def test_reclaim_periodic_only_takes_stale_rows():
+    """走行中のジョブを巻き込まないこと(心拍が古い行だけ)。"""
+    from hro_operations.agent import _reclaim
+
+    c = _FakeConn(returning=[])
+    _reclaim(c, "win1", stale_sec=180)
+    sql, params = c.sql[0]
+    assert "heartbeat_at < now() - make_interval(secs => %s)" in sql
+    assert params[1:] == ("win1", 180)
+
+
+def test_agent_loop_actually_calls_reclaim():
+    """★heartbeat_at を書くだけで誰も読まない、を二度とやらない。"""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "agent.py").read_text(encoding="utf-8")
+    loop = src[src.index("    while True:"):]
+    assert "_reclaim(" in loop, "エージェントのループが回収を呼んでいない"
+    assert "startup=True" in loop, "起動時の一掃が無い"

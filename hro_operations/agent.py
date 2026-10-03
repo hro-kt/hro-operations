@@ -260,6 +260,8 @@ def _flow_day_params(a: dict) -> dict:
         "act_before_deadline": _int(a.get("act_before_deadline_seconds"), 0),
         "deadline_lead": _int(a.get("deadline_lead_seconds"), 60),
         "flat_amount": _int(a.get("flat_amount"), 100),
+        # ★1レースで買う上限。順次処理では2件目以降が締切を超えて捨てられる
+        "max_per_race": _int(a.get("max_per_race"), 0),
         "mode": "live" if a.get("mode") == "live" else "paper",
         "no_wait": bool(a.get("no_wait")),
     }
@@ -325,6 +327,7 @@ def _b_flow_day(a: dict):
         "FLOW_SOURCE": p["source"], "FLOW_LEAD": str(p["flow_lead"]),
         "FLOW_MIN": str(p["flow_min"]), "LEAD_SECONDS": str(p["act_lead"]),
         "FLAT_AMOUNT": str(p["flat_amount"]), "MODE": p["mode"],
+        "MAX_PER_RACE": str(p["max_per_race"]),
     }
     if p["thresholds"]:
         import json
@@ -352,6 +355,7 @@ def _b_flow_day_windows(a: dict):
            "--flow-threshold", str(p["threshold"]), "--flow-source", p["source"],
            "--flow-lead-seconds", str(p["flow_lead"]), "--flow-minutes", str(p["flow_min"]),
            "--flat-amount", str(p["flat_amount"]), "--lead-seconds", str(p["act_lead"]),
+           "--flow-max-per-race", str(p["max_per_race"]),
            "--deadline-lead-seconds", str(p["deadline_lead"]), "--mode", p["mode"]]
     if p["thresholds"]:
         import json
@@ -454,15 +458,33 @@ _VENV_VARS = ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "POETRY_ACTIVE",
 
 
 def _kill(proc_ref: list) -> None:
-    """プロセスグループごと止める。★start_new_session=True で分離してあるので、
-    子(poetry → python → ブラウザ)まで一括で落とせる。"""
+    """子プロセスを**木ごと**止める。
+
+    ★POSIX は start_new_session=True でプロセスグループにしてあるので killpg で一括。
+    ★Windows には killpg が無い。以前はここで proc.terminate() に落としていたが、
+      これは**直下の子しか殺さない**。Windows の起動は `poetry run hro-ops run-day`
+      なので、死ぬのは poetry.exe だけで、python → node(Playwright) → ブラウザが
+      そのまま残る。start_new_session も Windows では無視されるので、
+      「プロセスグループにしてある」という前提自体が成り立っていなかった。
+      taskkill /T(子孫ごと) /F で確実に落とす。
+    """
     if not proc_ref:
         return
     proc = proc_ref[0]
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=30)
+        except Exception:   # noqa: BLE001 - taskkill が無い/失敗 → せめて直下を落とす
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        return
     try:
         import signal
         os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-    except Exception:       # noqa: BLE001 - Windows など killpg が無い環境
+    except Exception:       # noqa: BLE001 - killpg が使えない環境
         try:
             proc.terminate()
         except Exception:
@@ -511,6 +533,31 @@ def _claim(conn, server: str):
         "RETURNING id, kind, args", (server, server)).fetchone()
     conn.commit()
     return row
+
+
+def _reclaim(conn, server: str, *, stale_sec: float, startup: bool = False) -> int:
+    """死んだジョブの `running` を回収して failed にする。
+
+    ★heartbeat_at は書いていたのに**誰も読んでいなかった**。そのため VM が再起動したり
+      プロセスが消えたりすると ops_job の行が running のまま永久に残り、UI 上も
+      「中止を押しても消えない」ように見えていた(2026-10-03 に Windows Update の
+      自動再起動で実害: 13:42 と 13:51 の2回再起動し、当日の runner が消えたまま)。
+    ★startup=True では心拍の新しさに関係なく自分の running を全部回収する。
+      エージェントが今起動したのだから、自分名義で走っているジョブは存在し得ない。
+    """
+    if startup:
+        where, params = "", (server,)
+    else:
+        where = " AND heartbeat_at < now() - make_interval(secs => %s)"
+        params = (server, stale_sec)
+    rows = conn.execute(
+        "UPDATE ops_job SET status='failed', exit_code=-1, finished_at=now(), "
+        "  log = log || %s "
+        "WHERE target=%s AND status='running'" + where + " RETURNING id",
+        ("\n[agent] 心拍が途絶えたため回収しました(プロセス消滅/再起動の可能性)\n",)
+        + params).fetchall()
+    conn.commit()
+    return len(rows)
 
 
 def _canceled(conn, job_id) -> bool:
@@ -659,10 +706,23 @@ def run_agent(server: str, interval: float = 5.0, concurrency: int = 3) -> int:
 
     conn = None  # claim + agent heartbeat 用(メインスレッド専用)
     try:
+        stale_sec = max(interval * 6, 180.0)   # 心拍は interval 毎。余裕を持って判定する
+        swept = False
         while True:
             try:
                 if conn is None or conn.closed:
                     conn = psycopg.connect(_conninfo(), autocommit=False)
+                if not swept:
+                    # ★起動直後の一掃。再起動で消えたジョブはここで落ちる。
+                    n = _reclaim(conn, server, stale_sec=stale_sec, startup=True)
+                    if n:
+                        print(f"agent: 起動時に running のジョブ {n} 件を回収しました",
+                              flush=True)
+                    swept = True
+                elif _now().second < interval:     # 毎分あたり1回程度に抑える
+                    n = _reclaim(conn, server, stale_sec=stale_sec)
+                    if n:
+                        print(f"agent: 心拍の途絶えたジョブ {n} 件を回収しました", flush=True)
                 _heartbeat(conn, server, None)
                 if not slots.acquire(blocking=False):  # 空きスロット無し → 待つ
                     time.sleep(interval); continue

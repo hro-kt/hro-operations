@@ -21,7 +21,8 @@ OPS="${OPS:-$HOME/hro/hro-operations}"
 DATE="${DATE:-$(TZ=Asia/Tokyo date +%Y%m%d)}"
 MODE="${MODE:-paper}"
 ARGS=(--date "$DATE" --strategy flow
-      --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-sokuho}"
+      --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-sokuho}" \
+      --flow-max-per-race "${MAX_PER_RACE:-0}"
       --flow-lead-seconds "${FLOW_LEAD:-120}" --flow-minutes "${FLOW_MIN:-6}"
       --flat-amount "${FLAT_AMOUNT:-100}" --lead-seconds "${LEAD_SECONDS:-70}"
       --deadline-lead-seconds "${DEADLINE_LEAD:-60}"

@@ -64,6 +64,13 @@ class FlowConfig:
     #   まとめて最適化することになる。複勝を買うなら 8 を指定する。
     #   (単勝には関係ないので既定は 0 = 制限なし)
     min_horses: int = 0
+    # ★1レースで買う上限。いまの executor は注文ごとに
+    #   「投票→確認→送信→受付」を1周するので、同一レースで複数選ばれると
+    #   2件目以降が締切を超えて捨てられる(2026-10-03 に実害: 3件中1件のみ成立)。
+    #   どのみち通らないなら、失敗に時間を使って次のレースの準備を圧迫するより
+    #   最初から絞る。スコアの高い順に残す。
+    #   ★本来の解は購入予定リストへの**まとめ入力**(確認・送信を1回にする)。
+    max_per_race: int = 0
     # ★そのレースの値動き総量で正規化するか(S/N比にする)。
     #   実測(2026-09-29, ts@T-60s を2期間): 値動きが**小さい**レースほど回収率が高い
     #     下位25% 1.182/1.235 → 下位50% 1.060/1.212 → 上位25% 0.994/0.985(単調・両期間一致)
@@ -825,6 +832,11 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
         ))
+    if cfg.max_per_race > 0 and len(orders) > cfg.max_per_race:
+        log.info("%s: 候補 %d 頭のうち上位 %d 頭に絞ります"
+                 "(順次処理では2件目以降が締切を超えるため)",
+                 race_id, len(orders), cfg.max_per_race)
+        orders = orders[:cfg.max_per_race]       # flow_orders はスコア降順に作っている
     log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, 実測 T-%ss, src=%s)",
              race_id, len(orders), len(sc), thr, lead_used, cfg.source)
     return orders

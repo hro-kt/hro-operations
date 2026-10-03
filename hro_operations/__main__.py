@@ -108,6 +108,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--flow-min-ninki", type=int, default=0,
                    help="決定時点の単勝人気の下限(オッズ順から導出)")
     p.add_argument("--flow-max-ninki", type=int, default=0)
+    p.add_argument("--flow-max-per-race", type=int, default=0,
+                   help="1レースで買う上限(0=無制限)。★順次処理では2件目以降が"
+                        "締切を超えて捨てられる。スコア上位から残す")
     p.add_argument("--flow-min-horses", type=int, default=0,
                    help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで/"
                         "4頭以下は発売なし。複勝を買うなら 8 を指定する")
@@ -189,6 +192,7 @@ def _cfg(args):
         flow_min_ninki=getattr(args, "flow_min_ninki", 0),
         flow_max_ninki=getattr(args, "flow_max_ninki", 0),
         flow_min_horses=getattr(args, "flow_min_horses", 0),
+        flow_max_per_race=getattr(args, "flow_max_per_race", 0),
         flow_lead_seconds=args.flow_lead_seconds,
         flow_minutes=args.flow_minutes,
         flow_source=args.flow_source,
