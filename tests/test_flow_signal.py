@@ -859,3 +859,61 @@ def test_shared_tail_only_references_columns_both_ctes_provide():
                 if a != alias:
                     continue
                 assert col in outs, f"{name}.{cte} が {alias}.{col} を出していない"
+
+
+# -- 閾値の母集団と買う側の母集団は一致していなければならない --------------------- #
+def _sc(**by_um):
+    """{馬番: {score, tan_odds, fuku_odds}} を作る。ninki は単勝オッズ順に振る。"""
+    from hro_operations.flow_signal import assign_ninki
+
+    sc = {um: {"score": v[0], "tan_odds": v[1], "fuku_odds": v[2]}
+          for um, v in by_um.items()}
+    assign_ninki(sc)
+    return sc
+
+
+def test_eligible_applies_the_ninki_band():
+    """★人気7+ で買うなら、閾値もその部分集合で取る。
+
+    単勝×人気7+×上位5% の OOS 1.6690 は「**人気7+ の中での**上位5%」。
+    全馬の95%点を人気7+ に当てると選別率が5%から大きくずれる。
+    """
+    from hro_operations.flow_signal import FlowConfig, eligible
+
+    sc = _sc(**{"01": (0.5, 2.0, 1.2), "02": (0.4, 5.0, 2.0), "03": (0.3, 9.0, 3.0),
+                "04": (0.2, 20.0, 5.0), "05": (0.1, 30.0, 7.0), "06": (0.6, 40.0, 9.0),
+                "07": (0.7, 50.0, 11.0), "08": (0.8, 60.0, 13.0)})
+    cfg = FlowConfig(min_ninki=7)
+    assert sorted(eligible(cfg, sc)) == ["07", "08"]
+    assert sorted(eligible(FlowConfig(), sc)) == sorted(sc)
+
+
+def test_eligible_drops_small_fields_entirely():
+    """複勝の払戻対象頭数が変わるレースは丸ごと外す。"""
+    from hro_operations.flow_signal import FlowConfig, eligible
+
+    sc = _sc(**{"01": (0.5, 2.0, 1.2), "02": (0.4, 5.0, 2.0)})
+    assert eligible(FlowConfig(min_horses=8), sc) == {}
+    assert eligible(FlowConfig(min_horses=2), sc) == sc
+
+
+def test_threshold_and_orders_use_the_same_population():
+    """★同じ選別を2か所に書くと必ず片方だけ育って食い違う。
+
+    threshold_from は分位を取る側、flow_orders は買う側。どちらも eligible() を
+    通すこと(スコアの閾値だけが flow_orders 側の追加条件)。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "flow_signal.py").read_text(encoding="utf-8")
+    body = src[src.index("def threshold_from("):src.index("def _in_tan_band(")]
+    assert "eligible(cfg, sc)" in body, "threshold_from が母集団を絞っていない"
+
+    i = src.index("def flow_orders(")
+    j = src.index("\ndef ", i + 1)          # ★次の関数まで。backtest は別経路で独自に絞る
+    orders = src[i:j]
+    assert "eligible(cfg, sc).items()" in orders, "flow_orders が eligible を通っていない"
+    # 個別の絞り込みが flow_orders に残っていない(= eligible に一本化されている)
+    for leaked in ("_in_tan_band(cfg,", "_in_ninki_band(cfg,"):
+        assert leaked not in orders, f"flow_orders に選別が残っている: {leaked}"

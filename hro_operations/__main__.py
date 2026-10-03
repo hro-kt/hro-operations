@@ -487,7 +487,14 @@ def _cmd_flow_threshold(args) -> int:
         for lead in leads:
             cfg = FlowConfig(lead_seconds=lead, flow_minutes=args.flow_minutes,
                              normalize=getattr(args, "normalize", False),
-                             source=args.flow_source)
+                             source=args.flow_source,
+                             # ★買う側と同じ母集団で分位を取る。人気帯で絞って買うなら
+                             #   閾値も**その部分集合**で取らないと選別率がずれる。
+                             min_ninki=getattr(args, "min_ninki", 0),
+                             max_ninki=getattr(args, "max_ninki", 0),
+                             min_horses=getattr(args, "min_horses", 0),
+                             min_tan_odds=getattr(args, "min_tan_odds", 0.0),
+                             max_tan_odds=getattr(args, "max_tan_odds", 0.0))
             results.append((lead, threshold_from(db, races, cfg, args.quantile)))
     finally:
         db.close()
@@ -1459,6 +1466,14 @@ def main(argv: list[str] | None = None) -> int:
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
     p_th.add_argument("--flow-minutes", type=int, default=6)
     p_th.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho")
+    p_th.add_argument("--min-ninki", type=int, default=0,
+                      help="人気の下限(例 7)。買う側で絞るなら**ここでも同じ値**を指定する"
+                           "(指定しないと全馬の分位になり、選別率が想定から外れる)")
+    p_th.add_argument("--max-ninki", type=int, default=0)
+    p_th.add_argument("--min-horses", type=int, default=0,
+                      help="出走頭数の下限(複勝は8頭以上で3着まで)")
+    p_th.add_argument("--min-tan-odds", type=float, default=0.0)
+    p_th.add_argument("--max-tan-odds", type=float, default=0.0)
     p_th.add_argument("--normalize", action="store_true",
                       help="そのレースの値動き総量で割る(S/N比にする)。★尺度が変わるので"
                            "閾値も必ずこれ付きで取り直すこと")

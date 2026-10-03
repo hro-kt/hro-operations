@@ -698,6 +698,29 @@ def lead_scan(db, races, leads: list[int], cfg: FlowConfig,
     return out
 
 
+def eligible(cfg: "FlowConfig", sc: dict) -> dict:
+    """閾値を当てる**前**の母集団。スコア以外の選別規則をすべて適用する。
+
+    ★threshold_from(分位を取る側)と flow_orders(買う側)が**同じ集合**を見ること。
+      分位を全馬で取って人気7+ だけに当てる、のような食い違いがあると
+      「その部分集合の上位5%」という検証条件が再現されない。
+      単勝×人気7+×上位5% は OOS 1.6690 だが、これは**人気7+ の中での上位5%**。
+      全馬の95%点を人気7+ に当てると、実際の選別率は5%から大きくずれる。
+    """
+    if cfg.min_horses > 0 and len(sc) < cfg.min_horses:
+        return {}
+    out = {}
+    for um, d in sc.items():
+        if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
+            continue
+        if not _in_tan_band(cfg, d["tan_odds"]):
+            continue
+        if not _in_ninki_band(cfg, d.get("ninki")):
+            continue
+        out[um] = d
+    return out
+
+
 def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
     """手元のレース群から flow_tan の絶対閾値(上側分位)を求める。
 
@@ -718,6 +741,9 @@ def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
         got = next(iter(sc.values())).get("window_sec")
         if got is not None and abs(got - want) > cfg.window_tolerance_sec:
             n_skewed += 1
+            continue
+        sc = eligible(cfg, sc)      # ★買う側と同じ母集団で分位を取る
+        if not sc:
             continue
         n_races += 1
         vals += [d["score"] for d in sc.values()]
@@ -805,14 +831,8 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
                     race_id, lead_used, sorted(cfg.thresholds or {}))
         return []
     orders = []
-    for um, d in sorted(sc.items(), key=lambda kv: -kv[1]["score"]):
+    for um, d in sorted(eligible(cfg, sc).items(), key=lambda kv: -kv[1]["score"]):
         if d["score"] < thr:
-            continue
-        if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
-            continue
-        if not _in_tan_band(cfg, d["tan_odds"]):
-            continue
-        if not _in_ninki_band(cfg, d.get("ninki")):
             continue
         orders.append(BetOrder(
             # ★券種は設定から取る。単勝×人気7+×上位5% が OOS で 1.6690(P=0.007)と
