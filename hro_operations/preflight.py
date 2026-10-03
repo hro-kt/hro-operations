@@ -17,6 +17,15 @@ SELECT count(*) AS n,
        count(*) FILTER (
          WHERE (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
                 AT TIME ZONE 'Asia/Tokyo') > clock_timestamp()) AS upcoming,
+       -- ★次の発走まで何分か。オッズ収集は「発走N分以内」のレースしか見に行かないので、
+       --   これが大きいうちは**空でも正常**。これを区別せず ✗ を出していたため、
+       --   開催日の朝に「ジョブは動いているのに発注できませんと出る」誤警報になった
+       --   (2026-10-04 に実害)。
+       min(EXTRACT(EPOCH FROM (
+             (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+              AT TIME ZONE 'Asia/Tokyo') - clock_timestamp())) / 60.0)
+         FILTER (WHERE (to_timestamp(year||month_day||hasso_time,'YYYYMMDDHH24MI')::timestamp
+                        AT TIME ZONE 'Asia/Tokyo') > clock_timestamp()) AS mins_to_first,
        min(hasso_time) AS first_post, max(hasso_time) AS last_post
 FROM nl_ra
 WHERE year = %(y)s AND month_day = %(m)s AND jyo_cd BETWEEN '01' AND '10'
@@ -70,13 +79,24 @@ def check(db, date: str, cfg) -> dict:
             f"> 締切 {cfg.deadline_lead_seconds} である必要があります")
     out["act_lead"] = act
 
+    # ★まだ収集ウィンドウに入っていないなら、空は**正常**。問題として挙げない。
+    #   netkeiba-odds の既定は発走20分以内(--within-minutes 20)。
+    mins = r.get("mins_to_first")
+    window = int(getattr(cfg, "collect_within_minutes", 20) or 20)
+    too_early = mins is not None and mins > window
+
     # ★netkeiba を使うなら複勝オッズは JV 由来。速報が止まっていると全頭落ちる
     sok = out.get("ts_sokuho_o1") or {}
-    if cfg.flow_source == "netkeiba" and not (sok.get("rows") or 0):
+    if too_early:
+        out["notes"].append(
+            f"次の発走まで {mins:.0f} 分。オッズ収集は発走 {window} 分以内のレースが"
+            f"対象なので、いま空なのは正常です。発走 {window} 分前になったら流し直して"
+            f"ください(ジョブの args の date が今日になっているかだけ先に確認を)")
+    if not too_early and cfg.flow_source == "netkeiba" and not (sok.get("rows") or 0):
         out["problems"].append(
             "速報(ts_sokuho_o1)が空です。netkeiba は単勝しか出さないので、"
             "**複勝オッズが無いと全頭落ちて0件**になります。poll-odds を起動してください")
     nk = out.get("ts_netkeiba_o1") or {}
-    if cfg.flow_source == "netkeiba" and not (nk.get("rows") or 0):
+    if not too_early and cfg.flow_source == "netkeiba" and not (nk.get("rows") or 0):
         out["problems"].append("netkeiba(ts_netkeiba_o1)が空です。netkeiba-odds を起動してください")
     return out
