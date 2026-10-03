@@ -215,3 +215,55 @@ def test_agent_loop_actually_calls_reclaim():
     loop = src[src.index("    while True:"):]
     assert "_reclaim(" in loop, "エージェントのループが回収を呼んでいない"
     assert "startup=True" in loop, "起動時の一掃が無い"
+
+
+# -- 券種と選別条件が実機まで届くこと ------------------------------------------- #
+# ★2026-10-03 発覚: agent はこれらを run-day に渡しておらず、live は常に
+#   run-day の既定(複勝・人気絞り無し・頭数下限無し)で走っていた。
+#   単勝×人気7+ は OOS 1.6690 で複勝(1.0768)を大きく上回るのに使えておらず、
+#   「複勝は8頭以上に限る」という運用上の指示も実機に届いていなかった。
+_SEL = {"date": "20261004", "source": "netkeiba", "lead_seconds": 90,
+        "flow_minutes": 6, "act_before_deadline_seconds": 25,
+        "thresholds": {90: 0.1368}, "flat_amount": 1000,
+        "bet_type": "tan", "min_ninki": 7, "min_horses": 0}
+
+
+def test_windows_cmd_carries_bet_type_and_selection():
+    from hro_operations.agent import _b_flow_day_windows
+
+    cmd, _cwd, _env = _b_flow_day_windows(dict(_SEL))
+    pairs = dict(zip(cmd, cmd[1:]))
+    assert pairs["--flow-bet-type"] == "tan"
+    assert pairs["--flow-min-ninki"] == "7"
+    assert pairs["--flow-min-horses"] == "0"
+
+
+def test_vm_env_carries_bet_type_and_selection():
+    from hro_operations.agent import _b_flow_day
+
+    _cmd, _cwd, env = _b_flow_day(dict(_SEL))
+    assert env["BET_TYPE"] == "tan"
+    assert env["MIN_NINKI"] == "7"
+    assert env["MIN_HORSES"] == "0"
+
+
+def test_bet_type_defaults_to_fuku_and_rejects_junk():
+    """知らない値で黙って単勝にならないこと(お金が動く側の既定は保守的に)。"""
+    from hro_operations.agent import _b_flow_day_windows
+
+    for given in (None, "", "win", "たんしょう"):
+        a = dict(_SEL)
+        a["bet_type"] = given
+        cmd, _c, _e = _b_flow_day_windows(a)
+        assert dict(zip(cmd, cmd[1:]))["--flow-bet-type"] == "fuku", given
+
+
+def test_flow_day_sh_forwards_the_same_knobs():
+    """VM 側のシェルも同じ引数を渡すこと(片方だけ直すと信号源と同じ事故になる)。"""
+    from pathlib import Path
+
+    sh = (Path(__file__).resolve().parents[1]
+          / "scripts" / "flow_day.sh").read_text(encoding="utf-8")
+    for flag in ("--flow-bet-type", "--flow-min-ninki", "--flow-max-ninki",
+                 "--flow-min-horses"):
+        assert flag in sh, flag

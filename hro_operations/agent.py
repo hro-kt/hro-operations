@@ -260,8 +260,17 @@ def _flow_day_params(a: dict) -> dict:
         "act_before_deadline": _int(a.get("act_before_deadline_seconds"), 0),
         "deadline_lead": _int(a.get("deadline_lead_seconds"), 60),
         "flat_amount": _int(a.get("flat_amount"), 100),
-        # ★1レースで買う上限。順次処理では2件目以降が締切を超えて捨てられる
+        # ★1レースで買う上限。バッチ化(hro-buyer 151ae38)で同一レースは1回の送信に
+        #   まとめるようになったので、既定は 0(無制限)で構わない。
         "max_per_race": _int(a.get("max_per_race"), 0),
+        # ★券種と選別条件。**以前はここに無く、run-day の既定(複勝・絞り無し)で
+        #   走っていた**。単勝×人気7+ が OOS 1.6690 と複勝(1.0768)を大きく上回る
+        #   のに live では一度も使えておらず、「複勝は8頭以上に限る」という指示も
+        #   実機に届いていなかった(2026-10-03 に発覚)。
+        "bet_type": "tan" if a.get("bet_type") == "tan" else "fuku",
+        "min_ninki": _int(a.get("min_ninki"), 0),
+        "max_ninki": _int(a.get("max_ninki"), 0),
+        "min_horses": _int(a.get("min_horses"), 0),
         "mode": "live" if a.get("mode") == "live" else "paper",
         "no_wait": bool(a.get("no_wait")),
     }
@@ -328,6 +337,8 @@ def _b_flow_day(a: dict):
         "FLOW_MIN": str(p["flow_min"]), "LEAD_SECONDS": str(p["act_lead"]),
         "FLAT_AMOUNT": str(p["flat_amount"]), "MODE": p["mode"],
         "MAX_PER_RACE": str(p["max_per_race"]),
+        "BET_TYPE": p["bet_type"], "MIN_NINKI": str(p["min_ninki"]),
+        "MAX_NINKI": str(p["max_ninki"]), "MIN_HORSES": str(p["min_horses"]),
     }
     if p["thresholds"]:
         import json
@@ -356,6 +367,10 @@ def _b_flow_day_windows(a: dict):
            "--flow-lead-seconds", str(p["flow_lead"]), "--flow-minutes", str(p["flow_min"]),
            "--flat-amount", str(p["flat_amount"]), "--lead-seconds", str(p["act_lead"]),
            "--flow-max-per-race", str(p["max_per_race"]),
+           "--flow-bet-type", p["bet_type"],
+           "--flow-min-ninki", str(p["min_ninki"]),
+           "--flow-max-ninki", str(p["max_ninki"]),
+           "--flow-min-horses", str(p["min_horses"]),
            "--deadline-lead-seconds", str(p["deadline_lead"]), "--mode", p["mode"]]
     if p["thresholds"]:
         import json
