@@ -304,7 +304,13 @@ def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
         fk = _num(xl["fuku_odds_low"])
         if fk is None:
             n_no_fuku += 1
-        if tl is None or te is None or fk is None:
+        # ★複勝オッズを**必要なときだけ**必須にする。単勝を買うのに複勝オッズで
+        #   馬を落としていた。2026-10-03 の再起動で速報ポーリングが止まった3レースは、
+        #   単勝なら問題なく使えたのに全頭が消えた。
+        #   さらに悪いのは**部分欠け**で、一部の馬だけ落ちると assign_ninki が
+        #   残った馬だけで人気を振り直すため、「人気7番以降」が別の馬を指す。
+        need_fk = cfg.bet_type == "fuku" or cfg.max_odds > 0
+        if tl is None or te is None or (need_fk and fk is None):
             continue
         out[um] = {
             "score": _logit((1.0 / tl) / s_late) - _logit((1.0 / te) / s_early),
@@ -711,7 +717,7 @@ def eligible(cfg: "FlowConfig", sc: dict) -> dict:
         return {}
     out = {}
     for um, d in sc.items():
-        if cfg.max_odds > 0 and d["fuku_odds"] > cfg.max_odds:
+        if cfg.max_odds > 0 and (d["fuku_odds"] is None or d["fuku_odds"] > cfg.max_odds):
             continue
         if not _in_tan_band(cfg, d["tan_odds"]):
             continue
@@ -840,7 +846,9 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
             race_id=race_id, selection_id=um, bet_type=_BET_TYPE[cfg.bet_type],
             amount=amount,
             probability=0.0,                 # flow は確率を推定しない(順位/閾値で選ぶ)
-            odds=d["fuku_odds"],
+            # ★買う券種のオッズを入れる。単勝を買うのに複勝オッズを記録すると、
+            #   後からオッズ帯で回収率をスライスできない(帯で大きく違う)。
+            odds=(d["tan_odds"] if cfg.bet_type == "tan" else d["fuku_odds"]) or 0.0,
             expected_return=0.0, edge=0.0, kelly_fraction=0.0,
             model_version=model_version,
             # ★決定時点の**単勝**オッズを残す。回収率がオッズ帯で大きく違う

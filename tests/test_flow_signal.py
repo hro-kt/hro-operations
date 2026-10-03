@@ -917,3 +917,64 @@ def test_threshold_and_orders_use_the_same_population():
     # 個別の絞り込みが flow_orders に残っていない(= eligible に一本化されている)
     for leaked in ("_in_tan_band(cfg,", "_in_ninki_band(cfg,"):
         assert leaked not in orders, f"flow_orders に選別が残っている: {leaked}"
+
+
+# -- 複勝オッズの欠けが単勝を巻き込まないこと ------------------------------------ #
+def _rows(tan_late, tan_early, fuku):
+    """flow_scores が読む行の形。netkeiba は単勝のみ、複勝は ts_sokuho_o1 由来。"""
+    out = []
+    for um in tan_late:
+        out.append({"umaban": um, "which": "late", "tan_odds": tan_late[um],
+                    "fuku_odds_low": fuku.get(um), "ts": 2, "lead_sec": 90})
+        out.append({"umaban": um, "which": "early", "tan_odds": tan_early[um],
+                    "fuku_odds_low": fuku.get(um), "ts": 1, "lead_sec": 360})
+    return out
+
+
+class _DB:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def query(self, _sql, _params):
+        return self._rows
+
+
+def _scores(cfg, fuku):
+    from hro_operations.flow_signal import flow_scores
+
+    tan_late = {"01": 2.0, "02": 5.0, "03": 9.0, "04": 20.0,
+                "05": 30.0, "06": 40.0, "07": 50.0, "08": 60.0}
+    tan_early = {k: v * 1.1 for k, v in tan_late.items()}
+    db = _DB(_rows(tan_late, tan_early, fuku))
+    return flow_scores(db, ("2026", "1004", "08", "04", "02", "05"), cfg)
+
+
+def test_missing_place_odds_does_not_drop_horses_for_win_bets():
+    """★単勝を買うのに複勝オッズで馬を落としていた。
+
+    2026-10-03 の再起動で速報ポーリング(ts_sokuho_o1)が止まり、3レースが
+    「8/8 頭を除外」で丸ごと消えた。単勝なら複勝オッズは要らない。
+    """
+    from hro_operations.flow_signal import FlowConfig
+
+    all_um = [f"0{i}" for i in range(1, 9)]
+    none_fuku: dict[str, float] = {}
+    assert sorted(_scores(FlowConfig(source="netkeiba", bet_type="tan"), none_fuku)) == all_um
+    assert _scores(FlowConfig(source="netkeiba", bet_type="fuku"), none_fuku) == {}
+
+
+def test_partial_place_odds_gap_does_not_shift_ninki_for_win_bets():
+    """★部分欠けの方が危ない。
+
+    一部の馬だけ落ちると assign_ninki が残った馬で人気を振り直すので、
+    「人気7番以降」が**別の馬**を指す。単勝ではそもそも落とさない。
+    """
+    from hro_operations.flow_signal import FlowConfig
+
+    # 人気1・2(単勝が安い馬)だけ複勝オッズが欠けている状況
+    partial = {f"0{i}": 1.5 + i for i in range(3, 9)}
+    sc = _scores(FlowConfig(source="netkeiba", bet_type="tan"), partial)
+    assert len(sc) == 8
+    # 単勝オッズ順に人気が振られている(落ちた馬がいないので正しい)
+    assert sc["01"]["ninki"] == 1 and sc["08"]["ninki"] == 8
+    assert [u for u, d in sc.items() if d["ninki"] >= 7] == ["07", "08"]
