@@ -123,6 +123,15 @@ class DayConfig:
     # 空なら従来の単一設定(min_er/max_er/min_prob/bet_types)。例: trio帯[1.7,2.0] と wide er>=1.7&prob>=0.10 同時。
     plans: tuple = ()
 
+    def __post_init__(self) -> None:
+        # ★`~` を必ず展開する。Windows の PowerShell は**外部コマンドの引数の `~` を
+        #   展開しない**ので、`--ipat-recipe ~/ipat_recipe.json` がリテラルのまま届く
+        #   (2026-10-03 に show-recipe --out で実害)。これまで check_recipe_verified は
+        #   展開した path で見るのに build_day_executor は生のまま渡しており、
+        #   「起動検査は通るのに実行時にレシピが読めない」がありえた。
+        if self.ipat_recipe:
+            self.ipat_recipe = os.path.expanduser(self.ipat_recipe)
+
 
 def _betting(cfg: DayConfig) -> BettingConfig:
     # confirmed/replay は鮮度概念なし=無制限。live は max_odds_age で締める。

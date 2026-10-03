@@ -127,3 +127,25 @@ def test_hasso_time_is_reread_before_each_race():
     assert "verify or no_wait" in loop
     ref = f[f.index("def _refresh_hasso("):f.index("def _run_races(")]
     assert "fallback" in ref, "読めないときに起動時の値へ退避していない"
+
+
+def test_day_config_expands_the_recipe_path():
+    """★`~` は DayConfig の時点で展開しておく。
+
+    Windows の PowerShell は外部コマンドの引数の `~` を展開しないので、
+    `--ipat-recipe ~/ipat_recipe.json` がリテラルのまま届く。
+    check_recipe_verified は os.path.expanduser してから見るのに
+    build_day_executor は生のまま渡していたので、**起動検査は通るのに
+    実行時にレシピが読めない**がありえた。
+    """
+    import os
+
+    from hro_operations.race_day import DayConfig
+
+    cfg = DayConfig(date="20261004", win_model="w", place_model="p",
+                    results_path="r.jsonl", ipat_recipe="~/ipat_recipe.json")
+    assert cfg.ipat_recipe == os.path.expanduser("~/ipat_recipe.json")
+    assert "~" not in cfg.ipat_recipe
+
+    assert DayConfig(date="20261004", win_model="w", place_model="p",
+                     results_path="r.jsonl").ipat_recipe is None
