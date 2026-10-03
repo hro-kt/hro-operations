@@ -978,3 +978,23 @@ def test_partial_place_odds_gap_does_not_shift_ninki_for_win_bets():
     # 単勝オッズ順に人気が振られている(落ちた馬がいないので正しい)
     assert sc["01"]["ninki"] == 1 and sc["08"]["ninki"] == 8
     assert [u for u, d in sc.items() if d["ninki"] >= 7] == ["07", "08"]
+
+
+def test_coverage_warning_fires_when_the_data_is_narrower(capsys):
+    """★要求した期間と実際に取れた期間のずれを黙らせない。
+
+    2026-10-03 に2回続けて踏んだ: 1年を指定したのに ts_sokuho_o1 は速報の
+    リアルタイム収集で直近1か月しか無く、49レース18本を「1年の検証」として
+    読みかけた。信号源ごとに保有期間がまったく違う。
+    """
+    from hro_operations.__main__ import _warn_coverage
+
+    races = [("2026", "0802", "05", "03", "04", "01"),
+             ("2026", "0809", "05", "03", "05", "01")]
+    _warn_coverage("20250901", "20260831", races, "sokuho")
+    out = capsys.readouterr().out
+    assert "20260802〜20260809" in out and "2 開催日" in out
+    assert "⚠" in out and "狭い" in out
+
+    _warn_coverage("20260802", "20260809", races, "ts")
+    assert "⚠" not in capsys.readouterr().out

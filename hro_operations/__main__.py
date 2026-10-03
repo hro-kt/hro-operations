@@ -459,6 +459,26 @@ def _cmd_flow_usable(args) -> int:
     return 0
 
 
+def _warn_coverage(d_from: str, d_to: str, races: list, source: str) -> None:
+    """要求した期間に対して**実際に取れた期間**を必ず表示する。
+
+    ★2026-10-03 に2回続けて踏んだ罠: 1年を指定したのに ts_sokuho_o1 は速報の
+      リアルタイム収集なので直近1か月しか無く、49レース18本の結果を「1年の検証」
+      として読みかけた。信号源ごとに持っている期間がまったく違う:
+        ts(0B41 公式時系列) … JV-Data の履歴あり
+        sokuho(0B30 速報)   … 自分でポーリングを始めてから
+        netkeiba            … 2026-09-26 から
+      黙って短い期間で返すのが一番危ないので、ここで必ず声を出す。
+    """
+    days = sorted({f"{r[0]}{r[1]}" for r in races})
+    print(f"  取得できた期間: {days[0]}〜{days[-1]} ({len(days)} 開催日 / "
+          f"{len(races):,} レース)")
+    if days[0] > d_from or days[-1] < d_to:
+        print(f"  ⚠ 要求した {d_from}〜{d_to} より**狭い**範囲しかありません。"
+              f"信号源 {source} の保有期間を確認してください"
+              f"(sokuho と netkeiba は履歴を持ちません)")
+
+
 def _cmd_flow_threshold(args) -> int:
     """使う設定(信号源・決定時点)と同じ条件で絶対閾値を取り直す。"""
     from datetime import date as _date, timedelta as _td
@@ -483,6 +503,7 @@ def _cmd_flow_threshold(args) -> int:
         if not races:
             print(f"{args.d_from}〜{args.d_to}: 対象レースがありません")
             return 1
+        _warn_coverage(args.d_from, args.d_to, races, args.flow_source)
         results = []
         for lead in leads:
             cfg = FlowConfig(lead_seconds=lead, flow_minutes=args.flow_minutes,
