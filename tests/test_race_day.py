@@ -107,3 +107,23 @@ def test_live_refuses_a_stale_recipe_even_if_verified(tmp_path):
     cur.write_text(json.dumps({"verified": True, "version": RECIPE_VERSION}),
                    encoding="utf-8")
     check_recipe_verified(_cfg(cur))
+
+
+def test_hasso_time_is_reread_before_each_race():
+    """★起動時の一覧をそのまま使うと**発走時刻変更**に追随できない(2026-10-03 に実害)。
+    変更(TC)は受信していないので、唯一の経路は RACE 再同期後の nl_ra。
+    読み直さないと、遅延したレースでは古い時刻で起きて窓がずれ、繰り上がったレースでは
+    締切後に投票しに行く。"""
+    # ★import に依存せずファイルを読む(この検査は依存パッケージを必要としない)
+    from pathlib import Path
+
+    f = (Path(__file__).resolve().parents[1] / "hro_operations" / "race_day.py").read_text(
+        encoding="utf-8")
+    loop = f[f.index("def _run_races("):f.index("def _refresh_hasso(")] \
+        if f.index("def _refresh_hasso(") > f.index("def _run_races(") \
+        else f[f.index("def _run_races("):]
+    assert "_refresh_hasso" in loop, "レース毎に発走時刻を読み直していない"
+    # ★検証モード(過去日)では読み直す意味が無いので除外されていること
+    assert "verify or no_wait" in loop
+    ref = f[f.index("def _refresh_hasso("):f.index("def _run_races(")]
+    assert "fallback" in ref, "読めないときに起動時の値へ退避していない"

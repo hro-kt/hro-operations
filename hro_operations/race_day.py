@@ -534,10 +534,38 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     return processed
 
 
+def _refresh_hasso(cfg: DayConfig, race: tuple[str, ...], fallback: str) -> str:
+    """そのレースの発走時刻を**直前に読み直す**。
+
+    ★起動時の一覧をそのまま使うと、途中の**発走時刻変更**に追随できない
+      (2026-10-03 に実害)。変更(TC)は受信していないので、唯一の経路は
+      RACE 再同期後の nl_ra。読み直さないと、遅延したレースでは古い時刻で起きて
+      窓がずれ、繰り上がったレースでは締切後に投票しに行く。
+    ★読めなければ起動時の値を使う(ここで落とすと以降のレースも止まる)。
+    """
+    db = FeatureDB(load_features_config())
+    try:
+        for r, h in day_races(db, cfg.date):
+            if r == race:
+                return h
+    except Exception as e:  # noqa: BLE001 - 1レースのために1日を止めない
+        log.warning("%s: 発走時刻の読み直しに失敗(起動時の値を使う): %s",
+                    "".join(race), e)
+    finally:
+        db.close()
+    return fallback
+
+
 def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool, no_wait: bool) -> int:
     processed = 0
     for race, hasso in races:
         race_id = "".join(race)
+        if not (verify or no_wait):
+            fresh = _refresh_hasso(cfg, race, hasso)
+            if fresh != hasso:
+                log.warning("%s: 発走時刻が %s → %s に変わっています(読み直しました)",
+                            race_id, hasso, fresh)
+                hasso = fresh
         if not verify:
             deadline = deadline_from(race_id, hasso, cfg.lead_seconds)  # JST tz-aware
             if deadline is None:
