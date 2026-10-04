@@ -267,3 +267,18 @@ def test_flow_day_sh_forwards_the_same_knobs():
     for flag in ("--flow-bet-type", "--flow-min-ninki", "--flow-max-ninki",
                  "--flow-min-horses"):
         assert flag in sh, flag
+
+
+def test_import_results_is_available_where_run_day_runs():
+    """★results_<date>.jsonl は **run-day を回した機** にできる。
+
+    flow_day を Windows へ移した時点で、VM だけに登録されていた import_results は
+    成功しようがなくなっていた(2026-10-04 発覚: ops_job 117/137 が
+    「ファイルが見つかりません」で failed のまま放置されていた)。
+    flow_day がある機には import_results も無ければならない。
+    """
+    from hro_operations.agent import _COMMANDS
+
+    for host, kinds in _COMMANDS.items():
+        if "flow_day" in kinds:
+            assert "import_results" in kinds, f"{host} に import_results が無い"

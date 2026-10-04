@@ -458,6 +458,10 @@ _COMMANDS = {
            # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
            "netkeiba_odds": _b_netkeiba_odds},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
+                # ★results_<date>.jsonl は run-day を回した機にできる。flow_day を
+                #   Windows へ移した時点で、VM 側の import_results は成功しようが
+                #   なくなっていた(2026-10-04 に発覚。117/137 が failed のまま)。
+                "import_results": _b_import_results,
                 "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load,
                 "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
                 # IPAT を実績のある Windows から叩く経路(VM と二者択一。同時に走らせない)
