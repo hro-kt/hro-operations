@@ -847,13 +847,13 @@ def _cmd_flow_combo(args) -> int:
                 res.append(r)
     finally:
         db.close()
-    how = ("軸=候補 / 相手=人気上位%d頭" % args.partners if args.mode == "partners"
-           else "候補どうしで組む")
+    # ★相手の選び方はここだけで組み立てる(後段で足すと二重に出る)
+    how = ("軸=候補 / 相手=%s上位%d頭"
+           % ("flow" if args.partner_by == "flow" else "人気", args.partners)
+           if args.mode == "partners" else "候補どうしで組む")
     print(f"\n=== 組み合わせ券 ({args.d_from}〜{args.d_to}) ===")
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 閾値 "
-          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}"
-          f" / 相手={'flow上位' if args.partner_by == 'flow' else '人気上位'}"
-          f"{args.partners}頭")
+          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}")
     print(f"\n  {'券種':<10} {'人気下限':>8} {'対象R':>6} {'組成R':>6} {'購入':>6} "
           f"{'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
     # ★券種を足したら必ずここにも。KeyError で**既に流し終えた分まで捨てる**ことになる
