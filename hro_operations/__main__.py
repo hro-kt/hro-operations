@@ -102,7 +102,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                         "(検証 ROI 1.174 P(ROI<=1)=0.001 8/8ヶ月, docs/2026-09_flow_signal.md)")
     p.add_argument("--flow-threshold", type=float, default=0.0,
                    help="flow スコアの絶対閾値(fit 期間の分位から決めた値)")
-    p.add_argument("--flow-bet-type", choices=("fuku", "tan"), default="fuku",
+    p.add_argument("--flow-bet-type", choices=("fuku", "tan", "umatan"), default="fuku",
                    help="買う券種。tan=単勝。★単勝は IPAT の画面遷移が未検証なので"
                         "dry-vote で確認してから live にすること")
     p.add_argument("--flow-min-ninki", type=int, default=0,
@@ -111,6 +111,8 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--flow-max-per-race", type=int, default=0,
                    help="1レースで買う上限(0=無制限)。★順次処理では2件目以降が"
                         "締切を超えて捨てられる。スコア上位から残す")
+    p.add_argument("--flow-partners", type=int, default=3,
+                   help="組み合わせ券(馬単)の相手に使う人気上位の頭数。2窓OOSで3頭が最良")
     p.add_argument("--flow-min-horses", type=int, default=0,
                    help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで/"
                         "4頭以下は発売なし。複勝を買うなら 8 を指定する")
@@ -189,6 +191,7 @@ def _cfg(args):
         flow_threshold=args.flow_threshold,
         flow_thresholds=_parse_thresholds(args.flow_thresholds),
         flow_bet_type=getattr(args, "flow_bet_type", "fuku"),
+        flow_partners=getattr(args, "flow_partners", 3),
         flow_min_ninki=getattr(args, "flow_min_ninki", 0),
         flow_max_ninki=getattr(args, "flow_max_ninki", 0),
         flow_min_horses=getattr(args, "flow_min_horses", 0),

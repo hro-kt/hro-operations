@@ -267,7 +267,10 @@ def _flow_day_params(a: dict) -> dict:
         #   走っていた**。単勝×人気7+ が OOS 1.6690 と複勝(1.0768)を大きく上回る
         #   のに live では一度も使えておらず、「複勝は8頭以上に限る」という指示も
         #   実機に届いていなかった(2026-10-03 に発覚)。
-        "bet_type": "tan" if a.get("bet_type") == "tan" else "fuku",
+        # ★知らない値は fuku に落とす(お金が動く側の既定は保守的に)
+        "bet_type": (a.get("bet_type")
+                     if a.get("bet_type") in ("tan", "umatan") else "fuku"),
+        "partners": _int(a.get("partners"), 3),
         "min_ninki": _int(a.get("min_ninki"), 0),
         "max_ninki": _int(a.get("max_ninki"), 0),
         "min_horses": _int(a.get("min_horses"), 0),
@@ -337,7 +340,8 @@ def _b_flow_day(a: dict):
         "FLOW_MIN": str(p["flow_min"]), "LEAD_SECONDS": str(p["act_lead"]),
         "FLAT_AMOUNT": str(p["flat_amount"]), "MODE": p["mode"],
         "MAX_PER_RACE": str(p["max_per_race"]),
-        "BET_TYPE": p["bet_type"], "MIN_NINKI": str(p["min_ninki"]),
+        "BET_TYPE": p["bet_type"], "PARTNERS": str(p["partners"]),
+        "MIN_NINKI": str(p["min_ninki"]),
         "MAX_NINKI": str(p["max_ninki"]), "MIN_HORSES": str(p["min_horses"]),
     }
     if p["thresholds"]:
@@ -368,6 +372,7 @@ def _b_flow_day_windows(a: dict):
            "--flat-amount", str(p["flat_amount"]), "--lead-seconds", str(p["act_lead"]),
            "--flow-max-per-race", str(p["max_per_race"]),
            "--flow-bet-type", p["bet_type"],
+           "--flow-partners", str(p["partners"]),
            "--flow-min-ninki", str(p["min_ninki"]),
            "--flow-max-ninki", str(p["max_ninki"]),
            "--flow-min-horses", str(p["min_horses"]),

@@ -82,7 +82,10 @@ class FlowConfig:
     #   良い可能性がある**(配当が大きい)。確定払戻は nl_hr に年単位で揃っているので
     #   測るだけなら安い。live の発注は現状 place 固定なので、採用するなら
     #   flow_orders の bet_type も変える必要がある。
-    bet_type: str = "fuku"      # fuku | tan(バックテストの払戻参照先)
+    bet_type: str = "fuku"   # fuku | tan | umatan(払戻の参照先)
+    # ★組み合わせ券の相手に使う人気上位の頭数。2窓OOSで3頭が最良
+    #   (5頭は本数が1.5倍になるが1円あたりは劣る。上限が自由なら単価で調整できる)。
+    partners: int = 3
     # ★リード別の閾値 {実際のリード秒: 閾値}。決定時点は配信遅れでレースごとに変わり
     #   (2026-09-21 実測: T-120s が41%、残りは T-180s)、スコアの尺度もリードで変わる
     #   (ts@60 比の傾き T-120s=0.454 / T-180s=0.252)。単一の閾値を当てると、片方で
@@ -787,7 +790,12 @@ def assign_ninki(scores: dict[str, dict]) -> None:
 
 
 # バックテストの券種名(nl_hr の bet_type)→ hro_buyer の券種名
-_BET_TYPE = {"fuku": "place", "tan": "win"}
+# ★馬単を追加(2026-10-06)。2窓OOSで 2.21/1.96 と単勝(1.67/1.69)を上回った。
+#   軸=flow候補(人気7+)を**1着に固定**し、相手=人気上位N頭と組む。
+_BET_TYPE = {"fuku": "place", "tan": "win", "umatan": "umatan"}
+
+# 軸1頭では完結せず、相手との組が要る券種
+_COMBO_BET_TYPES = {"umatan"}
 
 
 def _in_ninki_band(cfg: "FlowConfig", ninki) -> bool:
@@ -801,6 +809,35 @@ def _in_ninki_band(cfg: "FlowConfig", ninki) -> bool:
     if cfg.min_ninki > 0 and v < cfg.min_ninki:
         return False
     return not (cfg.max_ninki > 0 and v > cfg.max_ninki)
+
+
+def _combo_orders(BetOrder, race_id: str, axis: str, d: dict, mates: list[str],
+                  cfg: "FlowConfig", amount: int, model_version: str,
+                  thr: float, lead_used):
+    """軸1頭ぶんの組み合わせ券を作る。**軸を1着に固定**する。
+
+    ★selection_id は "軸-相手" の順序付き。並べ替えると別の馬券になる
+      (hro_buyer 側は ORDERED_HR_TYPES で順序を保持して組番にする)。
+    ★odds は組のオッズが手元に無いので 0.0。判断時の**軸の単勝オッズ**は
+      reason に残す(後からオッズ帯でスライスするため)。
+    """
+    out = []
+    for mate in mates:
+        if mate == axis:
+            continue
+        out.append(BetOrder(
+            race_id=race_id, selection_id=f"{axis}-{mate}",
+            bet_type=_BET_TYPE[cfg.bet_type], amount=amount,
+            probability=0.0, odds=0.0,
+            expected_return=0.0, edge=0.0, kelly_fraction=0.0,
+            model_version=model_version,
+            reason=(f"flow_tan={d['score']:+.4f}>={thr:+.4f}@T-{lead_used}s "
+                    f"axis={axis} mate={mate}(人気{cfg.partners}位以内) "
+                    f"tan={d['tan_odds']:.1f} ninki={d.get('ninki')} "
+                    f"ken={_BET_TYPE[cfg.bet_type]} "
+                    f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
+                    f"src={cfg.source}")))
+    return out
 
 
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
@@ -836,9 +873,23 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         log.warning("%s: 実測リード T-%ss の閾値が未設定のため見送り(設定: %s)",
                     race_id, lead_used, sorted(cfg.thresholds or {}))
         return []
+    # ★組み合わせ券は「軸 × 相手」。相手は**人気上位N頭**(flow 上位ではない)。
+    #   軸に要るのは「市場が間違っている馬」=変化量だが、相手に要るのは
+    #   「2着に来る素の確率」=水準で、それを最もよく表すのが人気。
+    #   2窓OOS: 相手=人気 2.2756/2.0645 対 相手=flow 1.7545/1.2770(的中率が半減)。
+    combo = cfg.bet_type in _COMBO_BET_TYPES
+    mates: list[str] = []
+    if combo:
+        mates = [u for u, _d in sorted(sc.items(), key=lambda kv: kv[1]["ninki"])
+                 if sc[u]["ninki"] <= cfg.partners]
+
     orders = []
     for um, d in sorted(eligible(cfg, sc).items(), key=lambda kv: -kv[1]["score"]):
         if d["score"] < thr:
+            continue
+        if combo:
+            orders += _combo_orders(BetOrder, race_id, um, d, mates, cfg,
+                                    amount, model_version, thr, lead_used)
             continue
         orders.append(BetOrder(
             # ★券種は設定から取る。単勝×人気7+×上位5% が OOS で 1.6690(P=0.007)と

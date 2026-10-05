@@ -96,7 +96,8 @@ class DayConfig:
     # ★買う券種。単勝×人気7+×上位5% が OOS 1.6690(P=0.007)で複勝(1.0768)を大きく
     #   上回ったため可変にした。既定は従来どおり複勝。単勝に変えるなら IPAT の
     #   画面遷移を dry-vote で再検証すること(レシピは複勝で検証済み)。
-    flow_bet_type: str = "fuku"      # fuku | tan
+    flow_bet_type: str = "fuku"      # fuku | tan | umatan
+    flow_partners: int = 3           # 馬単の相手に使う人気上位の頭数
     flow_min_ninki: int = 0
     flow_max_ninki: int = 0
     # ★複勝は出走8頭以上で3着まで、5〜7頭は2着まで、4頭以下は発売なし。
@@ -245,6 +246,7 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
                             threshold=cfg.flow_threshold, source=cfg.flow_source,
                             thresholds=cfg.flow_thresholds,
                             bet_type=cfg.flow_bet_type,
+                            partners=cfg.flow_partners,
                             min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
                             min_horses=cfg.flow_min_horses,
                             max_per_race=cfg.flow_max_per_race,

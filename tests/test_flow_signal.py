@@ -755,7 +755,13 @@ def test_live_orders_use_the_configured_bet_type():
     変換を通すこと(fuku→place / tan→win)。既定は従来どおり複勝。"""
     from hro_operations.flow_signal import _BET_TYPE, FlowConfig, flow_orders
 
-    assert _BET_TYPE == {"fuku": "place", "tan": "win"}
+    assert _BET_TYPE["fuku"] == "place" and _BET_TYPE["tan"] == "win"
+    # ★変換先は hro_buyer が実際に投票できる券種であること。ここが食い違うと
+    #   「信号は出るのに UnsupportedBetType で全件 skipped」になる。
+    from hro_buyer.vote import SHIKIBETSU_CODE
+
+    for src, dst in _BET_TYPE.items():
+        assert dst in SHIKIBETSU_CODE, f"{src} → {dst} は投票できない"
     assert FlowConfig().bet_type == "fuku"
 
     rows = [_row("01", "0200", "0035", "late"), _row("02", "0600", "0090", "late"),
@@ -1183,3 +1189,53 @@ def test_partner_by_flow_excludes_the_axis_before_taking_the_top_n():
                    "umatan", threshold=0.5, partners=3, partner_by="flow",
                    max_combos=9, amount=100)
     assert rep["bets"] == 3, f"相手が3頭になっていない: {rep['bets']}"
+
+
+# -- 馬単の買い目生成(軸1着固定 × 人気上位N頭) ---------------------------------- #
+def test_umatan_orders_fix_the_axis_in_first_place():
+    """★selection_id は "軸-相手" の順序付き。並べ替えると別の馬券になる。"""
+    from hro_operations.flow_signal import FlowConfig, flow_orders
+
+    cfg = FlowConfig(source="netkeiba", bet_type="umatan", min_ninki=7, partners=3,
+                     thresholds={90: 0.0}, lead_seconds=90, flow_minutes=6)
+
+    class _DB:
+        def query(self, _s, _p):
+            tan_late = {"01": 2.0, "02": 5.0, "03": 9.0, "04": 20.0,
+                        "05": 30.0, "06": 40.0, "07": 50.0, "08": 60.0}
+            return _rows(tan_late, {k: v * 1.1 for k, v in tan_late.items()}, {})
+
+    orders = flow_orders(_DB(), ("2026", "1004", "08", "04", "02", "05"),
+                         cfg, 100, "t")
+    assert orders, "候補が出ていない"
+    # 軸は人気7+(=07/08)、相手は人気上位3頭(=01/02/03)
+    sels = {o.selection_id for o in orders}
+    assert sels <= {f"{a}-{m}" for a in ("07", "08") for m in ("01", "02", "03")}, sels
+    assert all(o.bet_type == "umatan" for o in orders)
+    for o in orders:
+        axis, mate = o.selection_id.split("-")
+        assert axis in ("07", "08") and mate in ("01", "02", "03")
+        assert f"axis={axis}" in o.reason and f"mate={mate}" in o.reason
+
+
+def test_umatan_orders_survive_the_round_trip_to_a_vote():
+    """信号 → 投票 まで通ること(券種名の変換と組番の順序)。"""
+    from hro_buyer.vote import to_vote
+
+    from hro_operations.flow_signal import FlowConfig, flow_orders
+
+    cfg = FlowConfig(source="netkeiba", bet_type="umatan", min_ninki=7, partners=1,
+                     thresholds={90: 0.0}, lead_seconds=90, flow_minutes=6)
+
+    class _DB:
+        def query(self, _s, _p):
+            tan_late = {"01": 2.0, "02": 5.0, "03": 9.0, "04": 20.0,
+                        "05": 30.0, "06": 40.0, "07": 50.0, "08": 60.0}
+            return _rows(tan_late, {k: v * 1.1 for k, v in tan_late.items()}, {})
+
+    for o in flow_orders(_DB(), ("2026", "1004", "08", "04", "02", "05"),
+                         cfg, 100, "t"):
+        v = to_vote(o)
+        axis, mate = o.selection_id.split("-")
+        assert v.kumi == f"{axis}{mate}", f"{o.selection_id} → {v.kumi}"
+        assert v.shikibetsu == 6

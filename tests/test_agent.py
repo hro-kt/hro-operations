@@ -282,3 +282,39 @@ def test_import_results_is_available_where_run_day_runs():
     for host, kinds in _COMMANDS.items():
         if "flow_day" in kinds:
             assert "import_results" in kinds, f"{host} に import_results が無い"
+
+
+def test_umatan_and_partners_reach_the_runner():
+    """★馬単も券種として実機まで届くこと。知らない値は fuku に落とす。"""
+    from hro_operations.agent import _b_flow_day, _b_flow_day_windows
+
+    a = dict(_SEL); a["bet_type"] = "umatan"; a["partners"] = 3
+    cmd, _c, _e = _b_flow_day_windows(a)
+    pairs = dict(zip(cmd, cmd[1:]))
+    assert pairs["--flow-bet-type"] == "umatan"
+    assert pairs["--flow-partners"] == "3"
+
+    _c2, _cw, env = _b_flow_day(a)
+    assert env["BET_TYPE"] == "umatan" and env["PARTNERS"] == "3"
+
+    a["bet_type"] = "馬単"          # 知らない値
+    cmd, _c, _e = _b_flow_day_windows(a)
+    assert dict(zip(cmd, cmd[1:]))["--flow-bet-type"] == "fuku"
+
+
+def test_run_day_accepts_umatan():
+    """CLI と DayConfig が馬単を受けること(ここが抜けると信号だけ出て買えない)。"""
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "hro_operations"
+    cli = (root / "__main__.py").read_text(encoding="utf-8")
+    assert '"fuku", "tan", "umatan"' in cli
+    assert "--flow-partners" in cli
+    assert "flow_partners=getattr(args" in cli
+
+    rd = (root / "race_day.py").read_text(encoding="utf-8")
+    assert "flow_partners: int = 3" in rd
+    assert "partners=cfg.flow_partners" in rd
+
+    sh = (root.parent / "scripts" / "flow_day.sh").read_text(encoding="utf-8")
+    assert "--flow-partners" in sh

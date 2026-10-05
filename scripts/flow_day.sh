@@ -7,7 +7,7 @@
 # 環境変数(agent が UI の設定から渡す):
 #   DATE / FLOW_THRESHOLD / FLOW_THRESHOLDS(リード別JSON) / FLOW_SOURCE(sokuho|ts)
 #   FLOW_LEAD(120) / FLOW_MIN(6)
-#   BET_TYPE(fuku|tan) / MIN_NINKI(0) / MAX_NINKI(0) / MIN_HORSES(0)
+#   BET_TYPE(fuku|tan|umatan) / PARTNERS(3) / MIN_NINKI(0) / MAX_NINKI(0) / MIN_HORSES(0)
 #     ★発表時刻は分刻みなので使えるリードは60秒の倍数。締切30秒前(発走−90s)に投票を
 #       始めるなら、その時点の最新スナップは 発走−120s。ts(0B41)は発走近傍が 0/60/360秒
 #       しか無く 120 指定でも 360 に落ちるため、既定は sokuho(自前10秒ポーリング)。
@@ -24,7 +24,7 @@ MODE="${MODE:-paper}"
 ARGS=(--date "$DATE" --strategy flow
       --flow-threshold "${FLOW_THRESHOLD:-0.2802}" --flow-source "${FLOW_SOURCE:-sokuho}" \
       --flow-max-per-race "${MAX_PER_RACE:-0}"
-      --flow-bet-type "${BET_TYPE:-fuku}"
+      --flow-bet-type "${BET_TYPE:-fuku}" --flow-partners "${PARTNERS:-3}"
       --flow-min-ninki "${MIN_NINKI:-0}" --flow-max-ninki "${MAX_NINKI:-0}"
       --flow-min-horses "${MIN_HORSES:-0}"
       --flow-lead-seconds "${FLOW_LEAD:-120}" --flow-minutes "${FLOW_MIN:-6}"
