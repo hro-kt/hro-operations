@@ -853,9 +853,12 @@ def _cmd_flow_combo(args) -> int:
           f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}")
     print(f"\n  {'券種':<10} {'人気下限':>8} {'対象R':>6} {'組成R':>6} {'購入':>6} "
           f"{'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
-    names = {"wide": "ワイド", "umaren": "馬連", "sanrenfuku": "三連複"}
+    # ★券種を足したら必ずここにも。KeyError で**既に流し終えた分まで捨てる**ことになる
+    #   (2026-10-06 に umatan を足して実際に踏んだ。表示のためだけに103秒を失う)。
+    names = {"wide": "ワイド", "umaren": "馬連", "sanrenfuku": "三連複",
+             "umatan": "馬単(軸1着)", "sanrentan": "三連単(軸1着)"}
     for r in res:
-        lab = f"{names[r['bet']]:<10} {(r['min_ninki'] or 1):>8}"
+        lab = f"{names.get(r['bet'], r['bet']):<12} {(r['min_ninki'] or 1):>8}"
         if not r["bets"]:
             print(f"  {lab} {r['races_seen']:>6} {r['races_with_combo']:>6} "
                   f"{'0':>6}  (組が作れていません)")

@@ -1119,3 +1119,22 @@ def test_every_payout_bet_type_is_reachable():
     # nl_hr.bet_type: tan/fuku/waku/umaren/wide/umatan/sanrenfuku/sanrentan
     for bt in ("umaren", "wide", "umatan", "sanrenfuku", "sanrentan"):
         assert any(v[0] == bt for v in COMBO_TYPES.values()), bt
+
+
+def test_every_combo_type_has_a_display_name():
+    """★券種を足して表示名を忘れると KeyError で落ち、**集計し終えた分まで捨てる**。
+
+    2026-10-06 に実際に踏んだ: 103秒かけてワイド/馬連/三連複まで出した直後に
+    umatan で落ち、全部やり直しになった。
+    """
+    from pathlib import Path
+
+    from hro_operations.combos import COMBO_TYPES
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    i = src.index('names = {"wide"')
+    block = src[i:src.index('if not r["bets"]', i)]   # ★lab の組み立てまで含める
+    for bet in COMBO_TYPES:
+        assert f'"{bet}"' in block, f"{bet} の表示名が無い"
+    assert "names.get(" in block, "未知の券種で落ちない作りにすること"
