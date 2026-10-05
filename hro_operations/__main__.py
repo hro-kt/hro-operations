@@ -1634,6 +1634,15 @@ def main(argv: list[str] | None = None) -> int:
                            "move(そのレースの値動き総量),raceno,gradecd,"
                            "jc(騎手変更),cc(コース変更),we(天候馬場変更),"
                            "chokyo(坂路4Fのレース内順位)")
+    # ★ハンドラは getattr で読む作りだったが、パーサに無いので常に既定値
+    #   (複勝・絞り無し)に落ちていた。**運用している条件をスライスできない**
+    #   という、flow-threshold と同じ母集団ずれ(2026-10-05 発覚)。
+    p_fs.add_argument("--bet-type", choices=("fuku", "tan"), default="fuku")
+    p_fs.add_argument("--min-ninki", type=int, default=0,
+                      help="人気の下限(運用と同じ値を入れること。単勝は 7)")
+    p_fs.add_argument("--max-ninki", type=int, default=0)
+    p_fs.add_argument("--min-horses", type=int, default=0)
+    p_fs.add_argument("--normalize", action="store_true")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)

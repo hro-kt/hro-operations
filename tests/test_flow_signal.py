@@ -1024,3 +1024,24 @@ def test_order_reason_survives_missing_place_odds():
     assert orders, "候補が出ていない"
     assert all("fuku=-" in o.reason for o in orders)
     assert all(o.bet_type == "win" and o.odds > 0 for o in orders)
+
+
+def test_analysis_commands_expose_the_live_selection():
+    """★運用している条件(単勝×人気7+)でスライス/掃引できること。
+
+    flow-slice のハンドラは getattr(args, "min_ninki", 0) で読む作りだったのに
+    パーサに引数が無く、**常に既定値(複勝・絞り無し)に落ちていた**
+    (2026-10-05 発覚)。flow-threshold で直したのと同じ母集団ずれ。
+    見ている集合と買っている集合が違うと、どんな分析も意味を持たない。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    for name in ("flow-slice", "flow-sweep", "flow-threshold", "flow-backtest"):
+        i = src.index(f'add_parser("{name}"')
+        j = src.index("set_defaults(func=", i)
+        block = src[i:j]
+        assert "--min-ninki" in block, f"{name} に --min-ninki が無い"
+        if name != "flow-threshold":      # 閾値はスコアの分位なので券種に依らない
+            assert "--bet-type" in block, f"{name} に --bet-type が無い"
