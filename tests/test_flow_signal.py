@@ -1045,3 +1045,77 @@ def test_analysis_commands_expose_the_live_selection():
         assert "--min-ninki" in block, f"{name} に --min-ninki が無い"
         if name != "flow-threshold":      # 閾値はスコアの分位なので券種に依らない
             assert "--bet-type" in block, f"{name} に --bet-type が無い"
+
+
+# -- 着順を問う券種(馬単/三連単) ------------------------------------------------- #
+class _ComboDB:
+    """払戻表を返すだけ。kumi は JRA 表記(馬単 '0203' = 1着02→2着03)。"""
+
+    def __init__(self, pays):
+        self._pays = pays          # [(rid, kumi, pay), ...]
+
+    def query(self, _sql, params):
+        return [{"rid": r, "kumi": k, "pay": p} for r, k, p in self._pays
+                if True]
+
+
+def _combo_rows():
+    """1レース: 軸=05(人気8・flow 高)、人気上位 01/02/03。"""
+    return [
+        {"rid": "R1", "umaban": "05", "ninki": 8, "flow": 0.50},
+        {"rid": "R1", "umaban": "01", "ninki": 1, "flow": 0.00},
+        {"rid": "R1", "umaban": "02", "ninki": 2, "flow": 0.00},
+        {"rid": "R1", "umaban": "03", "ninki": 3, "flow": 0.00},
+    ]
+
+
+def test_umatan_fixes_the_axis_in_first_place():
+    """★軸が**1着**のときだけ当たること。
+
+    flow_tan は同じ馬・同じシグナルで 単勝 1.7000 / 複勝 1.2832(ts T-60s)。
+    「勝つこと」を当てているので、着順を問う券種は軸を1着に固定して試す。
+    """
+    from hro_operations.combos import evaluate
+
+    # 軸05が1着・01が2着 → '0501' が的中
+    db = _ComboDB([("R1", "0501", "5000")])
+    rep = evaluate(db, _combo_rows(), "20260101", "20260102", "umatan",
+                   threshold=0.1, partners=3, max_combos=9, amount=100)
+    assert rep["bets"] == 3, rep          # 相手3頭 × 1通り
+    assert rep["returned"] == 5000, rep
+
+    # 逆順 '0105'(01が1着)では当たらない
+    db2 = _ComboDB([("R1", "0105", "5000")])
+    rep2 = evaluate(db2, _combo_rows(), "20260101", "20260102", "umatan",
+                    threshold=0.1, partners=3, max_combos=9, amount=100)
+    assert rep2["returned"] == 0, "軸が2着でも当たってしまっている"
+
+
+def test_umaren_still_ignores_order():
+    """着順を問わない券種は従来どおり(並べ替えて照合)。"""
+    from hro_operations.combos import evaluate
+
+    db = _ComboDB([("R1", "0105", "3000")])     # 馬連は昇順表記
+    rep = evaluate(db, _combo_rows(), "20260101", "20260102", "umaren",
+                   threshold=0.1, partners=3, max_combos=9, amount=100)
+    assert rep["returned"] == 3000, rep
+
+
+def test_sanrentan_buys_both_orders_of_the_partners():
+    """三連単は軸1着固定でも、相手2頭の順序ぶん点数が増える。"""
+    from hro_operations.combos import evaluate
+
+    db = _ComboDB([("R1", "050201", "90000")])
+    rep = evaluate(db, _combo_rows(), "20260101", "20260102", "sanrentan",
+                   threshold=0.1, partners=3, max_combos=99, amount=100)
+    assert rep["bets"] == 6, rep           # 3頭から2頭の順列
+    assert rep["returned"] == 90000, rep
+
+
+def test_every_payout_bet_type_is_reachable():
+    """nl_hr が持つ組み合わせ券は全部評価できること(測れない券種を残さない)。"""
+    from hro_operations.combos import COMBO_TYPES
+
+    # nl_hr.bet_type: tan/fuku/waku/umaren/wide/umatan/sanrenfuku/sanrentan
+    for bt in ("umaren", "wide", "umatan", "sanrenfuku", "sanrentan"):
+        assert any(v[0] == bt for v in COMBO_TYPES.values()), bt

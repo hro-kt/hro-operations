@@ -1556,14 +1556,18 @@ def main(argv: list[str] | None = None) -> int:
     p_pf.set_defaults(func=_cmd_preflight)
 
     p_cb = sub.add_parser("flow-combo",
-                          help="flow の候補から組を作ってワイド/馬連/三連複を評価")
+                          help="flow の候補から組を作って組み合わせ券を評価"
+                               "(ワイド/馬連/三連複/馬単/三連単)")
     p_cb.add_argument("--from", dest="d_from", required=True)
     p_cb.add_argument("--to", dest="d_to", required=True)
     p_cb.add_argument("--flow-threshold", type=float, required=True)
-    p_cb.add_argument("--flow-source", choices=("ts", "sokuho"), default="ts")
+    p_cb.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_cb.add_argument("--flow-lead-seconds", type=int, default=60)
     p_cb.add_argument("--flow-minutes", type=int, default=6)
-    p_cb.add_argument("--bets", default="wide,umaren,sanrenfuku")
+    p_cb.add_argument("--bets", default="wide,umaren,sanrenfuku",
+                      help="wide,umaren,sanrenfuku,umatan,sanrentan。"
+                           "★umatan/sanrentan は**軸を1着に固定**する"
+                           "(flow_tan は単勝1.70/複勝1.28で、勝つことの予測力が強い)")
     p_cb.add_argument("--max-combos", type=int, default=3,
                       help="1レースで買う組の上限(スコア上位から)")
     p_cb.add_argument("--min-ninki", default="0",

@@ -21,15 +21,23 @@
 
 from __future__ import annotations
 
-from itertools import combinations
+from itertools import combinations, permutations
 
 from .flow_signal import summarize_bets
 
-# 券種 → (nl_hr の bet_type, 1組の頭数)
+# 券種 → (nl_hr の bet_type, 1組の頭数, 着順を問うか)
+# ★着順を問う券種(馬単/三連単)を足した。flow_tan は同じ馬・同じシグナルで
+#   単勝 1.7000 / 複勝 1.2832(ts T-60s)。つまり「**その馬が勝つこと**」を
+#   当てており、「上位に来ること」の予測力はずっと弱い。
+#   だとすれば軸が1着であることを要求する券種の方が相性が良いはずで、
+#   それが測れないのは道具の穴だった(2026-10-06)。
+#   ※仮説は軸を作るためのもの。方向はデータに決めさせる。
 COMBO_TYPES = {
-    "wide": ("wide", 2),
-    "umaren": ("umaren", 2),
-    "sanrenfuku": ("sanrenfuku", 3),
+    "wide": ("wide", 2, False),
+    "umaren": ("umaren", 2, False),
+    "sanrenfuku": ("sanrenfuku", 3, False),
+    "umatan": ("umatan", 2, True),        # 軸=1着固定
+    "sanrentan": ("sanrentan", 3, True),  # 軸=1着固定、相手2頭の順序も買う
 }
 
 _SQL_PAY = """
@@ -56,7 +64,7 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
     """flow の候補から組を作って買った場合の回収率。"""
     if bet not in COMBO_TYPES:
         raise ValueError(f"不明な券種: {bet} ({'|'.join(COMBO_TYPES)})")
-    hr_type, per = COMBO_TYPES[bet]
+    hr_type, per, ordered = COMBO_TYPES[bet]
 
     pay: dict[str, dict[str, str]] = {}
     for r in db.query(_SQL_PAY, {"d0": d_from, "d1": d_to, "bt": hr_type}):
@@ -83,18 +91,22 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
             continue
         n_races += 1
         combos: list[tuple] = []
+        # ★着順を問う券種は順列。問わない券種は組合せ。
+        pick_n = permutations if ordered else combinations
         if mode == "all":
             if len(picks) >= per:
-                combos = list(combinations(picks, per))
+                combos = list(pick_n(picks, per))
         else:
             # ★軸=候補 / 相手=人気上位。相手から軸自身は除く。
+            #   ordered のときは**軸を1着に固定**し、相手の順序ぶんだけ買う
+            #   (三連単なら相手2頭で2点)。
             others = sorted((r for r in rs if r["ninki"] <= partners),
                             key=lambda r: r["ninki"])
             for axis in picks:
                 pool = [o for o in others if o["umaban"] != axis["umaban"]]
                 if len(pool) < per - 1:
                     continue
-                combos += [(axis, *c) for c in combinations(pool, per - 1)]
+                combos += [(axis, *c) for c in pick_n(pool, per - 1)]
         if not combos:
             continue
         if rid not in pay:                 # ★払戻が無い= 未確定。外れとして数えない
@@ -102,7 +114,9 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
         n_used += 1
         seen: set[str] = set()
         for combo in combos:
-            kumi = "".join(sorted(x["umaban"] for x in combo))
+            # ★着順を問う券種は並べ替えてはいけない(1着→2着→3着の順)
+            kumi = "".join(x["umaban"] for x in combo) if ordered \
+                else "".join(sorted(x["umaban"] for x in combo))
             if kumi in seen:               # ★軸が2頭いると同じ組が重複しうる
                 continue
             seen.add(kumi)
@@ -117,4 +131,5 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
     rep["races_with_combo"] = n_used
     rep["bet"] = bet
     rep["mode"] = mode
+    rep["ordered"] = ordered
     return rep
