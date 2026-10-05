@@ -841,7 +841,8 @@ def _cmd_flow_combo(args) -> int:
                              threshold=args.flow_threshold, min_ninki=mn,
                              max_ninki=args.max_ninki, max_combos=args.max_combos,
                              amount=args.amount, mode=args.mode,
-                             partners=args.partners)
+                             partners=args.partners,
+                           partner_by=args.partner_by)
                 r["min_ninki"] = mn
                 res.append(r)
     finally:
@@ -850,7 +851,9 @@ def _cmd_flow_combo(args) -> int:
            else "候補どうしで組む")
     print(f"\n=== 組み合わせ券 ({args.d_from}〜{args.d_to}) ===")
     print(f"  {args.flow_source} / T-{args.flow_lead_seconds}s / 閾値 "
-          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}")
+          f"{args.flow_threshold:+.4f} / 1レース最大 {args.max_combos} 組 / {how}"
+          f" / 相手={'flow上位' if args.partner_by == 'flow' else '人気上位'}"
+          f"{args.partners}頭")
     print(f"\n  {'券種':<10} {'人気下限':>8} {'対象R':>6} {'組成R':>6} {'購入':>6} "
           f"{'的中率':>7} {'回収率':>8}  95%CI            P(<=1)")
     # ★券種を足したら必ずここにも。KeyError で**既に流し終えた分まで捨てる**ことになる
@@ -1581,7 +1584,12 @@ def main(argv: list[str] | None = None) -> int:
                       help="partners=軸(候補)×相手(人気上位) / all=候補どうし。"
                            "★all は両方が候補であることを要求するので対象レースが激減する")
     p_cb.add_argument("--partners", type=int, default=3,
-                      help="相手に使う人気上位の頭数")
+                      help="相手に使う頭数")
+    p_cb.add_argument("--partner-by", choices=("ninki", "flow"), default="ninki",
+                      help="相手の選び方。ninki=人気上位(市場の最終評価) / "
+                           "flow=flow上位(閾値は問わない)。"
+                           "★軸は『勝つ馬』を当てるが、相手に要るのは『2着に来る確率』。"
+                           "どちらが良いかはデータに決めさせる")
     p_cb.add_argument("--amount", type=int, default=100)
     p_cb.set_defaults(func=_cmd_flow_combo)
 

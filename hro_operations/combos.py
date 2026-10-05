@@ -60,7 +60,8 @@ def _norm(kumi: str, width: int, n: int) -> str | None:
 def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
              threshold: float, min_ninki: int = 0, max_ninki: int = 0,
              max_combos: int = 3, amount: int = 100,
-             mode: str = "partners", partners: int = 3) -> dict:
+             mode: str = "partners", partners: int = 3,
+             partner_by: str = "ninki") -> dict:
     """flow の候補から組を作って買った場合の回収率。"""
     if bet not in COMBO_TYPES:
         raise ValueError(f"不明な券種: {bet} ({'|'.join(COMBO_TYPES)})")
@@ -97,13 +98,22 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
             if len(picks) >= per:
                 combos = list(pick_n(picks, per))
         else:
-            # ★軸=候補 / 相手=人気上位。相手から軸自身は除く。
+            # ★軸=候補 / 相手の選び方は partner_by で切り替える。
+            #   ninki: 人気上位N頭(市場の最終評価で2着候補を選ぶ)
+            #   flow : flow 上位N頭(閾値は問わない。過小評価が2着にも効くか)
             #   ordered のときは**軸を1着に固定**し、相手の順序ぶんだけ買う
             #   (三連単なら相手2頭で2点)。
-            others = sorted((r for r in rs if r["ninki"] <= partners),
-                            key=lambda r: r["ninki"])
+            if partner_by == "flow":
+                ranked = sorted(rs, key=lambda r: -r["flow"])
+            else:
+                ranked = sorted((r for r in rs if r["ninki"] <= partners),
+                                key=lambda r: r["ninki"])
             for axis in picks:
-                pool = [o for o in others if o["umaban"] != axis["umaban"]]
+                pool = [o for o in ranked if o["umaban"] != axis["umaban"]]
+                if partner_by == "flow":
+                    # ★軸は自分が flow 最上位でありがち。除いてから上位N頭を取る
+                    #   (そうしないと相手が実質N-1頭になる)。
+                    pool = pool[:partners]
                 if len(pool) < per - 1:
                     continue
                 combos += [(axis, *c) for c in pick_n(pool, per - 1)]
@@ -132,4 +142,5 @@ def evaluate(db, rows: list[dict], d_from: str, d_to: str, bet: str, *,
     rep["bet"] = bet
     rep["mode"] = mode
     rep["ordered"] = ordered
+    rep["partner_by"] = partner_by
     return rep

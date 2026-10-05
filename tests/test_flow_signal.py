@@ -1138,3 +1138,48 @@ def test_every_combo_type_has_a_display_name():
     for bet in COMBO_TYPES:
         assert f'"{bet}"' in block, f"{bet} の表示名が無い"
     assert "names.get(" in block, "未知の券種で落ちない作りにすること"
+
+
+def test_partner_by_flow_picks_the_top_flow_horses_not_the_favourites():
+    """★相手を flow 順で選べること。
+
+    軸は「勝つ馬」を当てるが、相手に要るのは「2着に来る確率」。
+    人気(市場の最終評価)が最良とは限らないので、両方試せるようにする。
+    """
+    from hro_operations.combos import evaluate
+
+    rows = [
+        {"rid": "R1", "umaban": "05", "ninki": 8, "flow": 0.50},   # 軸
+        {"rid": "R1", "umaban": "09", "ninki": 9, "flow": 0.30},   # flow2位・人気薄
+        {"rid": "R1", "umaban": "01", "ninki": 1, "flow": 0.01},   # 人気1位
+        {"rid": "R1", "umaban": "02", "ninki": 2, "flow": 0.00},
+    ]
+    # ★閾値は 09(flow 0.30)が**軸にならない**値にする。軸が2頭になると
+    #   相手の選び方ではなく軸の数で点数が変わり、比較にならない。
+    # flow 相手1頭 → 09 が相手。'0509' が的中
+    db = _ComboDB([("R1", "0509", "7000")])
+    rep = evaluate(db, rows, "20260101", "20260102", "umatan",
+                   threshold=0.4, partners=1, partner_by="flow",
+                   max_combos=9, amount=100)
+    assert rep["bets"] == 1 and rep["returned"] == 7000, rep
+    assert rep["partner_by"] == "flow"
+
+    # 人気 相手1頭 → 01 が相手。'0509' では当たらない
+    rep2 = evaluate(db, rows, "20260101", "20260102", "umatan",
+                    threshold=0.4, partners=1, partner_by="ninki",
+                    max_combos=9, amount=100)
+    assert rep2["bets"] == 1 and rep2["returned"] == 0, rep2
+
+
+def test_partner_by_flow_excludes_the_axis_before_taking_the_top_n():
+    """★軸は自分が flow 最上位でありがち。先に除かないと相手が N-1 頭になる。"""
+    from hro_operations.combos import evaluate
+
+    rows = [{"rid": "R1", "umaban": "05", "ninki": 8, "flow": 0.90},   # 軸=flow1位
+            {"rid": "R1", "umaban": "09", "ninki": 9, "flow": 0.30},
+            {"rid": "R1", "umaban": "01", "ninki": 1, "flow": 0.20},
+            {"rid": "R1", "umaban": "02", "ninki": 2, "flow": 0.10}]
+    rep = evaluate(_ComboDB([("R1", "9999", "0")]), rows, "20260101", "20260102",
+                   "umatan", threshold=0.5, partners=3, partner_by="flow",
+                   max_combos=9, amount=100)
+    assert rep["bets"] == 3, f"相手が3頭になっていない: {rep['bets']}"
