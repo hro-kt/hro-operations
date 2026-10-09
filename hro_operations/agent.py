@@ -229,6 +229,23 @@ def _thresholds(raw, source: str = "sokuho") -> dict[int, float] | None:
     return out
 
 
+_KNOWN_BET_TYPES = ("fuku", "tan", "umatan")
+
+
+def _bet_type_arg(raw) -> str:
+    """"tan:1000,umatan:100" を検証して返す。1つでも知らない券種なら fuku。"""
+    parts = [p.strip() for p in str(raw or "").split(",") if p.strip()]
+    if not parts:
+        return "fuku"
+    for p in parts:
+        bt, _, amt = p.partition(":")
+        if bt.strip() not in _KNOWN_BET_TYPES:
+            return "fuku"
+        if amt and not amt.strip().isdigit():
+            return "fuku"
+    return ",".join(parts)
+
+
 def _flow_day_params(a: dict) -> dict:
     """UI の flow 設定を解決して1箇所に畳む(VM/Windows のビルダで共用)。
 
@@ -268,8 +285,9 @@ def _flow_day_params(a: dict) -> dict:
         #   のに live では一度も使えておらず、「複勝は8頭以上に限る」という指示も
         #   実機に届いていなかった(2026-10-03 に発覚)。
         # ★知らない値は fuku に落とす(お金が動く側の既定は保守的に)
-        "bet_type": (a.get("bet_type")
-                     if a.get("bet_type") in ("tan", "umatan") else "fuku"),
+        # ★カンマ区切りで複数指定できる("tan:1000,umatan:100")。知らない券種が
+        #   混ざっていたら**丸ごと fuku に落とす**(お金が動く側の既定は保守的に)。
+        "bet_type": _bet_type_arg(a.get("bet_type")),
         "partners": _int(a.get("partners"), 3),
         "min_ninki": _int(a.get("min_ninki"), 0),
         "max_ninki": _int(a.get("max_ninki"), 0),

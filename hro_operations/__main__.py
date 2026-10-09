@@ -102,9 +102,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                         "(検証 ROI 1.174 P(ROI<=1)=0.001 8/8ヶ月, docs/2026-09_flow_signal.md)")
     p.add_argument("--flow-threshold", type=float, default=0.0,
                    help="flow スコアの絶対閾値(fit 期間の分位から決めた値)")
-    p.add_argument("--flow-bet-type", choices=("fuku", "tan", "umatan"), default="fuku",
-                   help="買う券種。tan=単勝。★単勝は IPAT の画面遷移が未検証なので"
-                        "dry-vote で確認してから live にすること")
+    # ★choices は使わない。カンマ区切りで複数指定できる(例 "tan:1000,umatan:100")。
+    p.add_argument("--flow-bet-type", default="fuku",
+                   help="買う券種。fuku=複勝 / tan=単勝 / umatan=馬単(軸1着固定)。"
+                        "カンマ区切りで複数、`券種:金額` で1点の金額を個別指定できる"
+                        "(例 'tan:1000,umatan:100')。金額を書かなければ --flat-amount。"
+                        "★並び順がそのまま購入順。期待利益の大きい方を先に書くこと")
     p.add_argument("--flow-min-ninki", type=int, default=0,
                    help="決定時点の単勝人気の下限(オッズ順から導出)")
     p.add_argument("--flow-max-ninki", type=int, default=0)

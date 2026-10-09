@@ -16,7 +16,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 
 from hro_features.config import load_config as load_features_config
@@ -226,6 +226,25 @@ def _calibrators(path: str | None) -> dict | None:
     return _CALIB_CACHE[path]
 
 
+def bet_plan(cfg: "DayConfig") -> list[tuple[str, int]]:
+    """買う券種と1点の金額。`flow_bet_type` はカンマ区切りで複数指定できる。
+
+    ★券種ごとに金額を変えられる(例 "tan:1000,umatan:100")。馬単は的中率1.2%・
+      平均配当約190倍で谷が深いので、単勝と同額にすると資金曲線が持たない。
+      省略時は flat_amount を使う。
+    ★並び順がそのまま購入順になる。締切に間に合わない可能性があるなら、
+      期待利益の大きい方を先に書くこと。
+    """
+    out: list[tuple[str, int]] = []
+    for part in str(cfg.flow_bet_type or "fuku").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        bt, _, amt = part.partition(":")
+        out.append((bt.strip(), int(amt) if amt.strip().isdigit() else cfg.flat_amount))
+    return out or [("fuku", cfg.flat_amount)]
+
+
 def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tuple[dict | None, list]:
     """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
     戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。
@@ -245,7 +264,7 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
             fc = FlowConfig(lead_seconds=cfg.flow_lead_seconds, flow_minutes=cfg.flow_minutes,
                             threshold=cfg.flow_threshold, source=cfg.flow_source,
                             thresholds=cfg.flow_thresholds,
-                            bet_type=cfg.flow_bet_type,
+                            bet_type=bet_plan(cfg)[0][0],
                             partners=cfg.flow_partners,
                             min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
                             min_horses=cfg.flow_min_horses,
@@ -255,8 +274,15 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
             #   ままなので、単一値だけ書くと「どの閾値で買ったのか」が後から分からない。
             thr_note = (",".join(f"{k}:{v:+.4f}" for k, v in sorted(fc.thresholds.items()))
                         if fc.thresholds else f"{cfg.flow_threshold:+.4f}")
-            return None, flow_orders(db, race, fc, cfg.flat_amount,
-                                     f"flow@{cfg.flow_source}:T-{cfg.flow_lead_seconds}s:{thr_note}")
+            mv = f"flow@{cfg.flow_source}:T-{cfg.flow_lead_seconds}s:{thr_note}"
+            # ★券種は複数指定できる(例 "tan,umatan")。軸も閾値も同じで、同じ馬を
+            #   別の券種でも買うだけなので、信号を2回計算する必要はない……が、
+            #   flow_orders は券種ごとに組の作り方が違う(馬単は軸×相手)。
+            #   素直に券種ごとに呼ぶ。1レース2回のDB往復は preselect より手前で済む。
+            orders = []
+            for bt, amount in bet_plan(cfg):
+                orders += flow_orders(db, race, replace(fc, bet_type=bt), amount, mv)
+            return None, orders
         finally:
             db.close()
     from hro_backtest import harness          # モデル戦略のみ(LightGBM を引き込む)

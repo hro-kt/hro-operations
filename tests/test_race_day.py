@@ -149,3 +149,48 @@ def test_day_config_expands_the_recipe_path():
 
     assert DayConfig(date="20261004", win_model="w", place_model="p",
                      results_path="r.jsonl").ipat_recipe is None
+
+
+# -- 複数券種(単勝 + 馬単)を同時に買う ------------------------------------------ #
+def _day(**kw):
+    from hro_operations.race_day import DayConfig
+
+    base = dict(date="20261010", win_model="w", place_model="p",
+                results_path="r.jsonl", flat_amount=1000)
+    base.update(kw)
+    return DayConfig(**base)
+
+
+def test_bet_plan_parses_types_and_per_type_amounts():
+    """★馬単は的中率1.2%・平均配当約190倍で谷が深い。単勝と同額にすると
+    資金曲線が持たないので、券種ごとに金額を変えられること。"""
+    from hro_operations.race_day import bet_plan
+
+    assert bet_plan(_day(flow_bet_type="tan:1000,umatan:100")) == [("tan", 1000),
+                                                                   ("umatan", 100)]
+    # 金額を省けば flat_amount
+    assert bet_plan(_day(flow_bet_type="tan,umatan")) == [("tan", 1000), ("umatan", 1000)]
+    # 単一指定は従来どおり
+    assert bet_plan(_day(flow_bet_type="tan")) == [("tan", 1000)]
+    # 未指定は複勝
+    assert bet_plan(_day()) == [("fuku", 1000)]
+
+
+def test_bet_plan_keeps_the_order_as_written():
+    """★並び順がそのまま購入順。締切に間に合わない可能性があるので、
+    期待利益の大きい方を先に書けること。"""
+    from hro_operations.race_day import bet_plan
+
+    assert [b for b, _ in bet_plan(_day(flow_bet_type="umatan:100,tan:1000"))] \
+        == ["umatan", "tan"]
+
+
+def test_agent_rejects_unknown_bet_types_wholesale():
+    """★知らない券種が1つでも混ざったら丸ごと fuku に落とす(お金が動く側は保守的に)。"""
+    from hro_operations.agent import _bet_type_arg
+
+    assert _bet_type_arg("tan:1000,umatan:100") == "tan:1000,umatan:100"
+    assert _bet_type_arg("tan,umatan") == "tan,umatan"
+    assert _bet_type_arg("tan,sanrentan") == "fuku"     # 未対応券種が混ざっている
+    assert _bet_type_arg("tan:いくら") == "fuku"         # 金額が数字でない
+    assert _bet_type_arg(None) == "fuku"

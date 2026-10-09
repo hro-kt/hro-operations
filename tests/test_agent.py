@@ -308,7 +308,9 @@ def test_run_day_accepts_umatan():
 
     root = Path(__file__).resolve().parents[1] / "hro_operations"
     cli = (root / "__main__.py").read_text(encoding="utf-8")
-    assert '"fuku", "tan", "umatan"' in cli
+    # ★choices は使わない(カンマ区切りで複数指定できるため)。agent 側が検証する。
+    assert '"--flow-bet-type", default="fuku"' in cli
+    assert "umatan" in cli
     assert "--flow-partners" in cli
     assert "flow_partners=getattr(args" in cli
 
