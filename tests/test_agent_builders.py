@@ -331,3 +331,17 @@ def test_tax_seal_runs_on_either_machine():
 def test_tax_seal_verify_mode_takes_no_date():
     cmd, _, _ = agent._b_tax_seal({"verify": True, "date": "20261011"})
     assert "--verify" in cmd and "--date" not in cmd
+
+
+def test_strategy_doc_job_saves_to_db():
+    """★画面は保存済みを読むだけ。ジョブが生成して保存する。"""
+    cmd, cwd, _ = agent._b_strategy_doc({"year": "2026"})
+    assert cmd == ["poetry", "run", "hro-ops", "strategy-doc",
+                   "--year", "2026", "--save"]
+    assert cwd.endswith("hro-operations")
+    assert agent._COMMANDS["vm"]["strategy_doc"] is agent._b_strategy_doc
+
+
+def test_strategy_doc_job_validates_the_year():
+    with pytest.raises(ValueError):
+        agent._b_strategy_doc({"year": "26"})

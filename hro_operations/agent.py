@@ -502,6 +502,20 @@ def _b_race_day(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_strategy_doc(a: dict):
+    """★戦略書を生成して DB へ保存する(admin から見るため)。
+
+    ★年の途中でも作れるが、**決済が追いついていないと一時所得の計算が出ない**。
+      払戻は開催の3〜5日後なので、年次の確定版は年明けに settle-pending を
+      回しきってから作ること。
+    """
+    y = str(a.get("year") or _today_jst()[:4])
+    if not re.fullmatch(r"\d{4}", y):
+        raise ValueError(f"year は YYYY: {y!r}")
+    return (["poetry", "run", "hro-ops", "strategy-doc", "--year", y, "--save"],
+            os.path.join(_home(), "hro-operations"), {})
+
+
 def _b_tax_seal(a: dict):
     """★その日の記録を封印する(ハッシュ鎖)。**締めの後**に走らせる。
 
@@ -629,6 +643,8 @@ _COMMANDS = {
            "settle_pending": _b_settle_pending,
            # ★税務の記録を封印(ハッシュ鎖)。締めの後
            "tax_seal": _b_tax_seal,
+           # ★戦略書を生成して保存(admin から見る)
+           "strategy_doc": _b_strategy_doc,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
            # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
            "close_day": _b_close_day,
@@ -655,7 +671,8 @@ _COMMANDS = {
                 #   回したときに「未対応の kind」で止まらないよう両方に置く
                 "settle": _b_settle,
                 "settle_pending": _b_settle_pending,
-                "tax_seal": _b_tax_seal},
+                "tax_seal": _b_tax_seal,
+                "strategy_doc": _b_strategy_doc},
 }
 
 

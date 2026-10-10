@@ -1560,12 +1560,21 @@ def _cmd_strategy_doc(args) -> int:
                 for r in rows]
     now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S JST")
     doc = render(rep, versions=versions, now=now)
+    if args.save:
+        from .strategy_doc import save, summary_of
+        with _tax_conn() as conn:
+            r = save(conn, args.year, doc, summary_of(rep))
+        if r["status"] == "saved":
+            print(f"✓ 保存しました {args.year} rev{r['revision']}"
+                  f" ({len(doc):,} 文字 hash={r['hash'][:16]}…)")
+        else:
+            print(f"- 前回の版({args.year} rev{r['revision']})と同じ内容です")
     if args.out:
         with open(args.out, "w", encoding="utf-8") as fh:
             fh.write(doc)
         print(f"書き出しました: {args.out}({len(doc):,} 文字)")
-        return 0
-    print(doc)
+    if not args.save and not args.out:
+        print(doc)
     return 0
 
 
@@ -2151,7 +2160,9 @@ def main(argv: list[str] | None = None) -> int:
     p_doc = sub.add_parser("strategy-doc",
                            help="★戦略書を生成(コードと DB から。手書きしない)")
     p_doc.add_argument("--year", required=True)
-    p_doc.add_argument("--out", help="書き出し先(.md)。省略すると標準出力")
+    p_doc.add_argument("--out", help="書き出し先(.md)")
+    p_doc.add_argument("--save", action="store_true",
+                       help="DB(strategy_documents)へ保存し、admin から見られるようにする")
     p_doc.set_defaults(func=_cmd_strategy_doc)
 
     p_cov = sub.add_parser("coverage",

@@ -176,3 +176,38 @@ def render(rep: dict, *, versions: list[dict], now: str) -> str:
     a("| 封印 | `tax_ledger_seals` |")
     a("")
     return "\n".join(out)
+
+
+def save(conn, year: str, markdown: str, summary: dict | None = None) -> dict:
+    """生成した戦略書を保存する。**追記のみ**(作り直すと revision が増える)。
+
+    ★古い版は消さない。提出済みの資料が消えるのは最悪。
+    ★同じ本文なら新しい版を作らない(生成しただけで版が増えると、何版が
+      提出したものか分からなくなる)。
+    """
+    import hashlib
+    import json
+
+    h = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+    row = conn.execute(
+        "SELECT revision, content_hash FROM strategy_documents"
+        " WHERE year=%s ORDER BY revision DESC LIMIT 1", (year,)).fetchone()
+    prev_rev = int(row[0]) if row else 0
+    if row and row[1] == h:
+        return {"status": "unchanged", "year": year, "revision": prev_rev, "hash": h}
+    conn.execute(
+        "INSERT INTO strategy_documents(year, revision, markdown, content_hash, summary)"
+        " VALUES(%s,%s,%s,%s,%s::jsonb)",
+        (year, prev_rev + 1, markdown, h,
+         json.dumps(summary or {}, ensure_ascii=False, sort_keys=True)))
+    return {"status": "saved", "year": year, "revision": prev_rev + 1, "hash": h}
+
+
+def summary_of(rep: dict) -> dict:
+    """保存に添える要約(一覧で中身を開かずに見分けるため)。"""
+    t, c = rep["totals"], rep["coverage"]
+    return {"bought": t["bought"], "payout": t["payout"], "pnl": t["pnl"],
+            "roi": t["roi"], "days": t["days"],
+            "races": c["races"], "evaluated": c["evaluated"],
+            "evaluated_ratio": c["evaluated_ratio"],
+            "bought_races": c["bought_races"]}

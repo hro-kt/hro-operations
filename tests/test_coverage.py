@@ -233,3 +233,59 @@ def test_doc_monthly_row_does_not_confuse_amount_with_race_count():
     cells = [c.strip() for c in line.strip("|").split("|")]
     assert cells[3] == "540,000"      # 購入額
     assert cells[7] == "118"          # 買ったレース数
+
+
+# --- 戦略書の保存 -------------------------------------------------------
+
+class _DocConn:
+    def __init__(self, rows=None):
+        self.rows = rows or []       # (revision, content_hash)
+        self._r = []
+
+    def execute(self, sql, params=()):
+        q = " ".join(sql.split())
+        if q.startswith("SELECT revision, content_hash FROM strategy_documents"):
+            self._r = [self.rows[-1]] if self.rows else []
+        elif q.startswith("INSERT INTO strategy_documents"):
+            self.rows.append((params[1], params[3]))
+            self._r = []
+        else:                                # pragma: no cover
+            raise AssertionError(q[:60])
+        return self
+
+    def fetchone(self):
+        return self._r[0] if self._r else None
+
+
+def test_saving_a_document_starts_at_revision_1():
+    from hro_operations.strategy_doc import save
+    conn = _DocConn()
+    r = save(conn, "2026", "# doc")
+    assert r["status"] == "saved" and r["revision"] == 1 and len(r["hash"]) == 64
+
+
+def test_regenerating_the_same_document_does_not_add_a_revision():
+    """★生成しただけで版が増えると、何版が提出したものか分からなくなる。"""
+    from hro_operations.strategy_doc import save
+    conn = _DocConn()
+    save(conn, "2026", "# doc")
+    r = save(conn, "2026", "# doc")
+    assert r["status"] == "unchanged" and r["revision"] == 1
+    assert len(conn.rows) == 1
+
+
+def test_a_changed_document_appends_a_revision():
+    """★古い版は消さない。提出済みの資料が消えるのは最悪。"""
+    from hro_operations.strategy_doc import save
+    conn = _DocConn()
+    save(conn, "2026", "# doc")
+    r = save(conn, "2026", "# doc v2")
+    assert r["status"] == "saved" and r["revision"] == 2
+    assert len(conn.rows) == 2
+
+
+def test_summary_carries_the_headline_numbers():
+    from hro_operations.strategy_doc import summary_of
+    s = summary_of(_rep())
+    assert s["bought"] == 1_284_000 and s["payout"] == 1_531_200
+    assert s["races"] == 480 and s["bought_races"] == 118
