@@ -1537,6 +1537,75 @@ def _cmd_decisions(args) -> int:
     return 0
 
 
+def _tax_conn():
+    import psycopg
+
+    from hro_buyer.postgres import PostgresConfig
+    return psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True)
+
+
+def _cmd_tax_seal(args) -> int:
+    """★その日の記録を封印する(ハッシュ鎖)。締めの後に走らせる。"""
+    from .tax_seal import seal_day, verify_chain
+    with _tax_conn() as conn:
+        if args.verify:
+            bad = verify_chain(conn)
+            if not bad:
+                n = conn.execute("SELECT count(*) FROM tax_ledger_seals").fetchone()[0]
+                print(f"✓ 封印の鎖は健全です({n} 環)")
+                return 0
+            print(f"✗ 鎖が壊れています({len(bad)} 件)")
+            for b in bad:
+                print(f"  seq={b['seq']} {b['budget_key']} rev{b['revision']}"
+                      f" ({b['sealed_at']})")
+                for w in b["problems"]:
+                    print(f"      {w}")
+            return 1
+        rc = 0
+        for d in (args.date or "").split(","):
+            d = d.strip()
+            if not d:
+                continue
+            r = seal_day(conn, d, force=args.force)
+            if r["status"] == "sealed":
+                print(f"✓ {d} を封印しました rev{r['revision']}"
+                      f" 購入{r['bought']:,}円 払戻{r['payout']:,}円")
+                print(f"    hash={r['hash'][:16]}… prev={(r['prev_hash'] or '起点')[:16]}")
+            elif r["status"] == "unchanged":
+                print(f"- {d} は前回の封印から変化なし(rev{r['revision']})")
+            else:
+                print(f"- {d} は記録がありません(購入指示も IPAT の記録も無い)")
+                rc = 1
+        return rc
+
+
+def _cmd_strategy(args) -> int:
+    """★戦略の版を一覧する(いつからいつまで、どの設定だったか)。"""
+    import json as _json
+
+    from .strategy import describe
+    with _tax_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, version, params, params_hash, mode, effective_from,"
+            "       effective_to, created_at FROM strategy_versions"
+            " WHERE strategy_id=%s ORDER BY version", ("flow_tan",)).fetchall()
+    if not rows:
+        print("戦略の版がまだありません(run-day を1度通すと作られます)")
+        return 1
+    if args.json:
+        print(_json.dumps([{"id": r[0], "version": r[1], "params": r[2],
+                            "params_hash": r[3], "mode": r[4],
+                            "effective_from": r[5], "effective_to": r[6],
+                            "created_at": str(r[7])} for r in rows],
+                          ensure_ascii=False, indent=2))
+        return 0
+    for vid, ver, params, h, mode, ef, et, at in rows:
+        span = f"{ef}〜{et or '現行'}"
+        print(f"  #{vid} v{ver} [{mode}] {span}  {h[:16]}…")
+        print(f"      {describe(params)}")
+    return 0
+
+
 def _cmd_settle_pending(args) -> int:
     """★払戻が届いた開催日をまとめて決済する(開催日の数日後に回す)。"""
     from .orchestrator import SettleConfig, run_settle
@@ -1940,6 +2009,20 @@ def main(argv: list[str] | None = None) -> int:
                        help="却下(買わなかった馬・見送ったレース)と通過した規則も出す")
     p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
     p_dec.set_defaults(func=_cmd_decisions)
+
+    p_seal = sub.add_parser("tax-seal",
+                            help="★その日の記録を封印する(ハッシュ鎖)。締めの後に")
+    p_seal.add_argument("--date", help="開催日 YYYYMMDD(カンマ区切りで複数可)")
+    p_seal.add_argument("--verify", action="store_true",
+                        help="封印せず、鎖が壊れていないかだけ検証する")
+    p_seal.add_argument("--force", action="store_true",
+                        help="内容が同じでも新しい環を足す")
+    p_seal.set_defaults(func=_cmd_tax_seal)
+
+    p_sv = sub.add_parser("strategy",
+                          help="★戦略の版を一覧(いつからいつまで、どの設定だったか)")
+    p_sv.add_argument("--json", action="store_true")
+    p_sv.set_defaults(func=_cmd_strategy)
 
     p_sp = sub.add_parser("settle-pending",
                           help="★払戻が届いた開催日をまとめて決済(開催の3〜5日後に回す)")

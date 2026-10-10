@@ -85,8 +85,13 @@ def finish_steps(date: str, *, close_target: str = "vm") -> list[Step]:
       全種別の差分を取る重いジョブで時間が読めない。当日の経路に置くと、長引いた
       ぶんだけ締めが危うくなるだけで、得るものが無い。別日に settle_steps で回す。
     """
-    return [Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
-                 {"date": date, "no_settle": True})]
+    return [
+        Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
+             {"date": date, "no_settle": True}),
+        # ★締めの後に封印する。購入額・払戻額は IPAT の記録を取り込んで初めて揃う。
+        #   記録は後から作れないので、その日のうちに固める。
+        Step("税務記録の封印", "tax_seal", close_target, {"date": date}),
+    ]
 
 
 def settle_steps(dates: list[str], *, target: str = "vm",

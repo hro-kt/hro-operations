@@ -60,8 +60,9 @@ def test_race_day_ends_at_the_close():
     ぶんだけ締めが危うくなるだけで得るものが無い。
     """
     fin = orc.finish_steps("20261011")
-    assert [s.kind for s in fin] == ["close_day"]
-    assert not fin[0].jvlink and not fin[0].resident
+    # ★封印は締めの後。購入額・払戻額は IPAT の記録を取り込んで初めて揃う
+    assert [s.kind for s in fin] == ["close_day", "tax_seal"]
+    assert not any(s.jvlink or s.resident for s in fin)
 
 
 def test_sync_gets_a_longer_wait_than_the_default():
@@ -313,11 +314,11 @@ class _BusyDoneConn(_BusyConn, _DoneConn):
     pass
 
 
-def test_finish_runs_the_close_only():
+def test_finish_runs_the_close_then_the_seal():
     conn, cfg = _DoneConn(), _cfg(job_id=42, poll_seconds=0.01,
                                   finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["close_day"]
+    assert [k for k, _, _ in conn.inserted] == ["close_day", "tax_seal"]
 
 
 # --- 後日の決済(settle-pending) ----------------------------------------

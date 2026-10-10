@@ -502,6 +502,24 @@ def _b_race_day(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_tax_seal(a: dict):
+    """★その日の記録を封印する(ハッシュ鎖)。**締めの後**に走らせる。
+
+    封印は購入額・払戻額・依拠した戦略の版を固めるので、IPAT の記録を取り込んだ
+    後でないと中身が揃わない。おまかせは close_day の直後にこれを積む。
+    ★DB しか触らないのでどちらの機でも動く。
+    """
+    d = _ymd(a.get("date"), _today_jst())
+    cmd = ["poetry", "run", "hro-ops", "tax-seal"]
+    if a.get("verify"):
+        cmd.append("--verify")
+    else:
+        cmd += ["--date", d]
+        if a.get("force"):
+            cmd.append("--force")
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
+
+
 def _b_settle_pending(a: dict):
     """★払戻が届いた開催日をまとめて決済する(開催の3〜5日後に回す)。
 
@@ -606,6 +624,8 @@ _COMMANDS = {
            "race_day": _b_race_day,
            # ★後日(払戻が届いてから)の決済。開催日のジョブには入れない
            "settle_pending": _b_settle_pending,
+           # ★税務の記録を封印(ハッシュ鎖)。締めの後
+           "tax_seal": _b_tax_seal,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
            # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
            "close_day": _b_close_day,
@@ -631,7 +651,8 @@ _COMMANDS = {
                 # ★決済は DB しか触らないのでどちらでも動く。おまかせを Windows で
                 #   回したときに「未対応の kind」で止まらないよう両方に置く
                 "settle": _b_settle,
-                "settle_pending": _b_settle_pending},
+                "settle_pending": _b_settle_pending,
+                "tax_seal": _b_tax_seal},
 }
 
 

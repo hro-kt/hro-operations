@@ -317,3 +317,17 @@ def test_fetch_race_is_windows_only_and_light():
     assert cwd.endswith("hro-synchronizer")
     assert agent._COMMANDS["windows"]["fetch_race"] is agent._b_fetch_race
     assert "fetch_race" not in agent._COMMANDS["vm"]     # JV-Link が要る
+
+
+def test_tax_seal_runs_on_either_machine():
+    """★DB しか触らない。締めの後に走らせる。"""
+    assert agent._COMMANDS["vm"]["tax_seal"] is agent._b_tax_seal
+    assert agent._COMMANDS["windows"]["tax_seal"] is agent._b_tax_seal
+    cmd, cwd, _ = agent._b_tax_seal({"date": "20261011"})
+    assert cmd[:4] == ["poetry", "run", "hro-ops", "tax-seal"]
+    assert _opt(cmd, "--date") == "20261011" and cwd.endswith("hro-operations")
+
+
+def test_tax_seal_verify_mode_takes_no_date():
+    cmd, _, _ = agent._b_tax_seal({"verify": True, "date": "20261011"})
+    assert "--verify" in cmd and "--date" not in cmd

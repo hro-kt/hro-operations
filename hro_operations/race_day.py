@@ -88,6 +88,9 @@ class DayConfig:
     ev_lcb_z: float = 0.0             # EV下側信頼限界のz(0=従来)。MC二項SEでpを保守化=勝者の呪い対策
     # flow シグナル運用(モデル非使用)。strategy="flow" で有効化。
     strategy: str = "model"          # model | flow
+    # ★この開催日の購入指示が依拠する戦略の版(strategy_versions.id)。
+    #   run_day が起動時に解決して入れる。設定ではなく実行時の結果。
+    strategy_version_id: int | None = None
     flow_threshold: float = 0.0                          # fit 期間の分位から決めた絶対閾値
     # ★リード別の閾値。配信遅れで決定時点がレースごとに変わる(2026-09-21 実測:
     #   T-120s が41%、残りは T-180s)。スコアの尺度もリードで変わるので、単一の閾値だと
@@ -245,6 +248,26 @@ def bet_plan(cfg: "DayConfig") -> list[tuple[str, int]]:
     return out or [("fuku", cfg.flat_amount)]
 
 
+def flow_config(cfg: "DayConfig"):
+    """DayConfig から FlowConfig を組む。**ここが唯一の組み立て場所**。
+
+    ★戦略の版(strategy_versions)はこの結果をハッシュして作る。組み立てを2か所に
+      書くと、片方に足した設定が版に入らず、**別の戦略が同じ版に見える**。
+      税務の記録としては致命的なので、判断に使う物と記録する物を同じ関数から出す。
+    """
+    from .flow_signal import FlowConfig
+    return FlowConfig(
+        lead_seconds=cfg.flow_lead_seconds, flow_minutes=cfg.flow_minutes,
+        threshold=cfg.flow_threshold, source=cfg.flow_source,
+        thresholds=cfg.flow_thresholds,
+        bet_type=bet_plan(cfg)[0][0],
+        partners=cfg.flow_partners,
+        min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
+        min_horses=cfg.flow_min_horses,
+        max_per_race=cfg.flow_max_per_race,
+        max_odds=cfg.max_odds or 0.0)
+
+
 def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...],
                   logs: list | None = None) -> tuple[dict | None, list]:
     """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
@@ -259,18 +282,10 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...],
     abilities は None を返す(確率を推定しないので prediction_log には残らない)。
     """
     if cfg.strategy == "flow":
-        from .flow_signal import FlowConfig, flow_orders
+        from .flow_signal import flow_orders
         db = FeatureDB(load_features_config())
         try:
-            fc = FlowConfig(lead_seconds=cfg.flow_lead_seconds, flow_minutes=cfg.flow_minutes,
-                            threshold=cfg.flow_threshold, source=cfg.flow_source,
-                            thresholds=cfg.flow_thresholds,
-                            bet_type=bet_plan(cfg)[0][0],
-                            partners=cfg.flow_partners,
-                            min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
-                            min_horses=cfg.flow_min_horses,
-                            max_per_race=cfg.flow_max_per_race,
-                            max_odds=cfg.max_odds or 0.0)
+            fc = flow_config(cfg)
             # ★実際に使った閾値を記録に残す。thresholds を使うと flow_threshold は 0.0 の
             #   ままなので、単一値だけ書くと「どの閾値で買ったのか」が後から分からない。
             thr_note = (",".join(f"{k}:{v:+.4f}" for k, v in sorted(fc.thresholds.items()))
@@ -316,14 +331,37 @@ class _MultiResultSink:
             s.emit(results)
 
 
-def _clear_race(cfg: DayConfig, race_id: str) -> None:
-    """当該レース×budget_key の bet_orders/bet_decision_logs/bet_results を削除(冪等)。"""
+# 再実行で消す代わりに退避する表(29_tax_record.sql)
+_ARCHIVED = (("bet_orders", "bet_orders_archive"),
+             ("bet_decision_logs", "bet_decision_logs_archive"))
+
+
+def _clear_race(cfg: DayConfig, race_id: str, *, reason: str = "run-day 再実行") -> None:
+    """当該レース×budget_key の記録を**退避してから**入れ替える(冪等)。
+
+    ★以前は DELETE していた。再実行のたびに記録が消えるので、証憑としては
+      最も弱い形(後から書き換えられる記録に見える)になる。消す代わりに
+      *_archive へ移し、「何をいつ訂正したか」を残す。
+    ★退避先が無い環境(スキーマ未適用)でも開催日を止めない。退避できなければ
+      警告を出して従来どおり入れ替える。**発注を止める理由にはしない**。
+    """
     import psycopg
     pg = PostgresConfig.from_env()
     with psycopg.connect(pg.conninfo) as conn, conn.cursor() as cur:
-        cur.execute("DELETE FROM bet_orders   WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
-        # ★判断の記録も消す。消さないと再実行のたびに同じレースの却下理由が積み上がり、
-        #   「人気帯で落ちた頭数」のような集計が壊れる。
+        for src, dst in _ARCHIVED:
+            try:
+                cur.execute(
+                    f"INSERT INTO {dst} SELECT s.*, now(), %s FROM {src} s "
+                    "WHERE s.race_id=%s AND s.budget_key=%s",
+                    (reason, race_id, cfg.date))
+            except Exception as e:   # noqa: BLE001 - スキーマ未適用等
+                conn.rollback()
+                log.warning("%s への退避に失敗(入れ替えは続行): %s: %s",
+                            dst, type(e).__name__, e)
+        cur.execute("DELETE FROM bet_orders   WHERE race_id=%s AND budget_key=%s",
+                    (race_id, cfg.date))
+        # ★判断の記録も入れ替える。残すと再実行のたびに同じレースの却下理由が
+        #   積み上がり、「人気帯で落ちた頭数」のような集計が壊れる。退避済み。
         cur.execute("DELETE FROM bet_decision_logs WHERE race_id=%s AND budget_key=%s",
                     (race_id, cfg.date))
         # live で成立(submitted/unknown)した行は監査記録なので絶対に消さない
@@ -494,6 +532,11 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor
     race_id = "".join(race)
     logs: list = []
     abilities, orders = decide_orders(cfg, win_b, place_b, race, logs=logs)
+    # ★購入指示1件ごとに「どの戦略の版に基づくか」を持たせる。これが税務上の
+    #   「この馬券はこの戦略に基づく」の実体になる。
+    #   BetOrder は frozen なので replace で入れ替える(代入すると例外で開催日が止まる)。
+    if cfg.strategy_version_id is not None:
+        orders = [replace(o, strategy_version_id=cfg.strategy_version_id) for o in orders]
     if abilities is not None:
         _persist_predictions(cfg, race, win_b, abilities)  # 全馬予測を監視用に保存(発注有無に関わらず)
     _clear_race(cfg, race_id)  # 再実行/古い残骸を除去してから記録(冪等)
@@ -561,9 +604,38 @@ def check_timing(cfg: DayConfig) -> None:
         )
 
 
+def _resolve_strategy_version(cfg: DayConfig) -> int | None:
+    """この開催日に使う戦略の版を確定させる(無ければ起こす)。
+
+    ★**開催日の最初に1回だけ**。レースごとに引くと、同じ日に版が増えかねない。
+    ★失敗しても開催日は止めない。版が無くても発注はできるし、記録が1日欠けるより
+      その日を落とす方が損が大きい。警告を出して None で進む。
+    """
+    import psycopg
+
+    from .strategy import canonical_params, describe, resolve_version
+    try:
+        params = canonical_params(cfg)
+    except Exception as e:   # noqa: BLE001 - 設定の形が想定外でも発注は続ける
+        log.warning("戦略の版を組めません(記録なしで続行): %s: %s", type(e).__name__, e)
+        return None
+    try:
+        with psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True) as conn:
+            vid = resolve_version(conn, params, date=cfg.date)
+    except Exception as e:   # noqa: BLE001 - スキーマ未適用/接続断
+        log.warning("戦略の版を記録できません(記録なしで続行): %s: %s",
+                    type(e).__name__, e)
+        return None
+    log.info("戦略の版 #%d: %s", vid, describe(params))
+    return vid
+
+
 def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     """開催日を通す。no_wait=True なら待機せず全レースを即処理(当日途中起動/検証用)。"""
     check_timing(cfg)
+    # ★この日の購入指示が依拠する戦略の版。稼働した設定そのものから起こす
+    #   (手で書いた宣言は後から書いたのではと疑われる余地が残る)。
+    cfg.strategy_version_id = _resolve_strategy_version(cfg)
     win_b = place_b = None
     if cfg.strategy != "flow":        # flow はモデルを使わない
         from hro_backtest import harness      # モデル戦略のみ(LightGBM を引き込む)
