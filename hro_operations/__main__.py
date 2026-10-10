@@ -1544,6 +1544,162 @@ def _tax_conn():
     return psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True)
 
 
+def _version_row(conn, version: int | None):
+    """版を1つ引く。省略なら live の現行版。"""
+    if version:
+        sql = ("SELECT id, name, version, params, params_hash, mode, effective_from,"
+               " effective_to FROM strategy_versions WHERE strategy_id=%s AND version=%s")
+        params = ("flow_tan", version)
+    else:
+        sql = ("SELECT id, name, version, params, params_hash, mode, effective_from,"
+               " effective_to FROM strategy_versions WHERE strategy_id=%s AND mode='live'"
+               " ORDER BY version DESC LIMIT 1")
+        params = ("flow_tan",)
+    r = conn.execute(sql, params).fetchone()
+    if not r:
+        return None
+    keys = ("id", "name", "version", "params", "params_hash", "mode",
+            "effective_from", "effective_to")
+    return dict(zip(keys, r))
+
+
+def _notes_rows(conn, version_id: int):
+    rows = conn.execute(
+        "SELECT section, version_id, revision, body, authored_by, authored_at"
+        " FROM v_strategy_notes WHERE strategy_id=%s"
+        "   AND (version_id IS NULL OR version_id=%s)", ("flow_tan", version_id)
+    ).fetchall()
+    keys = ("section", "version_id", "revision", "body", "authored_by", "authored_at")
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def _cmd_strategy_spec(args) -> int:
+    """★戦略書(仕様)。下書きを作り、編集し、確定する。"""
+    from datetime import datetime
+
+    from .strategy_spec import (
+        current,
+        discard_draft,
+        missing_sections,
+        publish,
+        render,
+        save_draft,
+    )
+    with _tax_conn() as conn:
+        v = _version_row(conn, args.version)
+        if not v:
+            print("戦略の版がありません(run-day を1度通すと作られます)")
+            return 1
+        vid = v["id"]
+
+        if args.discard:
+            n = discard_draft(conn, vid)
+            print(f"下書きを {n} 件破棄しました" if n else "下書きはありません")
+            return 0
+        if args.publish:
+            r = publish(conn, vid, by=args.by)
+            if r["status"] != "published":
+                print(f"✗ {r['note']}")
+                return 1
+            print(f"✓ 確定しました v{v['version']} rev{r['revision']}"
+                  f" hash={r['hash'][:16]}…")
+            print("  確定版は変更できません(直す場合は生成し直して確定し直します)")
+            return 0
+        if args.show:
+            cur = current(conn, vid)
+            if not cur:
+                print("まだ生成されていません")
+                return 1
+            if args.out:
+                with open(args.out, "w", encoding="utf-8") as fh:
+                    fh.write(cur["markdown"])
+                print(f"書き出しました: {args.out}")
+            else:
+                print(cur["markdown"])
+            return 0
+        if args.edit:
+            with open(args.edit, encoding="utf-8") as fh:
+                body = fh.read()
+            r = save_draft(conn, vid, body)
+            print(f"下書きを更新しました(rev{r['revision']} / {r['status']})")
+            return 0
+
+        # 既定: 生成して下書きにする
+        notes = _notes_rows(conn, vid)
+        now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S JST")
+        md = render(v, notes, now=now)
+        r = save_draft(conn, vid, md, regenerate=True)
+        if r["status"] == "draft_exists":
+            print(f"- 下書きが既にあります(v{v['version']} rev{r['revision']})。"
+                  "編集内容を上書きしないため、生成はしていません。")
+            print("  作り直すなら先に --discard してください。")
+        else:
+            print(f"✓ 下書きを作りました v{v['version']} rev{r['revision']}")
+        miss = missing_sections(notes)
+        if miss:
+            print("")
+            print("  ★未記入の節があります(このままでは仮説も検証も無い資料になります):")
+            for sec in miss:
+                print(f"    {sec}: hro-ops strategy-note --section {sec}"
+                      f" --body-file <file> [--version {v['version']}]")
+        print("")
+        print(f"  確認: hro-ops strategy-spec --show [--out 戦略書.md]")
+        print(f"  確定: hro-ops strategy-spec --publish --by <承認者>")
+        return 0
+
+
+def _cmd_strategy_note(args) -> int:
+    """★戦略書のうち人が書く節を登録する(追記のみ)。"""
+    from .strategy_spec import save_note
+    body = (open(args.body_file, encoding="utf-8").read() if args.body_file
+            else (args.body or ""))
+    if not body.strip():
+        print("本文が空です(--body-file か --body)")
+        return 2
+    with _tax_conn() as conn:
+        vid = None
+        if args.version:
+            v = _version_row(conn, args.version)
+            if not v:
+                print(f"版 v{args.version} がありません")
+                return 1
+            vid = v["id"]
+        r = save_note(conn, section=args.section, body=body, version_id=vid,
+                      authored_by=args.by)
+    scope = f"v{args.version}" if args.version else "全版共通"
+    if r["status"] == "unchanged":
+        print(f"- {args.section}({scope})は前回と同じ内容です rev{r['revision']}")
+    else:
+        print(f"✓ {args.section}({scope})を登録しました rev{r['revision']}")
+    return 0
+
+
+def _cmd_strategy_change(args) -> int:
+    """★版の改訂理由と承認を記録する(⑩変更管理)。差分は自動で入っている。"""
+    with _tax_conn() as conn:
+        v = _version_row(conn, args.version)
+        if not v:
+            print(f"版 v{args.version} がありません")
+            return 1
+        conn.execute(
+            "UPDATE strategy_versions SET change_reason=coalesce(%s, change_reason),"
+            " approved_by=coalesce(%s, approved_by),"
+            " approved_at=CASE WHEN %s IS NOT NULL THEN now() ELSE approved_at END"
+            " WHERE id=%s", (args.reason, args.approved_by, args.approved_by, v["id"]))
+        row = conn.execute(
+            "SELECT change_reason, approved_by, approved_at, params_diff,"
+            " prev_version_id FROM strategy_versions WHERE id=%s", (v["id"],)).fetchone()
+    print(f"=== v{v['version']}(ID {v['id']}) ===")
+    print(f"  改訂理由 : {row[0] or '(未記入)'}")
+    print(f"  承認     : {row[1] or '(未記入)'} {str(row[2] or '')[:19]}")
+    print(f"  旧版     : {row[4] or '(なし。最初の版)'}")
+    diff = row[3] or {}
+    print(f"  差分     : {len(diff)} 件")
+    for k, d in sorted(diff.items()):
+        print(f"    {k}: {d.get('from')} → {d.get('to')}")
+    return 0
+
+
 def _cmd_strategy_doc(args) -> int:
     """★戦略書を生成する(コードと DB から。手書きしない)。"""
     from datetime import datetime
@@ -2167,8 +2323,39 @@ def main(argv: list[str] | None = None) -> int:
     p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
     p_dec.set_defaults(func=_cmd_decisions)
 
+    p_spec = sub.add_parser("strategy-spec",
+                            help="★戦略書(仕様)。下書きを作り、編集し、確定する")
+    p_spec.add_argument("--version", type=int, help="版(省略で live の現行版)")
+    p_spec.add_argument("--show", action="store_true", help="いまの内容を出す")
+    p_spec.add_argument("--out", help="--show の書き出し先(.md)")
+    p_spec.add_argument("--edit", metavar="FILE", help="編集した .md を下書きに反映")
+    p_spec.add_argument("--publish", action="store_true",
+                        help="下書きを確定する(以後変更できません)")
+    p_spec.add_argument("--discard", action="store_true", help="下書きを破棄する")
+    p_spec.add_argument("--by", help="確定した人")
+    p_spec.set_defaults(func=_cmd_strategy_spec)
+
+    p_note = sub.add_parser("strategy-note",
+                            help="★戦略書のうち人が書く節を登録(目的・検証など)")
+    p_note.add_argument("--section", required=True,
+                        choices=("purpose", "scope", "model", "evidence", "execution"))
+    p_note.add_argument("--body-file", help="本文の .md")
+    p_note.add_argument("--body", help="本文(短いとき)")
+    p_note.add_argument("--version", type=int,
+                        help="この版だけに効かせる(省略すると全版共通)")
+    p_note.add_argument("--by", help="記載者")
+    p_note.set_defaults(func=_cmd_strategy_note)
+
+    p_chg = sub.add_parser("strategy-change",
+                           help="★版の改訂理由と承認を記録(⑩変更管理)")
+    p_chg.add_argument("--version", type=int, required=True)
+    p_chg.add_argument("--reason", help="改訂理由")
+    p_chg.add_argument("--approved-by", help="承認者")
+    p_chg.set_defaults(func=_cmd_strategy_change)
+
     p_doc = sub.add_parser("strategy-doc",
-                           help="★戦略書を生成(コードと DB から。手書きしない)")
+                           help="★運用報告書を生成(購入額・回収率・網羅性。"
+                                "戦略の仕様は strategy-spec)")
     p_doc.add_argument("--year", required=True)
     p_doc.add_argument("--out", help="書き出し先(.md)")
     p_doc.add_argument("--save", action="store_true",

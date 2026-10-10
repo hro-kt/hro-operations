@@ -15,6 +15,17 @@ import hashlib
 import json
 
 STRATEGY_ID = "flow_tan"
+STRATEGY_NAME = "単勝オッズの直前変化(flow_tan)による選別購入"
+
+# 仕様のうち人が書く節(strategy_notes.section)。文書はこの順に並べる。
+NOTE_SECTIONS = ("purpose", "scope", "model", "evidence", "execution")
+SECTION_TITLE = {
+    "purpose": "目的・基本仮説",
+    "scope": "対象範囲(補記)",
+    "model": "モデル仕様",
+    "evidence": "収益性の検証",
+    "execution": "実行・例外処理",
+}
 
 RULE_TEXT = (
     "flow_tan(馬 i) = logit(share_i @ 発走-lead秒) − logit(share_i @ 発走-flow_min分)\n"
@@ -107,6 +118,34 @@ def describe(params: dict) -> str:
             f"/{f['flow_minutes']}min thr={thr} {bets} {band} mode={params['mode']}")
 
 
+def flatten(d: dict, prefix: str = "") -> dict:
+    """入れ子の設定を "flow.min_ninki" のような平らなキーにする(差分用)。"""
+    out: dict = {}
+    for k, v in d.items():
+        key = f"{prefix}{k}"
+        if isinstance(v, dict):
+            out.update(flatten(v, key + "."))
+        else:
+            out[key] = v
+    return out
+
+
+def params_diff(prev: dict | None, cur: dict) -> dict:
+    """前の版との差分。{key: {"from":…, "to":…}}。
+
+    ★⑩変更管理の「変更差分」。人が書くのは**理由**であって差分ではない。
+      差分を手で書かせると書き漏れるし、書いた内容が実際と合っている保証も無い。
+    """
+    if not prev:
+        return {}
+    a, b = flatten(prev), flatten(cur)
+    out: dict = {}
+    for k in sorted(set(a) | set(b)):
+        if a.get(k) != b.get(k):
+            out[k] = {"from": a.get(k), "to": b.get(k)}
+    return out
+
+
 def resolve_version(conn, params: dict, *, date: str, evidence: dict | None = None) -> int:
     """同じ設定の版が在ればその id、無ければ新しい版を起こして id を返す。
 
@@ -122,16 +161,26 @@ def resolve_version(conn, params: dict, *, date: str, evidence: dict | None = No
     if row:
         return int(row[0])
 
+    # ★旧版との関係と差分を**自動で**記録する(⑩)。人が書くのは理由であって
+    #   差分ではない。手で書かせると書き漏れるし、実際と合っている保証も無い。
+    prev = conn.execute(
+        "SELECT id, params FROM strategy_versions WHERE strategy_id=%s AND mode=%s"
+        " ORDER BY version DESC LIMIT 1", (STRATEGY_ID, params["mode"])).fetchone()
+    prev_id = int(prev[0]) if prev else None
+    diff = params_diff(prev[1] if prev else None, params)
+
     blob = json.dumps(params, ensure_ascii=False, sort_keys=True)
     ev = json.dumps(evidence or {}, ensure_ascii=False, sort_keys=True)
     row = conn.execute(
         "INSERT INTO strategy_versions"
-        " (strategy_id, version, params, params_hash, rule_text, evidence, mode,"
-        "  effective_from)"
-        " SELECT %s, coalesce(max(version),0)+1, %s::jsonb, %s, %s, %s::jsonb, %s, %s"
+        " (strategy_id, name, version, params, params_hash, rule_text, evidence, mode,"
+        "  effective_from, prev_version_id, params_diff)"
+        " SELECT %s, %s, coalesce(max(version),0)+1, %s::jsonb, %s, %s, %s::jsonb, %s,"
+        "        %s, %s, %s::jsonb"
         " FROM strategy_versions WHERE strategy_id=%s"
         " RETURNING id",
-        (STRATEGY_ID, blob, h, RULE_TEXT, ev, params["mode"], date, STRATEGY_ID)
+        (STRATEGY_ID, STRATEGY_NAME, blob, h, RULE_TEXT, ev, params["mode"], date,
+         prev_id, json.dumps(diff, ensure_ascii=False, sort_keys=True), STRATEGY_ID)
     ).fetchone()
     new_id = int(row[0])
     # 直前まで現行だった版を閉じる(同じ mode の中で)
