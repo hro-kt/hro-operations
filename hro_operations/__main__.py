@@ -1630,11 +1630,11 @@ def _cmd_tax_report(args) -> int:
         print(f"    買ったレース  : {c['bought_races']} ({c['bought_ratio']:.1%})")
     print("    月別:")
     for m in rep["monthly"]:
-        cm = c["by_month"].get(m["ym"], {})
+        # ★bought は購入**額**、bought_races はレース**数**
         print(f"      {m['ym']}  {m['days']:>2}日 購入{m['bought']:>10,}"
               f" 払戻{m['payout']:>10,}"
-              f"  対象{cm.get('races', 0):>4}R 当て{cm.get('evaluated', 0):>4}R"
-              f" 買{cm.get('bought', 0):>3}R")
+              f"  対象{m.get('races', 0):>4}R 当て{m.get('evaluated', 0):>4}R"
+              f" 買{m.get('bought_races', 0):>3}R")
     print("")
     print("  【所得の計算 ─ どちらを採るかは税理士の判断】")
     print(f"    雑所得(全額経費)   : {rep['tax']['zatsu']:>+12,} 円"

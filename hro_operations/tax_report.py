@@ -12,21 +12,18 @@ from __future__ import annotations
 # 一時所得の特別控除(所得税法34条3項)
 ICHIJI_DEDUCTION = 500_000
 
+# ★月次・年次の集計は **DB のビュー**(v_tax_month / v_tax_year)に置いてある。
+#   同じ集計を CLI と画面に書くと必ず片方だけ育って数字が食い違う。税務の資料で
+#   CLI と画面が違う額を出すのは致命的なので、定義は hro-db に1つだけ置く。
 _SQL_MONTHLY = """
-SELECT left(r.budget_key, 6) AS ym,
-       count(DISTINCT r.budget_key)::int                AS days,
-       count(*)::int                                    AS receipts,
-       sum(coalesce(r.bought, 0))::bigint               AS bought,
-       sum(coalesce(r.payout, 0))::bigint               AS payout
-FROM ipat_receipts r
-WHERE left(r.budget_key, 4) = %s
-GROUP BY 1 ORDER BY 1
+SELECT ym, days, receipts, bought, payout, races, evaluated, bought_races, gaps, tickets
+FROM v_tax_month WHERE yr = %s ORDER BY ym
 """
 
-_SQL_COVERAGE = """
-SELECT left(budget_key, 6) AS ym, status, count(*)::int, sum(n_bought)::int
-FROM race_coverage WHERE left(budget_key, 4) = %s
-GROUP BY 1, 2 ORDER BY 1, 2
+_SQL_YEAR = """
+SELECT months_active, days, receipts, bought, payout, pnl, roi,
+       races, evaluated, bought_races, gaps, tickets
+FROM v_tax_year WHERE yr = %s
 """
 
 # ★自動購入と手動購入の切り分け。v_vote_map の kind='manual' は
@@ -64,6 +61,13 @@ FROM tax_ledger_seals WHERE left(budget_key, 4) = %s
 """
 
 
+def _by_status(conn, year: str) -> dict:
+    """分類ごとのレース数。ビューは数だけなので内訳はここで引く。"""
+    rows = _rows(conn, "SELECT status, count(*)::int FROM race_coverage "
+                       "WHERE left(budget_key,4)=%s GROUP BY status", (year,))
+    return {r[0]: int(r[1]) for r in rows}
+
+
 def _rows(conn, sql, params):
     try:
         return conn.execute(sql, params).fetchall()
@@ -87,26 +91,16 @@ def zatsu_shotoku(bought_all: int, payout: int) -> int:
 
 def build(conn, year: str) -> dict:
     """年次の集計を組む。表示はしない(CLI と admin が使う)。"""
-    monthly = [{"ym": r[0], "days": r[1], "receipts": r[2],
-                "bought": int(r[3] or 0), "payout": int(r[4] or 0)}
-               for r in _rows(conn, _SQL_MONTHLY, (year,))]
-    bought = sum(m["bought"] for m in monthly)
-    payout = sum(m["payout"] for m in monthly)
-
-    cov: dict[str, dict] = {}
-    for ym, status, n, tickets in _rows(conn, _SQL_COVERAGE, (year,)):
-        e = cov.setdefault(ym, {"races": 0, "evaluated": 0, "bought": 0, "tickets": 0,
-                                "by_status": {}})
-        e["races"] += n
-        e["by_status"][status] = n
-        e["tickets"] += int(tickets or 0)
-        if status in ("bought", "no_candidate", "race_skipped"):
-            e["evaluated"] += n
-        if status == "bought":
-            e["bought"] += n
-    races = sum(c["races"] for c in cov.values())
-    evaluated = sum(c["evaluated"] for c in cov.values())
-    bought_races = sum(c["bought"] for c in cov.values())
+    cols = ("ym", "days", "receipts", "bought", "payout", "races", "evaluated",
+            "bought_races", "gaps", "tickets")
+    monthly = [dict(zip(cols, r)) for r in _rows(conn, _SQL_MONTHLY, (year,))]
+    yr = _rows(conn, _SQL_YEAR, (year,))
+    ycols = ("months_active", "days", "receipts", "bought", "payout", "pnl", "roi",
+             "races", "evaluated", "bought_races", "gaps", "tickets")
+    y = dict(zip(ycols, yr[0])) if yr else dict.fromkeys(ycols, 0)
+    bought, payout = int(y["bought"] or 0), int(y["payout"] or 0)
+    races, evaluated = int(y["races"] or 0), int(y["evaluated"] or 0)
+    bought_races = int(y["bought_races"] or 0)
 
     manual = [{"budget_key": r[0], "race_id": r[1], "bet_type": r[2],
                "selection_id": r[3], "amount": int(r[4] or 0), "receipt": r[5]}
@@ -129,19 +123,20 @@ def build(conn, year: str) -> dict:
     return {
         "year": year,
         "totals": {
-            "bought": bought, "payout": payout, "pnl": payout - bought,
-            "roi": (payout / bought) if bought else None,
-            "days": len({m["ym"] for m in monthly}) and sum(m["days"] for m in monthly),
-            "receipts": sum(m["receipts"] for m in monthly),
+            "bought": bought, "payout": payout, "pnl": int(y["pnl"] or 0),
+            "roi": (float(y["roi"]) if y["roi"] else None),
+            "days": int(y["days"] or 0), "receipts": int(y["receipts"] or 0),
         },
         "monthly": monthly,
-        "months_active": len([m for m in monthly if m["bought"] > 0]),
+        "months_active": int(y["months_active"] or 0),
         "coverage": {
             "races": races, "evaluated": evaluated,
             "evaluated_ratio": (evaluated / races) if races else None,
             "bought_races": bought_races,
             "bought_ratio": (bought_races / races) if races else None,
-            "by_month": cov,
+            "gaps": int(y["gaps"] or 0), "tickets": int(y["tickets"] or 0),
+            "by_month": {m["ym"]: m for m in monthly},
+            "by_status": _by_status(conn, year),
         },
         "manual": {"n": len(manual), "amount": sum(m["amount"] for m in manual),
                    "rows": manual},

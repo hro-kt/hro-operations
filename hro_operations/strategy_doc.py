@@ -93,10 +93,11 @@ def render(rep: dict, *, versions: list[dict], now: str) -> str:
     a("| 年月 | 購入日数 | 受付 | 購入額 | 払戻額 | 対象R | 規則を当てたR | 購入R |")
     a("|---|---|---|---|---|---|---|---|")
     for m in rep["monthly"]:
-        cm = c["by_month"].get(m["ym"], {})
+        # ★m['bought'] は購入**額**、m['bought_races'] はレース**数**。
+        #   同じ行に両方あるので取り違えると黙って別の数字が出る。
         a(f"| {m['ym']} | {m['days']} | {m['receipts']} | {m['bought']:,} "
-          f"| {m['payout']:,} | {cm.get('races', 0)} | {cm.get('evaluated', 0)} "
-          f"| {cm.get('bought', 0)} |")
+          f"| {m['payout']:,} | {m.get('races', 0)} | {m.get('evaluated', 0)} "
+          f"| {m.get('bought_races', 0)} |")
     a("")
 
     a("## 5. 網羅性")
@@ -111,11 +112,7 @@ def render(rep: dict, *, versions: list[dict], now: str) -> str:
     a("| 分類 | レース数 | 割合 |")
     a("|---|---|---|")
     from .coverage import STATUS_JP
-    by: dict[str, int] = {}
-    for cm in c["by_month"].values():
-        for k, n in cm.get("by_status", {}).items():
-            by[k] = by.get(k, 0) + n
-    for k, n in sorted(by.items(), key=lambda kv: -kv[1]):
+    for k, n in sorted((c.get("by_status") or {}).items(), key=lambda kv: -kv[1]):
         a(f"| {STATUS_JP.get(k, k)} | {n} | {_pct(n / c['races']) if c['races'] else '—'} |")
     a("")
 

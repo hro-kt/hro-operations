@@ -139,17 +139,17 @@ def _rep():
         "totals": {"bought": 1_284_000, "payout": 1_531_200, "pnl": 247_200,
                    "roi": 1.1925, "days": 14, "receipts": 312},
         "monthly": [{"ym": "202610", "days": 6, "receipts": 140,
-                     "bought": 540_000, "payout": 702_400}],
+                     "bought": 540_000, "payout": 702_400,
+                     "races": 480, "evaluated": 452, "bought_races": 118,
+                     "gaps": 28, "tickets": 260}],
         "months_active": 1,
         "coverage": {"races": 480, "evaluated": 452, "evaluated_ratio": 452 / 480,
                      "bought_races": 118, "bought_ratio": 118 / 480,
-                     "by_month": {"202610": {"races": 480, "evaluated": 452,
-                                             "bought": 118,
-                                             "by_status": {"bought": 118,
-                                                           "no_candidate": 310,
-                                                           "race_skipped": 24,
-                                                           "not_running": 20,
-                                                           "no_data": 8}}}},
+                     "gaps": 28, "tickets": 260,
+                     "by_status": {"bought": 118, "no_candidate": 310,
+                                   "race_skipped": 24, "not_running": 20,
+                                   "no_data": 8},
+                     "by_month": {}},
         "manual": {"n": 1, "amount": 400,
                    "rows": [{"budget_key": "20261010", "race_id": "R",
                              "bet_type": "umatan", "selection_id": "07-08",
@@ -221,3 +221,15 @@ def test_doc_names_the_source_tables():
     for t in ("ipat_receipts", "bet_orders", "bet_decision_logs",
               "strategy_versions", "race_coverage", "tax_ledger_seals"):
         assert t in d
+
+
+def test_doc_monthly_row_does_not_confuse_amount_with_race_count():
+    """★monthly 行は購入**額**(bought)とレース**数**(bought_races)を両方持つ。
+
+    取り違えると黙って別の数字が出る(月別の表に 540,000 R と並ぶ)。
+    """
+    d = _doc()
+    line = next(x for x in d.splitlines() if x.startswith("| 202610 |"))
+    cells = [c.strip() for c in line.strip("|").split("|")]
+    assert cells[3] == "540,000"      # 購入額
+    assert cells[7] == "118"          # 買ったレース数
