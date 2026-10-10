@@ -707,6 +707,30 @@ def lead_scan(db, races, leads: list[int], cfg: FlowConfig,
     return out
 
 
+def horse_gates(cfg: "FlowConfig", d: dict) -> list[dict]:
+    """1頭ぶんの選別規則を、**判定に使った値ごと**に並べて返す。
+
+    ★`eligible` はこれを使って絞る。判断の記録(bet_decision_logs)も同じものを
+      読む。別々に書くと、記録の方だけが現実とずれて**嘘の根拠**が残る。
+      「なぜ買った/買わなかった」を後から信じられる形にするのが目的なので、
+      判定の実体と記録は必ず同じ関数から出す。
+    """
+    gates: list[dict] = []
+    if cfg.max_odds > 0:
+        fo = d.get("fuku_odds")
+        gates.append({"rule": "fuku_odds<=max", "max": cfg.max_odds, "got": fo,
+                      "pass": fo is not None and fo <= cfg.max_odds})
+    if cfg.min_tan_odds > 0 or cfg.max_tan_odds > 0:
+        gates.append({"rule": "tan_odds band", "min": cfg.min_tan_odds or None,
+                      "max": cfg.max_tan_odds or None, "got": d.get("tan_odds"),
+                      "pass": _in_tan_band(cfg, d.get("tan_odds"))})
+    if cfg.min_ninki > 0 or cfg.max_ninki > 0:
+        gates.append({"rule": "ninki band", "min": cfg.min_ninki or None,
+                      "max": cfg.max_ninki or None, "got": d.get("ninki"),
+                      "pass": _in_ninki_band(cfg, d.get("ninki"))})
+    return gates
+
+
 def eligible(cfg: "FlowConfig", sc: dict) -> dict:
     """閾値を当てる**前**の母集団。スコア以外の選別規則をすべて適用する。
 
@@ -718,16 +742,8 @@ def eligible(cfg: "FlowConfig", sc: dict) -> dict:
     """
     if cfg.min_horses > 0 and len(sc) < cfg.min_horses:
         return {}
-    out = {}
-    for um, d in sc.items():
-        if cfg.max_odds > 0 and (d["fuku_odds"] is None or d["fuku_odds"] > cfg.max_odds):
-            continue
-        if not _in_tan_band(cfg, d["tan_odds"]):
-            continue
-        if not _in_ninki_band(cfg, d.get("ninki")):
-            continue
-        out[um] = d
-    return out
+    return {um: d for um, d in sc.items()
+            if all(g["pass"] for g in horse_gates(cfg, d))}
 
 
 def threshold_from(db, races, cfg: FlowConfig, quantile: float = 0.95) -> dict:
@@ -840,14 +856,117 @@ def _combo_orders(BetOrder, race_id: str, axis: str, d: dict, mates: list[str],
     return out
 
 
-def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str):
-    """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。"""
+DECISION_SCHEMA = 1
+
+
+def _race_gates(cfg: "FlowConfig", sc: dict, *, lead_used, window_sec,
+                thr: float | None) -> list[dict]:
+    """レース全体に効く規則(頭数・実効窓・閾値の有無)。"""
+    want = cfg.flow_minutes * 60 - cfg.lead_seconds
+    gates = [{"rule": "window", "want_sec": want, "got_sec": window_sec,
+              "tol_sec": cfg.window_tolerance_sec,
+              "pass": window_sec is None
+                      or abs(window_sec - want) <= cfg.window_tolerance_sec}]
+    if cfg.min_horses > 0:
+        gates.append({"rule": "min_horses", "min": cfg.min_horses, "got": len(sc),
+                      "pass": len(sc) >= cfg.min_horses})
+    gates.append({"rule": "threshold_for_lead", "lead_sec": lead_used,
+                  "table": sorted(cfg.thresholds or {}) or None, "got": thr,
+                  "pass": thr is not None})
+    return gates
+
+
+def decision_payload(cfg: "FlowConfig", d: dict | None, *, lead_used, window_sec,
+                     thr: float | None, race_gates: list[dict],
+                     bet_type: str, amount: int, combo: dict | None = None) -> dict:
+    """判断の根拠を**構造化して**残す(bet_decision_logs.constraints)。
+
+    ★reason の文字列だけでは後から切れない。「人気帯で落ちた件数」「窓ずれで
+      見送ったレース」を数えるのに正規表現を書く羽目になる。機械可読にしておく。
+    ★設定(どのロジックか)と観測値(何を見たか)と判定(どの規則で決まったか)を
+      分けて持つ。設定だけ分かっても、その日の値が無ければ再現できない。
+    """
+    gates = list(race_gates)
+    if d is not None:
+        gates += horse_gates(cfg, d)
+        if thr is not None:
+            gates.append({"rule": "flow_tan>=threshold", "threshold": thr,
+                          "got": d["score"], "pass": d["score"] >= thr})
+    out: dict = {
+        "v": DECISION_SCHEMA,
+        "strategy": "flow",
+        "rule": "flow_tan >= threshold",
+        "config": {
+            "source": cfg.source, "lead_sec": cfg.lead_seconds,
+            "flow_minutes": cfg.flow_minutes, "normalize": cfg.normalize,
+            "bet_type": cfg.bet_type, "partners": cfg.partners,
+            "min_ninki": cfg.min_ninki or None, "max_ninki": cfg.max_ninki or None,
+            "min_horses": cfg.min_horses or None, "max_odds": cfg.max_odds or None,
+            "min_tan_odds": cfg.min_tan_odds or None,
+            "max_tan_odds": cfg.max_tan_odds or None,
+            "max_per_race": cfg.max_per_race or None,
+        },
+        "threshold": {"value": thr, "lead_used_sec": lead_used,
+                      "table": {str(k): v for k, v in (cfg.thresholds or {}).items()}
+                                or None},
+        "gates": gates,
+        "bet": {"type": bet_type, "amount": amount},
+    }
+    if d is not None:
+        out["signal"] = {
+            "name": "flow_tan", "score": d["score"],
+            "lead_late_sec": d.get("lead_late"), "lead_early_sec": d.get("lead_early"),
+            "window_sec": window_sec,
+            "ts_late": _hhmmss(d.get("ts_late")), "ts_early": _hhmmss(d.get("ts_early")),
+        }
+        out["market"] = {"tan_odds": d.get("tan_odds"), "fuku_odds": d.get("fuku_odds"),
+                         "ninki": d.get("ninki")}
+    if combo:
+        out["combo"] = combo
+    return out
+
+
+def _dlog(race_id: str, selection_id: str, bet_type: str, *, accepted: bool,
+          reason: str, odds: float, amount: int, payload: dict):
+    from hro_optimizer.models import DecisionLog
+    return DecisionLog(
+        race_id=race_id, selection_id=selection_id, bet_type=bet_type,
+        decision=("accepted" if accepted else "rejected"), reason=reason,
+        probability=0.0, odds=odds or 0.0, expected_return=0.0, edge=0.0,
+        recommended_amount=(amount if accepted else 0), constraints=payload)
+
+
+def _failed(gates: list[dict]) -> str:
+    """落ちた規則を1行で。reason 欄(人が読む側)に入れる。"""
+    bad = [g for g in gates if not g["pass"]]
+    return "; ".join(f"{g['rule']}({g.get('got')})" for g in bad) if bad else "all gates passed"
+
+
+def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str,
+                logs: list | None = None):
+    """閾値を超えた馬の複勝 BetOrder を作る。モデルは使わない。
+
+    ★logs を渡すと、**評価した全頭ぶん**の判断記録(DecisionLog)を積む。
+      採用だけでなく却下も残すのは、「なぜこの馬だけ買ったのか」が却下側を
+      見ないと分からないため。constraints に設定・観測値・各規則の判定が入る。
+      リアルタイムの発注経路では使わない(呼び出し側が後で DB へ書く)。
+    """
     from hro_moneymanager.models import BetOrder
 
     race_id = "".join(race)
+    bt = _BET_TYPE[cfg.bet_type]
     sc = flow_scores(db, race, cfg)
     if not sc:
         log.info("%s: flow スコア算出不可(スナップショット不足)", race_id)
+        if logs is not None:
+            gates = [{"rule": "snapshots", "got": 0, "pass": False}]
+            logs.append(_dlog(race_id, "*", bt, accepted=False,
+                              reason="スナップショット不足でスコアを出せない",
+                              odds=0.0, amount=amount,
+                              payload=decision_payload(
+                                  cfg, None, lead_used=None, window_sec=None,
+                                  thr=None, race_gates=gates,
+                                  bet_type=bt, amount=amount)))
         return []
     # ★実際に使ったスナップのリードで閾値を選ぶ。配信遅れでレースごとに T-120s に
     #   なったり T-180s になったりするため、固定の閾値だと片方で全く買わない。
@@ -857,22 +976,34 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
     #   閾値を当てても意味がない(格子の穴で起きる)。
     want = cfg.flow_minutes * 60 - cfg.lead_seconds
     got = first.get("window_sec")
+    def _skip_race(thr_val, msg: str):
+        """レース全体を見送るときに、理由を1行だけ記録する。"""
+        if logs is not None:
+            gates = _race_gates(cfg, sc, lead_used=lead_used, window_sec=got, thr=thr_val)
+            logs.append(_dlog(race_id, "*", bt, accepted=False, reason=msg,
+                              odds=0.0, amount=amount,
+                              payload=decision_payload(
+                                  cfg, None, lead_used=lead_used, window_sec=got,
+                                  thr=thr_val, race_gates=gates,
+                                  bet_type=bt, amount=amount)))
+        return []
+
     if got is not None and abs(got - want) > cfg.window_tolerance_sec:
         log.warning("%s: 実効窓 %ds が想定 %ds から外れているため見送り"
                     "(決定 T-%ss / 起点 T-%ss)",
                     race_id, got, want, lead_used, first.get("lead_early"))
-        return []
+        return _skip_race(None, f"実効窓 {got}s が想定 {want}s から外れている")
     # ★複勝の払戻対象頭数はレースの出走頭数で変わる(8頭以上=3着まで / 5〜7頭=2着まで /
     #   4頭以下=発売なし)。2着までのレースを混ぜると条件が揃わない。
     if cfg.min_horses > 0 and len(sc) < cfg.min_horses:
         log.info("%s: 出走 %d 頭は下限 %d 頭未満のため見送り(複勝の払戻対象が変わる)",
                  race_id, len(sc), cfg.min_horses)
-        return []
+        return _skip_race(None, f"出走 {len(sc)} 頭が下限 {cfg.min_horses} 頭未満")
     thr = threshold_for(cfg, lead_used)
     if thr is None:
         log.warning("%s: 実測リード T-%ss の閾値が未設定のため見送り(設定: %s)",
                     race_id, lead_used, sorted(cfg.thresholds or {}))
-        return []
+        return _skip_race(None, f"実測リード T-{lead_used}s の閾値が未設定")
     # ★組み合わせ券は「軸 × 相手」。相手は**人気上位N頭**(flow 上位ではない)。
     #   軸に要るのは「市場が間違っている馬」=変化量だが、相手に要るのは
     #   「2着に来る素の確率」=水準で、それを最もよく表すのが人気。
@@ -883,11 +1014,45 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         mates = [u for u, _d in sorted(sc.items(), key=lambda kv: kv[1]["ninki"])
                  if sc[u]["ninki"] <= cfg.partners]
 
+    rgates = _race_gates(cfg, sc, lead_used=lead_used, window_sec=got, thr=thr)
+
+    def _log_horse(um: str, d: dict, *, accepted: bool, odds: float,
+                   combo_info: dict | None = None, note: str = "") -> None:
+        """1頭ぶんの判断を記録する。**却下も残す**。
+
+        ★「なぜこの馬だけ買ったのか」は、買わなかった馬の理由が無いと答えられない。
+        """
+        if logs is None:
+            return
+        payload = decision_payload(cfg, d, lead_used=lead_used, window_sec=got,
+                                   thr=thr, race_gates=rgates, bet_type=bt,
+                                   amount=amount, combo=combo_info)
+        reason = note or _failed(payload["gates"])
+        sel = f"{um}-{combo_info['mate']}" if combo_info else um
+        logs.append(_dlog(race_id, sel, bt, accepted=accepted, reason=reason,
+                          odds=odds, amount=amount, payload=payload))
+
+    picked = eligible(cfg, sc)
+    if logs is not None:
+        # ★母集団から落ちた馬(オッズ帯・人気帯)を先に記録する。閾値の手前で
+        #   消えているので、下のループには現れない。
+        for um, d in sc.items():
+            if um not in picked:
+                _log_horse(um, d, accepted=False, odds=d.get("tan_odds") or 0.0)
+
     orders = []
-    for um, d in sorted(eligible(cfg, sc).items(), key=lambda kv: -kv[1]["score"]):
+    for um, d in sorted(picked.items(), key=lambda kv: -kv[1]["score"]):
         if d["score"] < thr:
+            _log_horse(um, d, accepted=False, odds=d.get("tan_odds") or 0.0)
             continue
         if combo:
+            for mate in mates:
+                if mate != um:
+                    _log_horse(um, d, accepted=True, odds=d.get("tan_odds") or 0.0,
+                               combo_info={"axis": um, "mate": mate,
+                                           "mate_ninki": sc[mate].get("ninki"),
+                                           "partners": cfg.partners,
+                                           "mate_rule": "人気上位N頭(flow 上位ではない)"})
             orders += _combo_orders(BetOrder, race_id, um, d, mates, cfg,
                                     amount, model_version, thr, lead_used)
             continue
@@ -914,11 +1079,25 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
                     f"late={_hhmmss(d['ts_late'])} early={_hhmmss(d['ts_early'])} "
                     f"src={cfg.source}"),
         ))
+        _log_horse(um, d, accepted=True,
+                   odds=(d["tan_odds"] if cfg.bet_type == "tan" else d["fuku_odds"]) or 0.0)
     if cfg.max_per_race > 0 and len(orders) > cfg.max_per_race:
         log.info("%s: 候補 %d 頭のうち上位 %d 頭に絞ります"
                  "(順次処理では2件目以降が締切を超えるため)",
                  race_id, len(orders), cfg.max_per_race)
+        dropped = {o.selection_id for o in orders[cfg.max_per_race:]}
         orders = orders[:cfg.max_per_race]       # flow_orders はスコア降順に作っている
+        if logs is not None:
+            # ★max_per_race で落ちた馬は「規則としては通ったが枠が無かった」。
+            #   規則落ちと混ぜると、閾値の効き具合を見誤る。
+            for lg in logs:
+                if lg.decision == "accepted" and lg.selection_id in dropped:
+                    lg.decision = "rejected"
+                    lg.recommended_amount = 0
+                    lg.reason = f"max_per_race={cfg.max_per_race} の枠外(規則は通過)"
+                    lg.constraints["gates"].append(
+                        {"rule": "max_per_race", "max": cfg.max_per_race,
+                         "got": len(dropped) + cfg.max_per_race, "pass": False})
     log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, 実測 T-%ss, src=%s)",
              race_id, len(orders), len(sc), thr, lead_used, cfg.source)
     return orders

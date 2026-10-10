@@ -1430,6 +1430,113 @@ def _cmd_netkeiba_compare(args) -> int:
     return 0
 
 
+_GATE_JP = {
+    "snapshots": "スナップショット",
+    "window": "実効窓",
+    "min_horses": "出走頭数",
+    "threshold_for_lead": "そのリードの閾値",
+    "fuku_odds<=max": "複勝オッズ上限",
+    "tan_odds band": "単勝オッズ帯",
+    "ninki band": "人気帯",
+    "flow_tan>=threshold": "flow_tan が閾値以上",
+    "max_per_race": "1レースの点数上限",
+}
+
+
+def _num(v):
+    """小数はそのまま出すと桁が邪魔なので丸める(値の大小が分かればよい)。"""
+    return f"{v:.4f}" if isinstance(v, float) else v
+
+
+def _fmt_gate(g: dict) -> str:
+    name = _GATE_JP.get(g.get("rule"), str(g.get("rule")))
+    want = [f"{k}={_num(v)}" for k, v in g.items()
+            if k not in ("rule", "pass", "got") and v is not None]
+    mark = "○" if g.get("pass") else "✗"
+    return (f"      {mark} {name}: 実測={_num(g.get('got'))}"
+            + (f" / {' '.join(want)}" if want else ""))
+
+
+def _cmd_decisions(args) -> int:
+    """★購入指示ごとの判断根拠を読み出す(bet_decision_logs)。
+
+    「どのロジックでどう判断したか」を後から確かめるための出口。開催中は書くだけで、
+    読むのはいつでもよい。
+    """
+    import json as _json
+
+    import psycopg
+
+    from hro_buyer.postgres import PostgresConfig
+
+    where = ["budget_key = %s"]
+    params: list = [args.date]
+    if args.race:
+        where.append("race_id = %s")
+        params.append(args.race)
+    if not args.all:
+        where.append("decision = 'accepted'")
+    sql = ("SELECT race_id, selection_id, bet_type, decision, reason, "
+           "       recommended_amount, constraints, decided_at "
+           "FROM bet_decision_logs WHERE " + " AND ".join(where) +
+           " ORDER BY race_id, decision DESC, selection_id")
+    with psycopg.connect(PostgresConfig.from_env().conninfo) as conn:
+        rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        print(f"{args.date}: 判断の記録がありません"
+              "(run-day を通した開催日のみ。--all で却下も出ます)")
+        return 1
+    if args.json:
+        print(_json.dumps([{
+            "race_id": r[0], "selection_id": r[1], "bet_type": r[2], "decision": r[3],
+            "reason": r[4], "amount": r[5], "constraints": r[6],
+            "decided_at": str(r[7])} for r in rows], ensure_ascii=False, indent=2))
+        return 0
+
+    cur_race = None
+    for race_id, sel, bt, dec, reason, amount, c, at in rows:
+        if race_id != cur_race:
+            cur_race = race_id
+            print("")
+            print(f"=== {race_id} ===")
+            cfg = (c or {}).get("config") or {}
+            thr = (c or {}).get("threshold") or {}
+            print(f"  ロジック: {(c or {}).get('rule', '-')}"
+                  f"  (信号源={cfg.get('source')} 決定=発走-{cfg.get('lead_sec')}s"
+                  f" 起点=発走-{cfg.get('flow_minutes')}分)")
+            band = [f"{k}={v}" for k, v in cfg.items()
+                    if k.startswith(("min_", "max_")) and v is not None]
+            if band:
+                print(f"  選別条件: {' '.join(band)}")
+            lead = thr.get("lead_used_sec")
+            print(f"  閾値: {_num(thr.get('value'))}"
+                  f" (実測リード {('T-%ss' % lead) if lead is not None else '不明'})")
+        sig = (c or {}).get("signal") or {}
+        mk = (c or {}).get("market") or {}
+        mark = "★買" if dec == "accepted" else "  見送"
+        head = (f"  {mark} {sel:<6} {bt:<7}" if sel != "*"
+                else f"  {mark} レース全体")
+        print(f"{head} {('%d円' % amount) if amount else ''}")
+        if sig:
+            print(f"      flow_tan={sig.get('score'):+.4f}"
+                  f"  単勝={mk.get('tan_odds')} 複勝={mk.get('fuku_odds')}"
+                  f" {mk.get('ninki')}人気"
+                  f"  窓={sig.get('window_sec')}s {sig.get('ts_early')}→{sig.get('ts_late')}")
+        for g in (c or {}).get("gates") or []:
+            if args.all or not g.get("pass"):
+                print(_fmt_gate(g))
+        if (c or {}).get("combo"):
+            cb = c["combo"]
+            print(f"      組: 軸={cb.get('axis')} 相手={cb.get('mate')}"
+                  f"({cb.get('mate_ninki')}人気) ← {cb.get('mate_rule')}")
+        if dec != "accepted":
+            print(f"      → {reason}")
+
+    print("")
+    print(f"  計 {len(rows)} 件")
+    return 0
+
+
 def _cmd_settle_pending(args) -> int:
     """★払戻が届いた開催日をまとめて決済する(開催日の数日後に回す)。"""
     from .orchestrator import SettleConfig, run_settle
@@ -1824,6 +1931,15 @@ def main(argv: list[str] | None = None) -> int:
     p_rd.add_argument("--dry-run", action="store_true",
                       help="計画と停止時刻だけ出して終わる(ジョブを投入しない)")
     p_rd.set_defaults(func=_cmd_race_day)
+
+    p_dec = sub.add_parser("decisions",
+                           help="★購入指示ごとの判断根拠を読み出す(なぜ買った/買わなかった)")
+    p_dec.add_argument("--date", required=True, help="開催日 YYYYMMDD(budget_key)")
+    p_dec.add_argument("--race", help="レースID(16桁)で絞る")
+    p_dec.add_argument("--all", action="store_true",
+                       help="却下(買わなかった馬・見送ったレース)と通過した規則も出す")
+    p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
+    p_dec.set_defaults(func=_cmd_decisions)
 
     p_sp = sub.add_parser("settle-pending",
                           help="★払戻が届いた開催日をまとめて決済(開催の3〜5日後に回す)")

@@ -919,7 +919,10 @@ def test_threshold_and_orders_use_the_same_population():
     i = src.index("def flow_orders(")
     j = src.index("\ndef ", i + 1)          # ★次の関数まで。backtest は別経路で独自に絞る
     orders = src[i:j]
-    assert "eligible(cfg, sc).items()" in orders, "flow_orders が eligible を通っていない"
+    assert "eligible(cfg, sc)" in orders, "flow_orders が eligible を通っていない"
+    # ★絞った集合をそのまま回すこと。sc を直接回す行が増えたら母集団がずれている
+    #   (判断の記録のために sc を舐める行はあるが、発注の走査は picked でなければならない)
+    assert "for um, d in sorted(picked.items()" in orders
     # 個別の絞り込みが flow_orders に残っていない(= eligible に一本化されている)
     for leaked in ("_in_tan_band(cfg,", "_in_ninki_band(cfg,"):
         assert leaked not in orders, f"flow_orders に選別が残っている: {leaked}"

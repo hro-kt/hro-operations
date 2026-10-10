@@ -245,7 +245,8 @@ def bet_plan(cfg: "DayConfig") -> list[tuple[str, int]]:
     return out or [("fuku", cfg.flat_amount)]
 
 
-def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tuple[dict | None, list]:
+def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...],
+                  logs: list | None = None) -> tuple[dict | None, list]:
     """1レースの発注候補を live オッズで判断(較正→er_cal帯選別→分数Kelly)。
     戻り (abilities_dict|None, orders)。abilities は監視用 prediction_log 記録に使う。
 
@@ -281,7 +282,8 @@ def decide_orders(cfg: DayConfig, win_b, place_b, race: tuple[str, ...]) -> tupl
             #   素直に券種ごとに呼ぶ。1レース2回のDB往復は preselect より手前で済む。
             orders = []
             for bt, amount in bet_plan(cfg):
-                orders += flow_orders(db, race, replace(fc, bet_type=bt), amount, mv)
+                orders += flow_orders(db, race, replace(fc, bet_type=bt), amount, mv,
+                                      logs=logs)
             return None, orders
         finally:
             db.close()
@@ -315,11 +317,15 @@ class _MultiResultSink:
 
 
 def _clear_race(cfg: DayConfig, race_id: str) -> None:
-    """当該レース×budget_key の bet_orders/bet_results を削除(④再実行の重複防止=冪等)。"""
+    """当該レース×budget_key の bet_orders/bet_decision_logs/bet_results を削除(冪等)。"""
     import psycopg
     pg = PostgresConfig.from_env()
     with psycopg.connect(pg.conninfo) as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM bet_orders   WHERE race_id=%s AND budget_key=%s", (race_id, cfg.date))
+        # ★判断の記録も消す。消さないと再実行のたびに同じレースの却下理由が積み上がり、
+        #   「人気帯で落ちた頭数」のような集計が壊れる。
+        cur.execute("DELETE FROM bet_decision_logs WHERE race_id=%s AND budget_key=%s",
+                    (race_id, cfg.date))
         # live で成立(submitted/unknown)した行は監査記録なので絶対に消さない
         # (再起動時の preload の元でもある)。それ以外(paper/dry_run/skipped/failed)は消して再記録。
         cur.execute("DELETE FROM bet_results  WHERE race_id=%s AND budget_key=%s "
@@ -328,13 +334,22 @@ def _clear_race(cfg: DayConfig, race_id: str) -> None:
         conn.commit()
 
 
-def _persist_orders(cfg: DayConfig, orders: list) -> None:
-    """発注候補を bet_orders(+ decision_logs は空) へ記録(admin「購入指示」に反映)。"""
+def _persist_orders(cfg: DayConfig, orders: list, logs: list | None = None) -> None:
+    """発注候補を bet_orders へ、判断の根拠を bet_decision_logs へ記録する。
+
+    ★以前は decision_logs を空で渡していた。「どのロジックでこう判断した」が
+      bet_orders.reason の**文字列**にしか無く、後から機械的に切れなかった。
+      flow は評価した全頭ぶん(却下も)を constraints に構造化して積む。
+    """
     from hro_moneymanager.postgres import PostgresOrderSink
+    now = datetime.now(JST)
+    for lg in (logs or []):
+        if getattr(lg, "decided_at", None) is None:
+            lg.decided_at = now
     sink = PostgresOrderSink(PostgresConfig.from_env(), budget_key=cfg.date,
-                             decided_at=datetime.now(JST))
+                             decided_at=now)
     try:
-        sink.emit(orders, [])
+        sink.emit(orders, list(logs or []))
     finally:
         close = getattr(sink, "close", None)
         if callable(close):
@@ -466,14 +481,18 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor
     """1レース: 判断 → 予測ログ記録 → bet_orders 記録 → (発注があれば) 購入実行(bet_results)。
     executor は live のとき build_day_executor で作った日次共有 executor(paper は None)。"""
     race_id = "".join(race)
-    abilities, orders = decide_orders(cfg, win_b, place_b, race)
+    logs: list = []
+    abilities, orders = decide_orders(cfg, win_b, place_b, race, logs=logs)
     if abilities is not None:
         _persist_predictions(cfg, race, win_b, abilities)  # 全馬予測を監視用に保存(発注有無に関わらず)
     _clear_race(cfg, race_id)  # 再実行/古い残骸を除去してから記録(冪等)
     if not orders:
         log.info("%s: 発注なし(live odds未取得 or 条件を満たす候補なし)", race_id)
+        # ★買わなかったレースこそ理由を残す。「なぜ今日は3件しか買っていないのか」は
+        #   却下の記録が無いと答えられない(2026-10-04 の『全然ダメそう』がその形)。
+        _persist_orders(cfg, [], logs)
         return
-    _persist_orders(cfg, orders)          # bet_orders(admin「購入指示」)
+    _persist_orders(cfg, orders, logs)    # bet_orders(admin「購入指示」)+ 判断の記録
     res = execute_orders(cfg, orders, executor)   # 実行 → JSONL + bet_results
     log.info("%s: %d件発注 -> %s (intended=%d円) DB+追記=%s",
              race_id, len(orders), res.count_by_status(), res.total_amount, cfg.results_path)
