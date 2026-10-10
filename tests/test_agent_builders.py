@@ -224,9 +224,37 @@ def test_race_day_passes_own_job_id_as_parent(monkeypatch):
 
 def test_race_day_flags(monkeypatch):
     monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
-    cmd, _, _ = agent._b_race_day(_race_day_args(no_sync=True, dry_run=True))
-    assert "--no-sync" in cmd and "--dry-run" in cmd
-    assert "--no-netkeiba" not in cmd and "--no-run-odds" not in cmd
+    cmd, _, _ = agent._b_race_day(_race_day_args(no_netkeiba=True, dry_run=True))
+    assert "--no-netkeiba" in cmd and "--dry-run" in cmd
+    assert "--no-run-odds" not in cmd
+
+
+def test_race_day_does_not_carry_sync_or_settlement(monkeypatch):
+    """★同期と決済は開催日のジョブに入れない(払戻は開催の3〜5日後)。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, _, _ = agent._b_race_day(_race_day_args())
+    assert "--no-sync" not in cmd and "--no-settle" not in cmd
+
+
+def test_settle_pending_finds_its_own_dates():
+    """日付を渡さなければ自分で探す(開催日ごとに人が覚えておかなくて済む)。"""
+    cmd, cwd, _ = agent._b_settle_pending({})
+    assert cmd[:4] == ["poetry", "run", "hro-ops", "settle-pending"]
+    assert "--dates" not in cmd
+    assert _opt(cmd, "--target") == "vm"
+    assert cwd.endswith("hro-operations")
+
+
+def test_settle_pending_validates_explicit_dates():
+    cmd, _, _ = agent._b_settle_pending({"dates": "20261004,20261005"})
+    assert _opt(cmd, "--dates") == "20261004,20261005"
+    with pytest.raises(ValueError):
+        agent._b_settle_pending({"dates": "2026-10-04"})
+
+
+def test_settle_pending_registered_on_both_servers():
+    assert agent._COMMANDS["vm"]["settle_pending"] is agent._b_settle_pending
+    assert agent._COMMANDS["windows"]["settle_pending"] is agent._b_settle_pending
 
 
 def test_race_day_registered_on_both_servers():

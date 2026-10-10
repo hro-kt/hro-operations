@@ -70,41 +70,40 @@ def start_steps(date: str, flow_args: dict, *, flow_target: str = "windows",
     return steps
 
 
-def finish_steps(date: str, *, close_target: str = "vm",
-                 settle_dates: list[str] | None = None,
-                 with_sync: bool = True) -> list[Step]:
-    """最終レース後。**常駐を止めてから** JV-Link を使う手順へ進む。
+def finish_steps(date: str, *, close_target: str = "vm") -> list[Step]:
+    """最終レース後。**常駐を止めてから**、当日にしかできないことだけをやる。
 
-    順番は **締め → 同期 → 後日分の決済**。
-
-    ★締めを先にする。close_day は IPAT の**投票履歴**を読むが、IPAT で遡れるのは
-      当日と前日だけで、夜間メンテの時間帯もある。**期限があるのは締めの方**で、
-      同期には期限が無い。sync_all は全種別の差分を取る重いジョブなので、先に
-      置くと長引いたぶんだけ締めが後ろへずれ、最悪その日の記録を取り損ねる。
-    ★順番を入れ替えても困らない: close_day は JV-Link も JV-Data も使わない
-      (IPAT と自分の DB だけ)。走る機械も別(締め=VM / 同期=Windows)。
+    ★当日やる価値があるのは締めだけ。close_day は IPAT の**投票履歴**を読むが、
+      IPAT で遡れるのは当日と前日だけで、夜間メンテの時間帯もある。**期限が
+      あるのはここ**。
     ★当日の締めは必ず no_settle。**払戻(HR)は開催の3〜5日後にしか配信されない**
       (2026-09-22 実測: 9/12・9/13 開催分の make_date が 9/14、受信は 9/17)。
       当日に決済を回しても nl_hr が空で settled=False になるだけで、何も確定しない。
       当日に出せる確定値は **IPAT 自身の記録**(受付明細の払戻)の方で、close_day は
-      それを取り込んで損益まで出す。こちらは当日に意味がある。
-    ★sync_all の当日の役目は「今日の結果を取ること」ではなく、**過去の開催日の払戻が
-      届いていれば取り込むこと**。だから同期の後に、決済待ちの過去日を片付ける。
+      それを取り込んで損益まで出す。
+    ★JV-Data 同期と決済は**当日のジョブに入れない**。どちらも期限が無く、同期は
+      全種別の差分を取る重いジョブで時間が読めない。当日の経路に置くと、長引いた
+      ぶんだけ締めが危うくなるだけで、得るものが無い。別日に settle_steps で回す。
     """
-    steps: list[Step] = [
-        Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
-             {"date": date, "no_settle": True}),
-    ]
+    return [Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
+                 {"date": date, "no_settle": True})]
+
+
+def settle_steps(dates: list[str], *, target: str = "vm",
+                 with_sync: bool = True) -> list[Step]:
+    """後日(払戻が届いてから)の手順。開催日とは別に回す。
+
+    ★sync_all に date を**渡さない**。date を渡すと SYNC_SMART が切れて
+      「その日以降のみ」になり、取りに行きたい**過去の開催日の払戻**が入らない
+      (_b_sync_all 参照)。空にすると種別ごとに DB の frontier から自動差分で取る。
+    ★同期は時間が読めないので待ち時間を長めに。待ち切れなくてもジョブは止めない。
+    """
+    steps: list[Step] = []
     if with_sync:
-        # ★date を**渡さない**。date を渡すと SYNC_SMART が切れて「その日以降のみ」に
-        #   なり、取りに行きたい**過去の開催日の払戻**が入らない(_b_sync_all 参照)。
-        #   空にすると種別ごとに DB の frontier から自動差分で取る。
-        # ★全種別の差分を取るので時間が読めない。既定の待ち時間だと終わる前に
-        #   見限ってしまい、そのぶん後日分の決済が1開催遅れる。
-        steps.append(Step("JV-Data 同期(過去日の払戻を取り込む)", "sync_all", "windows",
+        steps.append(Step("JV-Data 同期(払戻を取り込む)", "sync_all", "windows",
                           {}, jvlink=True, timeout_seconds=4 * 3600.0))
-    for d in (settle_dates or []):
-        steps.append(Step(f"決済 {d}(払戻との突合)", "settle", close_target,
+    for d in dates:
+        steps.append(Step(f"決済 {d}(払戻との突合)", "settle", target,
                           {"date": d, "from_db": True, "modes": "live"}))
     return steps
 
@@ -353,11 +352,6 @@ class OrchestratorConfig:
     close_target: str = "vm"           # 締めは JV-Link を使わないので VM が安定
     with_run_odds: bool = True
     with_netkeiba: bool = True
-    with_sync: bool = True
-    # ★当日の決済はしない(払戻は3〜5日後)。代わりに「届いた分」を片付ける
-    settle_pending: bool = True
-    settle_within_days: int = 28
-    max_settle_dates: int = 5
     stop_after_minutes: int = 3        # 最終発走 + これ分 で常駐を止める
     max_restarts: int = 3              # 常駐1本あたりの再投入上限
     poll_seconds: float = 20.0
@@ -371,8 +365,7 @@ def run(cfg: OrchestratorConfig) -> int:
     """開催日を1本で回す。戻り値は終了コード。"""
     steps = start_steps(cfg.date, cfg.flow_args, flow_target=cfg.flow_target,
                         with_netkeiba=cfg.with_netkeiba, with_run_odds=cfg.with_run_odds)
-    # 決済待ちの過去日は sync_all の後でないと分からないので、ここでは入れない
-    fin = finish_steps(cfg.date, close_target=cfg.close_target, with_sync=cfg.with_sync)
+    fin = finish_steps(cfg.date, close_target=cfg.close_target)
 
     conflict = jvlink_conflict(steps)
     if conflict:
@@ -389,8 +382,8 @@ def run(cfg: OrchestratorConfig) -> int:
     print(describe(fin), flush=True)
     _log("※ 当日の締めは決済まで行きません。**払戻(HR)は開催の3〜5日後**にしか"
          "配信されないためです。当日の確定値は IPAT 自身の記録(受付明細)から出ます。")
-    if cfg.settle_pending:
-        _log("※ 同期の後、払戻が届いている過去の開催日があれば、その決済もここで片付けます。")
+    _log("※ JV-Data 同期と決済は当日やりません。別ジョブ『払戻の取込と決済』"
+         "(hro-ops settle-pending)で、数日後に回してください。")
 
     try:
         conn = _connect()
@@ -555,40 +548,97 @@ def _run_step(conn, step: Step, cfg: OrchestratorConfig) -> str:
 def _finish(conn, fin: list[Step], cfg: OrchestratorConfig) -> int:
     """最終レース後の手順を**順番に**流す。前が終わるまで次を出さない。
 
-    ★当日の締め(close_day)は決済まで行かない。払戻は3〜5日後にしか来ないので、
-      当日に回しても空振りするだけ。当日の確定値は IPAT 自身の記録から出る。
-    ★sync_all が終わって初めて「払戻が届いた過去日」が分かる。決済はそこで積む。
+    ★当日やるのは締めだけ。JV-Data 同期と決済は別日(settle-pending)に回す。
     """
     rc = 0
-    synced = True
     for step in fin:
         st = _run_step(conn, step, cfg)
         if st == "canceled":
             return 1
         if st != "done":
             rc = 1
-            if step.kind == "sync_all":
-                synced = False
-                _log("   同期に失敗したので、過去日の決済は見送ります"
-                     "(当日の締めはそのまま続けます)")
-
-    if not cfg.settle_pending:
-        return rc
-    if not synced:
-        return rc
-    dates = pending_settlement_dates(conn, cfg.date, days=cfg.settle_within_days,
-                                     limit=cfg.max_settle_dates)
-    if not dates:
-        _log("決済待ちで払戻が届いている過去の開催日はありません"
-             "(払戻は開催の3〜5日後に配信されます)")
-        return rc
-    _log(f"払戻が届いた過去の開催日 {len(dates)} 件を決済します: {', '.join(dates)}")
-    for d in dates:
-        step = Step(f"決済 {d}(払戻との突合)", "settle", cfg.close_target,
-                    {"date": d, "from_db": True, "modes": "live"})
-        st = _run_step(conn, step, cfg)
-        if st == "canceled":
-            return 1
-        if st != "done":
-            rc = 1
     return rc
+
+
+# --------------------------------------------------------------------------
+# 後日(払戻が届いてから)の決済。開催日のジョブとは別に回す。
+# --------------------------------------------------------------------------
+
+@dataclass
+class SettleConfig:
+    """`hro-ops settle-pending` の設定。日付を指定しなければ自分で探す。"""
+
+    dates: list[str] = field(default_factory=list)
+    target: str = "vm"                 # 決済を走らせる機(DB しか触らない)
+    with_sync: bool = True
+    within_days: int = 28
+    max_dates: int = 10
+    poll_seconds: float = 30.0
+    finish_timeout_seconds: float = 3600.0
+    dry_run: bool = False
+    job_id: int | None = None
+
+
+def run_settle(cfg: SettleConfig) -> int:
+    """払戻を取り込んで、決済待ちの開催日をまとめて片付ける。
+
+    ★**払戻(HR)は開催の3〜5日後にしか配信されない**。開催日ごとに人が思い出して
+      押す必要をなくすのが目的なので、日付は自分で探す(live で賭けたのに未決済で、
+      かつ nl_hr に払戻がもう入っている日)。
+    ★同期を**先に**やる。同期で初めて nl_hr に入る日があるため。
+    """
+    _log("=== 払戻の取込と決済 ===")
+    if cfg.target not in ("vm", "windows"):
+        _log(f"✗ 決済の実行先は vm か windows: {cfg.target!r}")
+        return 2
+    try:
+        conn = _connect()
+    except Exception as e:      # noqa: BLE001
+        _log(f"✗ DB に接続できません: {e}")
+        return 0 if cfg.dry_run else 2
+
+    scfg = OrchestratorConfig(date="", close_target=cfg.target,
+                              poll_seconds=cfg.poll_seconds,
+                              finish_timeout_seconds=cfg.finish_timeout_seconds,
+                              job_id=cfg.job_id)
+    try:
+        if cfg.with_sync:
+            sync = settle_steps([], target=cfg.target)[0]
+            if cfg.dry_run:
+                _log("先に JV-Data を同期します(日付なし=種別ごとの自動差分):")
+                print(describe([sync]), flush=True)
+            else:
+                st = _run_step(conn, sync, scfg)
+                if st == "canceled":
+                    return 1
+                if st != "done":
+                    _log("✗ 同期が終わっていないので決済へ進みません"
+                         "(払戻が入っていないまま突合しても何も確定しない)")
+                    return 1
+
+        today = datetime.now(_JST).strftime("%Y%m%d")
+        dates = cfg.dates or pending_settlement_dates(
+            conn, today, days=cfg.within_days, limit=cfg.max_dates)
+        if not dates:
+            _log("決済待ちで払戻が届いている開催日はありません"
+                 "(払戻は開催の3〜5日後に配信されます)")
+            return 0
+        _log(f"決済する開催日 {len(dates)} 件: {', '.join(dates)}")
+        steps = settle_steps(dates, target=cfg.target, with_sync=False)
+        if cfg.dry_run:
+            print(describe(steps), flush=True)
+            _log("dry-run のためここまで(ジョブは投入していません)")
+            return 0
+        rc = 0
+        for step in steps:
+            st = _run_step(conn, step, scfg)
+            if st == "canceled":
+                return 1
+            if st != "done":
+                rc = 1
+        return rc
+    finally:
+        try:
+            conn.close()
+        except Exception:   # noqa: BLE001
+            pass

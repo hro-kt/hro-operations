@@ -484,6 +484,29 @@ def _b_race_day(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_settle_pending(a: dict):
+    """★払戻が届いた開催日をまとめて決済する(開催の3〜5日後に回す)。
+
+    **払戻(HR)は開催の3〜5日後にしか配信されない**ので、開催日のジョブには入れない。
+    これ1本で: JV-Data 同期(日付なし=自動差分)→ 決済待ちの日を探す → 各日を決済。
+    日付は自分で探すので、開催日ごとに人が覚えておく必要がない。
+    """
+    cmd = ["poetry", "run", "hro-ops", "settle-pending",
+           "--target", ("windows" if a.get("target") == "windows" else "vm"),
+           "--within-days", str(_int(a.get("within_days"), 28)),
+           "--max-dates", str(_int(a.get("max_dates"), 10))]
+    if a.get("dates"):
+        dates = ",".join(_ymd(d) for d in str(a["dates"]).split(",") if d.strip())
+        cmd += ["--dates", dates]
+    if a.get("job_id"):
+        cmd += ["--job-id", str(_int(a.get("job_id"), 0))]
+    if a.get("no_sync"):
+        cmd.append("--no-sync")
+    if a.get("dry_run"):
+        cmd.append("--dry-run")
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
+
+
 def _b_flow_check(a: dict):
     """締切前オッズの検査(flow-coverage + flow-usable)。発注はしない。翌日に回す。"""
     d = _ymd(a.get("date"), _today_jst())
@@ -550,6 +573,8 @@ _COMMANDS = {
            "flow_day": _b_flow_day, "flow_check": _b_flow_check,
            # ★開催日はこれ1本。他の kind を順に起こして止める
            "race_day": _b_race_day,
+           # ★後日(払戻が届いてから)の決済。開催日のジョブには入れない
+           "settle_pending": _b_settle_pending,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
            # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
            "close_day": _b_close_day,
@@ -571,7 +596,8 @@ _COMMANDS = {
                 "race_day": _b_race_day,
                 # ★決済は DB しか触らないのでどちらでも動く。おまかせを Windows で
                 #   回したときに「未対応の kind」で止まらないよう両方に置く
-                "settle": _b_settle},
+                "settle": _b_settle,
+                "settle_pending": _b_settle_pending},
 }
 
 

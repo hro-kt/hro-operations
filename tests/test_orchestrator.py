@@ -4,6 +4,7 @@
   (2) 既に動いている常駐を二重起動しない(= 同じレースを2回買わない)。
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -51,21 +52,20 @@ def test_flow_args_reach_the_runner_with_date_forced():
     assert flow.args["date"] == "20261011"   # 引数の date より計画の date が勝つ
 
 
-def test_close_runs_before_the_heavy_sync():
-    """★IPAT の投票履歴は当日/前日しか遡れない。期限があるのは締めの方。
+def test_race_day_ends_at_the_close():
+    """★当日やる価値があるのは締めだけ。
 
-    sync_all は全種別の差分を取る重いジョブで、先に置くと長引いたぶんだけ締めが
-    後ろへずれ、最悪その日の記録を取り損ねる。close_day は JV-Link も JV-Data も
-    使わず走る機械も別なので、入れ替えても困らない。
+    IPAT の投票履歴は当日/前日しか遡れないので締めには期限がある。JV-Data 同期と
+    決済は期限が無く、同期は重くて時間が読めない。当日の経路に置くと、長引いた
+    ぶんだけ締めが危うくなるだけで得るものが無い。
     """
     fin = orc.finish_steps("20261011")
-    assert [s.kind for s in fin] == ["close_day", "sync_all"]
-    assert not fin[0].jvlink and fin[1].jvlink
-    assert not any(s.resident for s in fin)
+    assert [s.kind for s in fin] == ["close_day"]
+    assert not fin[0].jvlink and not fin[0].resident
 
 
 def test_sync_gets_a_longer_wait_than_the_default():
-    sync = next(s for s in orc.finish_steps("20261011") if s.kind == "sync_all")
+    sync = next(s for s in orc.settle_steps([]) if s.kind == "sync_all")
     assert sync.timeout_seconds and sync.timeout_seconds >= 4 * 3600
 
 
@@ -79,20 +79,24 @@ def test_same_day_close_never_settles():
     assert close.args["no_settle"] is True
 
 
-def test_finish_sync_carries_no_date_so_smart_sync_stays_on():
+def test_settle_sync_carries_no_date_so_smart_sync_stays_on():
     """★date を渡すと SYNC_SMART が切れて「その日以降のみ」になる。
 
     取りに行きたいのは**過去の開催日の払戻**なので、日付を渡してはいけない。
     """
-    sync = next(s for s in orc.finish_steps("20261011") if s.kind == "sync_all")
+    sync = next(s for s in orc.settle_steps([]) if s.kind == "sync_all")
     assert "date" not in sync.args
 
 
-def test_finish_steps_appends_settlement_for_arrived_payouts():
-    fin = orc.finish_steps("20261011", settle_dates=["20261004", "20261005"])
-    assert [s.kind for s in fin] == ["close_day", "sync_all", "settle", "settle"]
-    assert [s.args["date"] for s in fin if s.kind == "settle"] == ["20261004", "20261005"]
-    assert all(s.args["from_db"] for s in fin if s.kind == "settle")
+def test_settle_steps_sync_first_then_each_date():
+    steps = orc.settle_steps(["20261004", "20261005"])
+    assert [s.kind for s in steps] == ["sync_all", "settle", "settle"]
+    assert [s.args["date"] for s in steps if s.kind == "settle"] == ["20261004", "20261005"]
+    assert all(s.args["from_db"] for s in steps if s.kind == "settle")
+
+
+def test_settle_steps_can_skip_the_sync():
+    assert [s.kind for s in orc.settle_steps(["20261004"], with_sync=False)] == ["settle"]
 
 
 # --- 停止時刻 -----------------------------------------------------------
@@ -309,80 +313,100 @@ class _BusyDoneConn(_BusyConn, _DoneConn):
     pass
 
 
-def test_finish_runs_sync_then_close_in_order():
+def test_finish_runs_the_close_only():
     conn, cfg = _DoneConn(), _cfg(job_id=42, poll_seconds=0.01,
                                   finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all"]
+    assert [k for k, _, _ in conn.inserted] == ["close_day"]
 
 
-def test_finish_refuses_sync_while_jvlink_is_still_held():
-    """★run_odds が残っているのに sync_all を投げると COM エラーで収集が死ぬ。"""
-    conn, cfg = _BusyDoneConn(), _cfg(job_id=42, poll_seconds=0.01,
-                                      finish_timeout_seconds=2.0)
-    rc = orc._finish(conn, orc.finish_steps(cfg.date), cfg)
-    assert [k for k, _, _ in conn.inserted] == ["close_day"]   # sync は見送り
-    assert rc == 1
+# --- 後日の決済(settle-pending) ----------------------------------------
+
+def _scfg(**kw):
+    c = orc.SettleConfig(poll_seconds=0.01, finish_timeout_seconds=2.0, job_id=42)
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
 
 
-def test_failed_sync_skips_the_deferred_settlement():
-    """★同期に失敗したら、払戻が入っていないかもしれないので決済へ進まない。
+def _patched(monkeypatch, conn):
+    monkeypatch.setattr(orc, "_connect", lambda: conn)
 
-    当日の締め(IPAT の記録)はそのまま続ける。そちらは JV-Data に依らない。
-    """
-    import json
 
-    class _FailSync(_DoneConn):
+def test_settle_pending_syncs_then_settles_the_dates_it_found(monkeypatch):
+    """★払戻は開催の3〜5日後。日付は自分で探すので人が覚えておく必要がない。"""
+    class _C(_DoneConn):
+        pending_dates = ["20261004", "20261005"]
+
+    conn = _C()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg()) == 0
+    assert [k for k, _, _ in conn.inserted] == ["sync_all", "settle", "settle"]
+    assert [json.loads(a)["date"] for k, _, a in conn.inserted
+            if k == "settle"] == ["20261004", "20261005"]
+
+
+def test_settle_pending_stops_when_the_sync_fails(monkeypatch):
+    """★払戻が入っていないまま突合しても何も確定しない。進まない方が正しい。"""
+    class _C(_DoneConn):
         pending_dates = ["20261004"]
 
         def execute(self, sql, params=()):
             out = super().execute(sql, params)
-            if " ".join(sql.split()).startswith("INSERT INTO ops_job"):
-                if params[0] == "sync_all":
-                    self.statuses[self._result[0][0]] = "failed"
+            if " ".join(sql.split()).startswith("INSERT INTO ops_job") \
+                    and params[0] == "sync_all":
+                self.statuses[self._result[0][0]] = "failed"
             return out
 
-    conn, cfg = _FailSync(), _cfg(job_id=42, poll_seconds=0.01,
-                                  finish_timeout_seconds=2.0)
-    assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 1
-    kinds = [k for k, _, _ in conn.inserted]
-    assert kinds == ["close_day", "sync_all"]            # settle へ進まない
-    close = next(a for k, _, a in conn.inserted if k == "close_day")
-    assert json.loads(close)["no_settle"] is True
+    conn = _C()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg()) == 1
+    assert [k for k, _, _ in conn.inserted] == ["sync_all"]
 
 
-def test_arrived_payouts_are_settled_after_the_sync():
-    """★「今日の分を今日締める」のではなく「届いた分をその日に片付ける」。
-
-    払戻は開催の3〜5日後なので、開催日ごとに人が思い出して押す必要をなくす。
-    """
-    class _WithPending(_DoneConn):
-        pending_dates = ["20261004", "20261005"]
-
-    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
-                                     finish_timeout_seconds=2.0)
-    assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all",
-                                                "settle", "settle"]
-
-
-def test_no_settle_disables_the_deferred_settlement():
-    class _WithPending(_DoneConn):
+def test_settle_pending_refuses_sync_while_jvlink_is_held(monkeypatch):
+    class _C(_BusyConn, _DoneConn):
         pending_dates = ["20261004"]
 
-    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
-                                     finish_timeout_seconds=2.0,
-                                     settle_pending=False)
-    assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all"]
+    conn = _C()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg()) == 1
+    assert conn.inserted == []           # 決済まで進まない
 
 
-def test_settlement_targets_the_close_machine():
-    class _WithPending(_DoneConn):
+def test_settle_pending_reports_nothing_to_do(monkeypatch):
+    conn = _DoneConn()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg()) == 0
+    assert [k for k, _, _ in conn.inserted] == ["sync_all"]
+
+
+def test_settle_pending_honours_explicit_dates(monkeypatch):
+    class _C(_DoneConn):
         pending_dates = ["20261004"]
 
-    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
-                                     finish_timeout_seconds=2.0,
-                                     close_target="windows")
-    orc._finish(conn, orc.finish_steps(cfg.date, close_target="windows"), cfg)
+    conn = _C()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg(dates=["20260919"], with_sync=False)) == 0
+    assert [json.loads(a)["date"] for k, _, a in conn.inserted
+            if k == "settle"] == ["20260919"]
+
+
+def test_settle_pending_targets_the_requested_machine(monkeypatch):
+    class _C(_DoneConn):
+        pending_dates = ["20261004"]
+
+    conn = _C()
+    _patched(monkeypatch, conn)
+    orc.run_settle(_scfg(target="windows", with_sync=False))
     assert [t for k, t, _ in conn.inserted if k == "settle"] == ["windows"]
+
+
+def test_settle_pending_dry_run_enqueues_nothing(monkeypatch):
+    class _C(_DoneConn):
+        pending_dates = ["20261004"]
+
+    conn = _C()
+    _patched(monkeypatch, conn)
+    assert orc.run_settle(_scfg(dry_run=True)) == 0
+    assert conn.inserted == []

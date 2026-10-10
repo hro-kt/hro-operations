@@ -1430,6 +1430,20 @@ def _cmd_netkeiba_compare(args) -> int:
     return 0
 
 
+def _cmd_settle_pending(args) -> int:
+    """★払戻が届いた開催日をまとめて決済する(開催日の数日後に回す)。"""
+    from .orchestrator import SettleConfig, run_settle
+    dates = [d.strip() for d in str(args.dates or "").split(",") if d.strip()]
+    for d in dates:
+        if not (len(d) == 8 and d.isdigit()):
+            print(f"--dates は YYYYMMDD のカンマ区切り: {d!r}")
+            return 2
+    return run_settle(SettleConfig(
+        dates=dates, target=args.target, with_sync=not args.no_sync,
+        within_days=args.within_days, max_dates=args.max_dates,
+        poll_seconds=args.poll_seconds, dry_run=args.dry_run, job_id=args.job_id))
+
+
 def _cmd_race_day(args) -> int:
     """★開催日を1本で回す。常駐の起動・再投入・停止・同期・締めまで。"""
     import json as _json
@@ -1448,8 +1462,6 @@ def _cmd_race_day(args) -> int:
         date=args.date, flow_args=flow_args,
         flow_target=args.flow_target, close_target=args.close_target,
         with_run_odds=not args.no_run_odds, with_netkeiba=not args.no_netkeiba,
-        with_sync=not args.no_sync, settle_pending=not args.no_settle,
-        settle_within_days=args.settle_within_days,
         stop_after_minutes=args.stop_after_minutes, max_restarts=args.max_restarts,
         poll_seconds=args.poll_seconds, dry_run=args.dry_run, job_id=args.job_id))
 
@@ -1802,12 +1814,6 @@ def main(argv: list[str] | None = None) -> int:
     p_rd.add_argument("--no-run-odds", action="store_true",
                       help="速報オッズ(JV-Link)を起こさない(既に別経路で回している時)")
     p_rd.add_argument("--no-netkeiba", action="store_true", help="netkeiba を起こさない")
-    p_rd.add_argument("--no-sync", action="store_true", help="最後の JV-Data 同期をしない")
-    p_rd.add_argument("--no-settle", action="store_true",
-                      help="払戻が届いた過去の開催日の決済をしない"
-                           "(当日分はそもそも決済しない。払戻は開催の3〜5日後)")
-    p_rd.add_argument("--settle-within-days", type=int, default=28,
-                      help="決済待ちの開催日を何日さかのぼって探すか(既定28)")
     p_rd.add_argument("--stop-after-minutes", type=int, default=3,
                       help="最終発走 + これ分 で常駐を止める(既定3)")
     p_rd.add_argument("--max-restarts", type=int, default=3,
@@ -1818,6 +1824,24 @@ def main(argv: list[str] | None = None) -> int:
     p_rd.add_argument("--dry-run", action="store_true",
                       help="計画と停止時刻だけ出して終わる(ジョブを投入しない)")
     p_rd.set_defaults(func=_cmd_race_day)
+
+    p_sp = sub.add_parser("settle-pending",
+                          help="★払戻が届いた開催日をまとめて決済(開催の3〜5日後に回す)")
+    p_sp.add_argument("--dates", default="",
+                      help="YYYYMMDD のカンマ区切り。省略すると決済待ちの日を自分で探す")
+    p_sp.add_argument("--target", choices=("vm", "windows"), default="vm",
+                      help="決済を走らせる機(DB しか触らない)")
+    p_sp.add_argument("--no-sync", action="store_true",
+                      help="先の JV-Data 同期をしない(もう同期済みのとき)")
+    p_sp.add_argument("--within-days", type=int, default=28,
+                      help="決済待ちの開催日を何日さかのぼって探すか(既定28)")
+    p_sp.add_argument("--max-dates", type=int, default=10)
+    p_sp.add_argument("--poll-seconds", type=float, default=30.0)
+    p_sp.add_argument("--job-id", type=int, default=None,
+                      help="自分の ops_job.id(agent が渡す)")
+    p_sp.add_argument("--dry-run", action="store_true",
+                      help="何を決済するかだけ出して終わる(ジョブを投入しない)")
+    p_sp.set_defaults(func=_cmd_settle_pending)
 
     p_agent = sub.add_parser("agent", help="ops_jobキューを処理する常駐エージェント(admin画面から実行される)")
     p_agent.add_argument("--server", required=True, choices=("vm", "windows"),
