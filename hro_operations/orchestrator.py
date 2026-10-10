@@ -439,6 +439,22 @@ def _start_all(conn, children: list[Child], cfg: OrchestratorConfig) -> None:
         _log(f"▶ {c.step.name}: job#{c.job_id} を投入({c.step.target})")
 
 
+def refreshed_stop_at(conn, date: str, current: datetime, *,
+                      after_minutes: int) -> datetime | None:
+    """最終発走を読み直して、停止時刻が**後ろへずれた**ならその新しい時刻を返す。
+
+    ★開催中の発走時刻変更に追随する。起動時の最終発走で固定すると、カードが
+      遅れたときに**最終レースの前に収集を止めてしまう**。
+    ★後ろにしかずらさない。繰り上がりで前倒しすると、まだ投票していないレースの
+      途中で止まりかねない。数分長く回しても損はしない。
+    """
+    last = _last_post(conn, date)
+    if not last:
+        return None
+    fresh = stop_at(date, last, after_minutes=after_minutes)
+    return fresh if fresh > current else None
+
+
 def _monitor(conn, children: list[Child], cfg: OrchestratorConfig,
              stop_time: datetime) -> str:
     """停止時刻まで常駐を見張る。落ちていたら再投入する。
@@ -453,6 +469,14 @@ def _monitor(conn, children: list[Child], cfg: OrchestratorConfig,
             _log("自分に中止要求。常駐を止めて降ります")
             return "canceled"
         now = datetime.now(_JST)
+        # ★発走時刻変更に追随する。nl_ra は run_odds の周回が取り直しているので、
+        #   ここは読み直すだけでよい(hro-synchronizer の race_refresh_interval_sec)。
+        fresh = refreshed_stop_at(conn, cfg.date, stop_time,
+                                  after_minutes=cfg.stop_after_minutes)
+        if fresh is not None:
+            _log(f"発走時刻が変わりました。停止予定を {stop_time:%H:%M} → "
+                 f"{fresh:%H:%M} に延ばします")
+            stop_time = fresh
         if should_stop(now, stop_time):
             _log(f"停止時刻 {stop_time:%H:%M} に到達")
             return "stop_time"

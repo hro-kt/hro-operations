@@ -542,6 +542,19 @@ def _b_import_results(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_fetch_race(a: dict):
+    """当週の RACE データだけを取り直す(発走時刻変更・出走取消を反映)。
+
+    ★**開催前と臨時用**。開催中は run_odds が JV-Link を握っているので、これを
+      投入しても衝突する。開催中の追随は run_odds の周回の中でやる
+      (hro-synchronizer の race_refresh_interval_sec)。
+    ★sync-all とは別物。こちらは RACE(今週)だけなので軽い。nl_ra/nl_tc が更新され、
+      run-day の待機も収集の対象レース選びも新しい発走時刻で動くようになる。
+    """
+    return (["poetry", "run", "hro-synchronizer", "fetch-race"],
+            os.path.join(_home(), "hro-synchronizer"), {})
+
+
 def _b_fetch_ts_odds(a: dict):
     """公式時系列オッズ(0B41)。1回(既定)か常駐(repeat_seconds>0)。
 
@@ -599,6 +612,9 @@ _COMMANDS = {
            # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
            "netkeiba_odds": _b_netkeiba_odds},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
+                # ★当週 RACE だけの軽い取り直し(発走時刻変更)。開催前/臨時用で、
+                #   開催中は run_odds が JV-Link を握っているので投入しないこと
+                "fetch_race": _b_fetch_race,
                 # ★results_<date>.jsonl は run-day を回した機にできる。flow_day を
                 #   Windows へ移した時点で、VM 側の import_results は成功しようが
                 #   なくなっていた(2026-10-04 に発覚。117/137 が failed のまま)。

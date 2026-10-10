@@ -410,3 +410,45 @@ def test_settle_pending_dry_run_enqueues_nothing(monkeypatch):
     _patched(monkeypatch, conn)
     assert orc.run_settle(_scfg(dry_run=True)) == 0
     assert conn.inserted == []
+
+
+# --- 発走時刻変更への追随 -------------------------------------------------
+
+class _PostConn(_FakeConn):
+    last_post = "1625"
+
+    def execute(self, sql, params=()):
+        if "max(hasso_time)" in " ".join(sql.split()):
+            self._result = [(self.last_post,)]
+            return self
+        return super().execute(sql, params)
+
+
+def test_stop_time_follows_a_delayed_last_race():
+    """★起動時の最終発走で固定すると、遅れたとき最終レースの前に収集を止める。"""
+    conn = _PostConn()
+    cur = orc.stop_at("20261011", "1625", after_minutes=3)
+    conn.last_post = "1640"
+    fresh = orc.refreshed_stop_at(conn, "20261011", cur, after_minutes=3)
+    assert fresh == orc.stop_at("20261011", "1640", after_minutes=3)
+
+
+def test_stop_time_is_never_pulled_earlier():
+    """★繰り上がりで前倒しすると、まだ投票していないレースの途中で止まりかねない。"""
+    conn = _PostConn()
+    cur = orc.stop_at("20261011", "1625", after_minutes=3)
+    conn.last_post = "1610"
+    assert orc.refreshed_stop_at(conn, "20261011", cur, after_minutes=3) is None
+
+
+def test_unchanged_schedule_keeps_the_stop_time():
+    conn = _PostConn()
+    cur = orc.stop_at("20261011", "1625", after_minutes=3)
+    assert orc.refreshed_stop_at(conn, "20261011", cur, after_minutes=3) is None
+
+
+def test_missing_races_do_not_move_the_stop_time():
+    conn = _PostConn()
+    conn.last_post = None
+    cur = orc.stop_at("20261011", "1625", after_minutes=3)
+    assert orc.refreshed_stop_at(conn, "20261011", cur, after_minutes=3) is None

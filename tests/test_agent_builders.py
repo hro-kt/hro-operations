@@ -304,3 +304,16 @@ def test_bet_type_amounts_must_be_ticket_units(monkeypatch):
 
 def test_bet_type_unknown_still_falls_back_to_fuku():
     assert agent._bet_type_arg("tan:1000,sanrentan:100") == "fuku"
+
+
+def test_fetch_race_is_windows_only_and_light():
+    """★当週 RACE だけの軽い取り直し。sync-all とは別物。
+
+    開催中は run_odds が JV-Link を握るので投入しないこと(衝突する)。
+    開催中の追随は run_odds の周回の中(race_refresh_interval_sec)でやる。
+    """
+    cmd, cwd, _ = agent._b_fetch_race({})
+    assert cmd == ["poetry", "run", "hro-synchronizer", "fetch-race"]
+    assert cwd.endswith("hro-synchronizer")
+    assert agent._COMMANDS["windows"]["fetch_race"] is agent._b_fetch_race
+    assert "fetch_race" not in agent._COMMANDS["vm"]     # JV-Link が要る
