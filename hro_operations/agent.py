@@ -377,9 +377,14 @@ def _b_flow_day(a: dict):
 
 
 def _b_close_day(a: dict):
-    """開催日の締め(Windows)。IPAT の記録を取り込み、突合・損益・決済まで一度に。
+    """開催日の締め。IPAT の記録を取り込み、突合・損益・決済まで一度に。
 
-    ★IPAT を触るので Windows。JV-Link は使わないので run_odds と競合しない。
+    ★**VM でも Windows でも動く**。IPAT にログインするのは最初の取り込みだけで、
+      残り(突合・収益・決済)は DB しか触らない。JV-Link も使わない。
+      必要なのは Playwright・IPAT のレシピ・IPAT の認証情報(環境変数)の3つ。
+    ★レース後に走るので flow ランナーとは競合しない。Windows は JV-Link 機で
+      2 vCPU、かつ Windows Update で勝手に再起動した実績がある(2026-10-04)ので、
+      **VM で回す方が安定する**。
     ★CLI を3回叩くと3回ログインする。1本にまとめてログインを1回で済ませる。
     ★払戻(nl_hr)が未取込なら決済は飛ばせる(no_settle)。IPAT 側の損益は
       nl_hr に依らず出るので、締め自体は成立する。
@@ -496,6 +501,8 @@ _COMMANDS = {
            "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill,
            "flow_day": _b_flow_day, "flow_check": _b_flow_check,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
+           # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
+           "close_day": _b_close_day,
            # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
            "netkeiba_odds": _b_netkeiba_odds},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
@@ -507,7 +514,8 @@ _COMMANDS = {
                 "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
                 # IPAT を実績のある Windows から叩く経路(VM と二者択一。同時に走らせない)
                 "flow_day": _b_flow_day_windows,
-                # ★開催日の締め。IPAT を触るので Windows
+                # ★Windows でも動く(レシピと認証情報がこちらに在るため)。
+                #   既定は VM を勧める
                 "close_day": _b_close_day},
 }
 

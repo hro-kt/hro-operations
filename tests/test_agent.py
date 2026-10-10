@@ -322,13 +322,15 @@ def test_run_day_accepts_umatan():
     assert "--flow-partners" in sh
 
 
-def test_close_day_runs_on_windows_with_the_recipe():
-    """★開催日の締めは IPAT を触るので Windows。JV-Link は使わないので
-    run_odds と競合しない。"""
+def test_close_day_runs_on_either_machine():
+    """★IPAT にログインするのは最初の取り込みだけで、残りは DB しか触らない。
+    JV-Link も使わないので **VM でも動く**(むしろ Windows は JV-Link 機で
+    2 vCPU、勝手に再起動した実績もあるので VM の方が安定する)。
+    """
     from hro_operations.agent import _COMMANDS, _b_close_day
 
     assert "close_day" in _COMMANDS["windows"]
-    assert "close_day" not in _COMMANDS["vm"]
+    assert "close_day" in _COMMANDS["vm"]
 
     cmd, cwd, _env = _b_close_day({"date": "20261010"})
     assert cmd[:5] == ["poetry", "run", "hro-buyer", "ipat", "close-day"]
