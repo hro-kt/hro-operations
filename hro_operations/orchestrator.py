@@ -47,6 +47,8 @@ class Step:
     resident: bool = _ONESHOT
     jvlink: bool = False        # JV-Link を占有するか
     required: bool = True       # 落ちたら致命的か(常駐のみ意味がある)
+    # 単発の完了待ち上限。重い同期は既定より長くないと、終わる前に見限ってしまう
+    timeout_seconds: float | None = None
 
 
 def start_steps(date: str, flow_args: dict, *, flow_target: str = "windows",
@@ -73,23 +75,34 @@ def finish_steps(date: str, *, close_target: str = "vm",
                  with_sync: bool = True) -> list[Step]:
     """最終レース後。**常駐を止めてから** JV-Link を使う手順へ進む。
 
+    順番は **締め → 同期 → 後日分の決済**。
+
+    ★締めを先にする。close_day は IPAT の**投票履歴**を読むが、IPAT で遡れるのは
+      当日と前日だけで、夜間メンテの時間帯もある。**期限があるのは締めの方**で、
+      同期には期限が無い。sync_all は全種別の差分を取る重いジョブなので、先に
+      置くと長引いたぶんだけ締めが後ろへずれ、最悪その日の記録を取り損ねる。
+    ★順番を入れ替えても困らない: close_day は JV-Link も JV-Data も使わない
+      (IPAT と自分の DB だけ)。走る機械も別(締め=VM / 同期=Windows)。
     ★当日の締めは必ず no_settle。**払戻(HR)は開催の3〜5日後にしか配信されない**
       (2026-09-22 実測: 9/12・9/13 開催分の make_date が 9/14、受信は 9/17)。
       当日に決済を回しても nl_hr が空で settled=False になるだけで、何も確定しない。
       当日に出せる確定値は **IPAT 自身の記録**(受付明細の払戻)の方で、close_day は
       それを取り込んで損益まで出す。こちらは当日に意味がある。
     ★sync_all の当日の役目は「今日の結果を取ること」ではなく、**過去の開催日の払戻が
-      届いていれば取り込むこと**。だから直後に、決済待ちの過去日をまとめて片付ける。
+      届いていれば取り込むこと**。だから同期の後に、決済待ちの過去日を片付ける。
     """
-    steps: list[Step] = []
+    steps: list[Step] = [
+        Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
+             {"date": date, "no_settle": True}),
+    ]
     if with_sync:
         # ★date を**渡さない**。date を渡すと SYNC_SMART が切れて「その日以降のみ」に
         #   なり、取りに行きたい**過去の開催日の払戻**が入らない(_b_sync_all 参照)。
         #   空にすると種別ごとに DB の frontier から自動差分で取る。
+        # ★全種別の差分を取るので時間が読めない。既定の待ち時間だと終わる前に
+        #   見限ってしまい、そのぶん後日分の決済が1開催遅れる。
         steps.append(Step("JV-Data 同期(過去日の払戻を取り込む)", "sync_all", "windows",
-                          {}, jvlink=True))
-    steps.append(Step("開催日の締め(IPAT の記録=当日の確定値)", "close_day", close_target,
-                      {"date": date, "no_settle": True}))
+                          {}, jvlink=True, timeout_seconds=4 * 3600.0))
     for d in (settle_dates or []):
         steps.append(Step(f"決済 {d}(払戻との突合)", "settle", close_target,
                           {"date": d, "from_db": True, "modes": "live"}))
@@ -246,6 +259,10 @@ def _enqueue(conn, step: Step, parent_id: int | None) -> int:
     args = dict(step.args)
     if parent_id is not None:
         args["orchestrated_by"] = parent_id
+        # ★掃除の対象は**常駐だけ**。単発(同期や締め)は放っておいても自分で終わる。
+        #   親が先に降りただけで走っている同期を殺すと、重い処理をやり直しになる。
+        if step.resident:
+            args["resident"] = True
     row = conn.execute(
         "INSERT INTO ops_job(kind,args,target,requested_by) VALUES(%s,%s::jsonb,%s,%s) "
         "RETURNING id",
@@ -510,7 +527,7 @@ def _run_step(conn, step: Step, cfg: OrchestratorConfig) -> str:
             return "skipped"
     job_id = _enqueue(conn, step, cfg.job_id)
     _log(f"▶ {step.name}: job#{job_id} を投入({step.target})。完了を待ちます")
-    deadline = time.monotonic() + cfg.finish_timeout_seconds
+    deadline = time.monotonic() + (step.timeout_seconds or cfg.finish_timeout_seconds)
     st = None
     while time.monotonic() < deadline:
         if _self_canceled(conn, cfg.job_id):
@@ -524,7 +541,11 @@ def _run_step(conn, step: Step, cfg: OrchestratorConfig) -> str:
     if st == "done":
         _log(f"✓ {step.name}: job#{job_id} 完了")
         return "done"
-    _log(f"✗ {step.name}: job#{job_id} が {st or 'タイムアウト'} で終わりました")
+    if st not in _TERMINAL:
+        _log(f"⚠ {step.name}: job#{job_id} が待ち時間内に終わりませんでした"
+             f"(ジョブ自体は走り続けます。中止したいときは手で止めてください)")
+        return "timeout"
+    _log(f"✗ {step.name}: job#{job_id} が {st} で終わりました")
     tail = _tail(conn, job_id)
     if tail:
         _log(f"   ログ末尾: …{tail[-300:]}")

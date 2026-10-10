@@ -692,6 +692,9 @@ def _sweep_orphans(conn) -> int:
       後始末が走らずに降りることがある。そのとき常駐の子(run_odds / netkeiba /
       flow ランナー)が**誰にも見られないまま動き続ける**。翌開催で二重起動の
       原因になるので、親の終了を見て機械的に畳む。
+    ★対象は args.resident を持つ子**だけ**。同期や締めのような単発は放っておいても
+      自分で終わる。親が先に降りただけで走っている sync_all を殺すと、重い処理を
+      まるごとやり直しになる。
     ★ここでは cancel_requested を立てるだけ。実際に止めるのはその子を抱えている
       agent なので、サーバをまたいでも効く。
     """
@@ -700,6 +703,7 @@ def _sweep_orphans(conn) -> int:
         "FROM ops_job p "
         "WHERE c.status IN ('queued','running') AND NOT c.cancel_requested "
         "  AND (c.args->>'orchestrated_by') ~ '^[0-9]+$' "
+        "  AND (c.args->>'resident') = 'true' "
         "  AND p.id = (c.args->>'orchestrated_by')::bigint "
         "  AND p.status IN ('done','failed','canceled') "
         "RETURNING c.id").fetchall()

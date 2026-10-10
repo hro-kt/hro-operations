@@ -51,11 +51,22 @@ def test_flow_args_reach_the_runner_with_date_forced():
     assert flow.args["date"] == "20261011"   # 引数の date より計画の date が勝つ
 
 
-def test_finish_steps_sync_before_close():
+def test_close_runs_before_the_heavy_sync():
+    """★IPAT の投票履歴は当日/前日しか遡れない。期限があるのは締めの方。
+
+    sync_all は全種別の差分を取る重いジョブで、先に置くと長引いたぶんだけ締めが
+    後ろへずれ、最悪その日の記録を取り損ねる。close_day は JV-Link も JV-Data も
+    使わず走る機械も別なので、入れ替えても困らない。
+    """
     fin = orc.finish_steps("20261011")
-    assert [s.kind for s in fin] == ["sync_all", "close_day"]
-    assert fin[0].jvlink and not fin[1].jvlink
+    assert [s.kind for s in fin] == ["close_day", "sync_all"]
+    assert not fin[0].jvlink and fin[1].jvlink
     assert not any(s.resident for s in fin)
+
+
+def test_sync_gets_a_longer_wait_than_the_default():
+    sync = next(s for s in orc.finish_steps("20261011") if s.kind == "sync_all")
+    assert sync.timeout_seconds and sync.timeout_seconds >= 4 * 3600
 
 
 def test_same_day_close_never_settles():
@@ -79,7 +90,7 @@ def test_finish_sync_carries_no_date_so_smart_sync_stays_on():
 
 def test_finish_steps_appends_settlement_for_arrived_payouts():
     fin = orc.finish_steps("20261011", settle_dates=["20261004", "20261005"])
-    assert [s.kind for s in fin] == ["sync_all", "close_day", "settle", "settle"]
+    assert [s.kind for s in fin] == ["close_day", "sync_all", "settle", "settle"]
     assert [s.args["date"] for s in fin if s.kind == "settle"] == ["20261004", "20261005"]
     assert all(s.args["from_db"] for s in fin if s.kind == "settle")
 
@@ -210,6 +221,20 @@ def test_start_all_enqueues_each_resident_once():
     assert all(c.job_id is not None and not c.adopted for c in children)
 
 
+def test_only_residents_are_marked_for_the_orphan_sweep():
+    """★単発(同期/締め)は放っておいても終わる。親が先に降りただけで走っている
+    sync_all を殺すと、重い処理をまるごとやり直しになる。"""
+    import json
+    conn, cfg = _FakeConn(), _cfg(job_id=42)
+    orc._start_all(conn, [orc.Child(s) for s in orc.start_steps(cfg.date, cfg.flow_args)],
+                   cfg)
+    assert all(json.loads(a).get("resident") for _, _, a in conn.inserted)
+    conn2 = _DoneConn()
+    orc._finish(conn2, orc.finish_steps(cfg.date),
+                _cfg(job_id=42, poll_seconds=0.01, finish_timeout_seconds=2.0))
+    assert not any(json.loads(a).get("resident") for _, _, a in conn2.inserted)
+
+
 def test_start_all_tags_children_with_the_parent_job():
     """★親が死んだ子を機械的に畳めるよう、子は必ず親の id を持つ。"""
     import json
@@ -288,7 +313,7 @@ def test_finish_runs_sync_then_close_in_order():
     conn, cfg = _DoneConn(), _cfg(job_id=42, poll_seconds=0.01,
                                   finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["sync_all", "close_day"]
+    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all"]
 
 
 def test_finish_refuses_sync_while_jvlink_is_still_held():
@@ -321,7 +346,7 @@ def test_failed_sync_skips_the_deferred_settlement():
                                   finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 1
     kinds = [k for k, _, _ in conn.inserted]
-    assert kinds == ["sync_all", "close_day"]            # settle へ進まない
+    assert kinds == ["close_day", "sync_all"]            # settle へ進まない
     close = next(a for k, _, a in conn.inserted if k == "close_day")
     assert json.loads(close)["no_settle"] is True
 
@@ -337,7 +362,7 @@ def test_arrived_payouts_are_settled_after_the_sync():
     conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
                                      finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["sync_all", "close_day",
+    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all",
                                                 "settle", "settle"]
 
 
@@ -349,7 +374,7 @@ def test_no_settle_disables_the_deferred_settlement():
                                      finish_timeout_seconds=2.0,
                                      settle_pending=False)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
-    assert [k for k, _, _ in conn.inserted] == ["sync_all", "close_day"]
+    assert [k for k, _, _ in conn.inserted] == ["close_day", "sync_all"]
 
 
 def test_settlement_targets_the_close_machine():
