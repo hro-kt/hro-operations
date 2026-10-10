@@ -284,3 +284,23 @@ def test_settle_runs_on_both_servers():
     """おまかせを Windows で回しても「未対応の kind」で止まらないこと。"""
     assert agent._COMMANDS["vm"]["settle"] is agent._b_settle
     assert agent._COMMANDS["windows"]["settle"] is agent._b_settle
+
+
+def test_bet_type_amounts_must_be_ticket_units(monkeypatch):
+    """★100円単位を外すと、その券種だけが黙って全件 skipped になる。
+
+    券種名の間違い(=fuku へ落とす)と違い、黙って別の金額にするわけにいかない。
+    投入時点で落として、気付ける形にする。
+    """
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    assert agent._bet_type_arg("tan:3000,umatan:500") == "tan:3000,umatan:500"
+    assert agent._bet_type_arg("tan") == "tan"          # 金額なしは flat_amount
+    for bad in ("tan:150", "tan:1000,umatan:50", "tan:0"):
+        with pytest.raises(ValueError):
+            agent._bet_type_arg(bad)
+    with pytest.raises(ValueError):
+        agent._b_race_day(_race_day_args(bet_type="tan:1000,umatan:50"))
+
+
+def test_bet_type_unknown_still_falls_back_to_fuku():
+    assert agent._bet_type_arg("tan:1000,sanrentan:100") == "fuku"

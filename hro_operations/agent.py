@@ -243,8 +243,19 @@ def _thresholds(raw, source: str = "sokuho") -> dict[int, float] | None:
 _KNOWN_BET_TYPES = ("fuku", "tan", "umatan")
 
 
+# 馬券の最小単位。IPAT は 100 円単位でしか受け付けない。
+TICKET_UNIT = 100
+
+
 def _bet_type_arg(raw) -> str:
-    """"tan:1000,umatan:100" を検証して返す。1つでも知らない券種なら fuku。"""
+    """"tan:1000,umatan:100" を検証して返す。1つでも知らない券種なら fuku。
+
+    ★金額は**100円単位**でなければならない。外れていると buyer 側の bet_unit 判定で
+      **その券種だけが黙って全件 skipped** になる(2026-10-10 に実害。購入指示は
+      出ているのに1枚も買われなかった)。ここで例外にして投入時点で落とす。
+      券種名の間違いと違って「保守的な既定へ落とす」で救える類ではなく、黙って
+      別の金額にするわけにもいかないため。
+    """
     parts = [p.strip() for p in str(raw or "").split(",") if p.strip()]
     if not parts:
         return "fuku"
@@ -252,8 +263,15 @@ def _bet_type_arg(raw) -> str:
         bt, _, amt = p.partition(":")
         if bt.strip() not in _KNOWN_BET_TYPES:
             return "fuku"
-        if amt and not amt.strip().isdigit():
+        amt = amt.strip()
+        if not amt:
+            continue
+        if not amt.isdigit():
             return "fuku"
+        if int(amt) <= 0 or int(amt) % TICKET_UNIT:
+            raise ValueError(
+                f"{bt.strip()} の1点 {amt} 円は{TICKET_UNIT}円単位ではありません"
+                f"(馬券の最小単位。このままだとその券種は全件 skipped になります)")
     return ",".join(parts)
 
 
