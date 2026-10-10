@@ -345,3 +345,17 @@ def test_strategy_doc_job_saves_to_db():
 def test_strategy_doc_job_validates_the_year():
     with pytest.raises(ValueError):
         agent._b_strategy_doc({"year": "26"})
+
+
+def test_strategy_spec_job_generates_a_draft_only():
+    """★確定は後戻りできないので、ジョブからは絶対にやらない。"""
+    cmd, cwd, _ = agent._b_strategy_spec({"version": 2})
+    assert cmd == ["poetry", "run", "hro-ops", "strategy-spec", "--version", "2"]
+    assert "--publish" not in cmd
+    assert cwd.endswith("hro-operations")
+    assert agent._COMMANDS["vm"]["strategy_spec"] is agent._b_strategy_spec
+
+
+def test_strategy_spec_job_can_discard_the_draft():
+    cmd, _, _ = agent._b_strategy_spec({"discard": True})
+    assert "--discard" in cmd and "--publish" not in cmd

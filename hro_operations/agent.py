@@ -502,6 +502,23 @@ def _b_race_day(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_strategy_spec(a: dict):
+    """★戦略書(仕様)の**下書き**を生成する。確定(publish)はしない。
+
+    ★確定は後戻りできないので、ジョブからは絶対にやらない。生成した下書きを
+      人が読んで直し、画面から明示的に確定する。
+    ★既に下書きが在れば上書きしない(CLI 側がそう作ってある)。人が編集した内容を
+      機械が黙って消すのが最悪。
+    """
+    cmd = ["poetry", "run", "hro-ops", "strategy-spec"]
+    if a.get("version"):
+        cmd += ["--version", str(_int(a.get("version"), 0))]
+    if a.get("discard"):
+        # 作り直したいとき。下書きだけ消える(確定版は DB のトリガが守る)
+        cmd.append("--discard")
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
+
+
 def _b_strategy_doc(a: dict):
     """★戦略書を生成して DB へ保存する(admin から見るため)。
 
@@ -643,8 +660,10 @@ _COMMANDS = {
            "settle_pending": _b_settle_pending,
            # ★税務の記録を封印(ハッシュ鎖)。締めの後
            "tax_seal": _b_tax_seal,
-           # ★戦略書を生成して保存(admin から見る)
+           # ★運用報告書を生成して保存(admin から見る)
            "strategy_doc": _b_strategy_doc,
+           # ★戦略書(仕様)の下書きを生成。確定はジョブからはやらない
+           "strategy_spec": _b_strategy_spec,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
            # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
            "close_day": _b_close_day,
@@ -672,7 +691,8 @@ _COMMANDS = {
                 "settle": _b_settle,
                 "settle_pending": _b_settle_pending,
                 "tax_seal": _b_tax_seal,
-                "strategy_doc": _b_strategy_doc},
+                "strategy_doc": _b_strategy_doc,
+                "strategy_spec": _b_strategy_spec},
 }
 
 
