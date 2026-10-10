@@ -344,7 +344,12 @@ def _persist_orders(cfg: DayConfig, orders: list) -> None:
 def _buyer_config(cfg: DayConfig) -> BuyerConfig:
     return BuyerConfig(
         mode=cfg.mode,
-        bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else cfg.flat_amount),
+        # ★bet_unit は「馬券の最小単位」= 100円。**1点の金額ではない**。
+        #   flat_amount(1000)を入れていたため、券種ごとに金額を変えられるように
+        #   した途端、馬単(100円)が `not a multiple of bet_unit 1000` で全件
+        #   skipped になった(2026-10-10 に実害。購入指示は出ているのに買われない)。
+        #   金額の上限は max_amount_per_order が別に持っている。
+        bet_unit=(cfg.ticket_min_amount if cfg.bankroll > 0 else 100),
         require_deadline=True,
         confirm_live=cfg.confirm_live,
         max_amount_per_order=cfg.max_amount_per_order,

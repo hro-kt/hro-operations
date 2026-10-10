@@ -194,3 +194,38 @@ def test_agent_rejects_unknown_bet_types_wholesale():
     assert _bet_type_arg("tan,sanrentan") == "fuku"     # 未対応券種が混ざっている
     assert _bet_type_arg("tan:いくら") == "fuku"         # 金額が数字でない
     assert _bet_type_arg(None) == "fuku"
+
+
+def test_bet_unit_is_the_ticket_unit_not_the_stake():
+    """★bet_unit は「馬券の最小単位」= 100円。**1点の金額ではない**。
+
+    flat_amount(1000)を入れていたため、券種ごとに金額を変えられるようにした途端、
+    馬単(100円)が `not a multiple of bet_unit 1000` で全件 skipped になった
+    (2026-10-10 に実害。購入指示は出ているのに買われない)。
+    """
+    from hro_operations.race_day import _buyer_config
+
+    cfg = _day(flow_bet_type="tan:1000,umatan:100", flat_amount=1000)
+    assert _buyer_config(cfg).bet_unit == 100
+
+    # 券種ごとの金額がすべて単位の倍数であること
+    from hro_operations.race_day import bet_plan
+
+    unit = _buyer_config(cfg).bet_unit
+    for bt, amount in bet_plan(cfg):
+        assert amount % unit == 0, f"{bt} {amount}円 は {unit}円 の倍数でない"
+
+
+def test_bet_unit_survives_a_small_per_type_stake():
+    """1点100円の券種を混ぜても弾かれないこと。"""
+    from hro_buyer.executor import _GuardedExecutor
+    from hro_moneymanager.models import BetOrder
+
+    from hro_operations.race_day import _buyer_config
+
+    cfg = _buyer_config(_day(flow_bet_type="umatan:100", flat_amount=1000))
+    ex = _GuardedExecutor(cfg)
+    o = BetOrder(race_id="2026101005040301", selection_id="07-08", bet_type="umatan",
+                 amount=100, probability=0, odds=0, expected_return=0, edge=0,
+                 kelly_fraction=0, model_version="t", reason="t")
+    assert ex._amount_reason(o) is None, ex._amount_reason(o)
