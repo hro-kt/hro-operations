@@ -36,7 +36,40 @@ def _yen(n) -> str:
     return f"{int(n or 0):,} 円"
 
 
-def render(version: dict, notes: list[dict], *, now: str) -> str:
+def _evidence_table(rows: list[dict], effective_from: str | None) -> list[str]:
+    """記録した机上検証を表にする。
+
+    ★自由記述にしない。実際に走らせた結果をそのまま載せる。転記すると数字が
+      合っている保証が無く、都合のよい結果だけ書いた疑いも晴れない。
+    ★**適用開始より前に回した検証**に印を付ける。「事前に期待回収率を見積もって
+      購入していた」の裏づけになるのは順序であって、結果の大きさではない。
+    """
+    out = ["| 検証 | 券種 | 期間 | 件数 | 的中率 | 回収率 | P(回収率≤1) | 実施日 |",
+           "|---|---|---|---|---|---|---|---|"]
+    for r in rows:
+        ran = str(r.get("ran_at") or "")[:10]
+        pre = (effective_from and ran and ran.replace("-", "") < effective_from)
+        mark = " ★" if pre else ""
+        out.append(
+            f"| {r['label']}{mark} | {r.get('bet_type') or '—'} "
+            f"| {r['period_from']}〜{r['period_to']} "
+            f"| {int(r.get('n_bets') or 0):,} "
+            f"| {('%.1f%%' % (r['hit_rate'] * 100)) if r.get('hit_rate') is not None else '—'} "
+            f"| **{('%.4f' % r['roi']) if r.get('roi') is not None else '—'}** "
+            f"| {('%.3f' % r['p_le_1']) if r.get('p_le_1') is not None else '—'} "
+            f"| {ran} |")
+    out.append("")
+    out.append("★ = 本版の適用開始より前に実施した検証(事前検証)。")
+    out.append("")
+    out.append("P(回収率≤1) はレース単位のブートストラップによる。"
+               "同一競走内の複数の購入は独立ではないため、購入単位ではなく"
+               "競走単位で再標本化している。")
+    out.append("")
+    return out
+
+
+def render(version: dict, notes: list[dict], *, now: str,
+           backtests: list[dict] | None = None) -> str:
     """1つの版の仕様書を Markdown で。
 
     version は strategy_versions の行(params / params_hash / version / mode …)。
@@ -205,7 +238,31 @@ def render(version: dict, notes: list[dict], *, now: str) -> str:
         section("", "", "model")
 
     # ---- ⑧ 収益性の検証 ----
-    section("⑧", "収益性の検証", "evidence")
+    a("## ⑧. 収益性の検証")
+    a("")
+    a("### 机上検証(バックテスト)")
+    a("")
+    if backtests:
+        a("検証は本システムが実行し、**結果を実行時にそのまま記録**しています"
+          "(転記ではありません)。実行したコマンドも併せて保存しており、再現できます。")
+        a("")
+        out.extend(_evidence_table(backtests, version.get("effective_from")))
+    else:
+        a("> **未記録。** バックテストの結果が1件も記録されていません。"
+          "`hro-ops flow-backtest … --record \"<見出し>\"` で実行すると、"
+          "その場で記録され本節に載ります。")
+        a("")
+    a("### 検証の解釈")
+    a("")
+    row = n.get("evidence")
+    if row:
+        a(row["body"].rstrip())
+        a("")
+        a(f"<small>記載者: {row.get('authored_by') or '—'} / "
+          f"{str(row.get('authored_at') or '')[:19]} / rev{row.get('revision')}</small>")
+    else:
+        a(_MISSING.format(vid=vid, sec="evidence"))
+    a("")
 
     # ---- ⑨ 実行・例外処理 ----
     a("## ⑨. 実行・例外処理")

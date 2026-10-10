@@ -277,3 +277,89 @@ def test_note_section_is_validated():
     with pytest.raises(ValueError):
         save_note(_SpecConn(), section="nonsense", body="x", version_id=None,
                   authored_by=None)
+
+
+# --- ⑧ 机上検証の記録 ---------------------------------------------------
+
+def _bt(**kw):
+    b = {"label": "単勝×人気7+ 2窓OOS 前半", "bet_type": "tan",
+         "period_from": "20250906", "period_to": "20260301", "n_bets": 658,
+         "hit_rate": 0.0836, "roi": 1.6690, "p_le_1": 0.007,
+         "ran_at": "2026-09-28T12:00:00"}
+    b.update(kw)
+    return b
+
+
+def test_evidence_section_renders_recorded_backtests():
+    """★自由記述にしない。実際に走らせた結果をそのまま載せる。"""
+    d = _doc(**{}) if False else render(_ver(effective_from="20261011"), [],
+                                        now="x", backtests=[_bt()])
+    assert "1.6690" in d and "0.007" in d and "658" in d
+    assert "転記ではありません" in d
+
+
+def test_evidence_marks_validation_done_before_deployment():
+    """★「事前に期待回収率を見積もって購入していた」の裏づけは順序。"""
+    v = _ver(effective_from="20261011")
+    d = render(v, [], now="x", backtests=[_bt(ran_at="2026-09-28T12:00:00"),
+                                          _bt(label="後から回した検証",
+                                              ran_at="2026-11-02T10:00:00")])
+    pre = next(x for x in d.splitlines() if "2窓OOS 前半" in x)
+    post = next(x for x in d.splitlines() if "後から回した検証" in x)
+    assert "★" in pre and "★" not in post
+    assert "事前検証" in d
+
+
+def test_evidence_section_says_when_nothing_is_recorded():
+    d = render(_ver(), [], now="x", backtests=[])
+    assert "**未記録。**" in d and "--record" in d
+
+
+def test_evidence_interpretation_is_separate_from_the_numbers():
+    """★数字は機械、解釈は人。文書上で分ける。"""
+    d = render(_ver(), [{"section": "evidence", "version_id": None, "revision": 1,
+                         "body": "人気7+ に集中している。", "authored_by": "友田",
+                         "authored_at": "2026-12-01T09:00:00"}],
+               now="x", backtests=[_bt()])
+    assert "### 机上検証(バックテスト)" in d and "### 検証の解釈" in d
+    assert "人気7+ に集中している。" in d and "記載者: 友田" in d
+
+
+def test_extract_pulls_the_headline_values():
+    from hro_operations.evidence import extract
+    rep = {"bets": 658, "roi": 1.669, "hit_rate": 0.0836,
+           "ci": {"lo": 1.1, "hi": 2.3, "p_le_1": 0.007}}
+    assert extract(rep) == {"n_bets": 658, "roi": 1.669, "hit_rate": 0.0836,
+                            "p_le_1": 0.007}
+
+
+def test_extract_survives_a_run_without_ci():
+    from hro_operations.evidence import extract
+    assert extract({"bets": 0})["p_le_1"] is None
+
+
+def test_recorded_result_drops_the_per_bet_detail():
+    """★明細まで入れると行が巨大になる。代表値と設定だけ残す。"""
+    from hro_operations.evidence import record
+
+    class _C:
+        def __init__(self):
+            self.params = None
+
+        def execute(self, sql, params=()):
+            self.params = params
+            return self
+
+        def fetchone(self):
+            return (1,)
+
+    import json
+    c = _C()
+    record(c, label="L", kind="flow-backtest", bet_type="tan",
+           period=("20250906", "20260301"),
+           params={"threshold": 0.1368},
+           result={"bets": 10, "roi": 1.5, "details": [1, 2, 3], "_bets": [4, 5]},
+           command="hro-ops flow-backtest …")
+    stored = json.loads(c.params[7])
+    assert "details" not in stored and "_bets" not in stored
+    assert stored["bets"] == 10

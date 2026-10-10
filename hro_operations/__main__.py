@@ -590,6 +590,30 @@ def _month_chunks(d_from: str, d_to: str) -> list[tuple[str, str]]:
     return out
 
 
+def _record_evidence(args, *, kind: str, bet_type: str | None, params: dict,
+                     result: dict, label_suffix: str = "") -> None:
+    """検証の結果を strategy_backtests へ。**実行したその場で**記録する。
+
+    ★後から転記すると、数字が合っている保証が無く、都合のよい結果だけ書いた
+      疑いも晴れない。記録に失敗しても検証そのものは止めない(表示は出ている)。
+    """
+    from .evidence import record
+    try:
+        with _tax_conn() as conn:
+            r = record(conn, label=args.record + label_suffix, kind=kind,
+                       bet_type=bet_type,
+                       period=(args.d_from, args.d_to), params=params, result=result,
+                       note=getattr(args, "record_note", None))
+    except Exception as e:   # noqa: BLE001
+        print(f"  ⚠ 検証結果を記録できません: {type(e).__name__}: {str(e)[:160]}")
+        if "strategy_backtests" in str(e):
+            print("    hro-db/schema/34_strategy_backtests.sql が未適用です")
+        return
+    print(f"  ✓ 検証として記録しました #{r['id']}「{args.record + label_suffix}」"
+          f"(回収率 {r['roi']:.4f} / {r['n_bets']:,}件"
+          + (f" / P(<=1)={r['p_le_1']:.3f}" if r["p_le_1"] is not None else "") + ")")
+
+
 def _cmd_flow_backtest(args) -> int:
     """flow_tan(複勝)の期間回収率。払戻は nl_hr の確定複勝で決済する。"""
     from hro_features.config import load_config as load_features_config
@@ -677,6 +701,23 @@ def _cmd_flow_backtest(args) -> int:
         print("  ※実測=判断に使ったスナップが発走の何秒前か。配信遅れで当日これが"
               "手元にあったとは限らない(締切前の到着は flow-usable で確認する)")
     print("  ※払戻は確定複勝(パリミュチュエル)。判断時のオッズでは払われない")
+    if getattr(args, "record", None):
+        _record_evidence(args, kind="flow-backtest",
+                         bet_type=getattr(args, "bet_type", "fuku"),
+                         params={
+                             "source": args.flow_source,
+                             "lead_seconds": args.flow_lead_seconds,
+                             "flow_minutes": args.flow_minutes,
+                             "threshold": args.flow_threshold,
+                             "max_odds": args.max_odds,
+                             "min_ninki": getattr(args, "min_ninki", 0),
+                             "max_ninki": getattr(args, "max_ninki", 0),
+                             "min_tan_odds": getattr(args, "min_tan_odds", 0.0),
+                             "max_tan_odds": getattr(args, "max_tan_odds", 0.0),
+                             "min_horses": getattr(args, "min_horses", 0),
+                             "normalize": getattr(args, "normalize", False),
+                             "amount": args.amount,
+                         }, result=r)
     return 0
 
 
@@ -878,6 +919,26 @@ def _cmd_flow_combo(args) -> int:
               f"  [{ci.get('lo', 0):.3f}, {ci.get('hi', 0):.3f}]   {ci.get('p_le_1', 0):.3f}")
     print("\n  ※2頭・3頭が同時に要るので的中率は激減する。本数と分散を一緒に見ること。")
     print("  ※組が作れたレースだけが分母(1頭しか候補が無いレースは除外)。")
+    if getattr(args, "record", None):
+        # ★券種×人気下限の組ごとに1行。まとめて1件にすると、どの条件の結果か
+        #   後から分からなくなる(戦略書に載せるのは条件つきの数字)。
+        for r in res:
+            if not r.get("bets"):
+                continue
+            _record_evidence(
+                args, kind="flow-combo", bet_type=r["bet"],
+                params={"source": args.flow_source,
+                        "lead_seconds": args.flow_lead_seconds,
+                        "flow_minutes": args.flow_minutes,
+                        "threshold": args.flow_threshold,
+                        "min_ninki": r.get("min_ninki"),
+                        "max_ninki": args.max_ninki,
+                        "mode": args.mode, "partners": args.partners,
+                        "partner_by": args.partner_by,
+                        "max_combos": args.max_combos, "amount": args.amount,
+                        "how": how},
+                result=r, label_suffix=f" / {names.get(r['bet'], r['bet'])}"
+                                       f" 人気{r.get('min_ninki') or 1}+")
     return 0
 
 
@@ -1544,6 +1605,34 @@ def _tax_conn():
     return psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True)
 
 
+def _cmd_evidence(args) -> int:
+    """★記録した机上検証を一覧/取り下げる。"""
+    from .evidence import fetch, supersede
+    with _tax_conn() as conn:
+        if args.supersede:
+            n = supersede(conn, args.supersede, note=args.note)
+            print(f"#{args.supersede} を取り下げました(消していません)" if n
+                  else f"#{args.supersede} は見つからないか既に取り下げ済みです")
+            return 0 if n else 1
+        rows = fetch(conn, include_superseded=args.all)
+    if not rows:
+        print("検証の記録がありません"
+              "(hro-ops flow-backtest … --record \"<見出し>\" で記録されます)")
+        return 1
+    print(f"{'#':>4} {'実施日':<11} {'券種':<8} {'期間':<19} {'件数':>7}"
+          f" {'的中率':>7} {'回収率':>8} {'P(<=1)':>7}  見出し")
+    for r in rows:
+        mark = " [取下]" if r.get("superseded_at") else ""
+        hr = f"{r['hit_rate']:.1%}" if r.get("hit_rate") is not None else "-"
+        p = f"{r['p_le_1']:.3f}" if r.get("p_le_1") is not None else "-"
+        print(f"{r['id']:>4} {str(r['ran_at'])[:10]:<11} {(r.get('bet_type') or '-'):<8}"
+              f" {r['period_from']}〜{r['period_to']} {int(r.get('n_bets') or 0):>7,}"
+              f" {hr:>7} {(r.get('roi') or 0):>8.4f} {p:>7}  {r['label']}{mark}")
+        if args.verbose and r.get("command"):
+            print(f"      {r['command']}")
+    return 0
+
+
 def _version_row(conn, version: int | None):
     """版を1つ引く。省略なら live の現行版。"""
     if version:
@@ -1626,8 +1715,13 @@ def _cmd_strategy_spec(args) -> int:
 
         # 既定: 生成して下書きにする
         notes = _notes_rows(conn, vid)
+        from .evidence import fetch as fetch_backtests
+        try:
+            bts = fetch_backtests(conn)
+        except Exception:   # noqa: BLE001 - 34 未適用でも仕様書は作れる
+            bts = []
         now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S JST")
-        md = render(v, notes, now=now)
+        md = render(v, notes, now=now, backtests=bts)
         r = save_draft(conn, vid, md, regenerate=True)
         if r["status"] == "draft_exists":
             print(f"- 下書きが既にあります(v{v['version']} rev{r['revision']})。"
@@ -2061,6 +2155,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで")
     p_bt.add_argument("--normalize", action="store_true",
                       help="そのレースの値動き総量で割る(S/N比にする)")
+    p_bt.add_argument("--record", metavar="LABEL",
+                      help="★この検証を strategy_backtests に記録する"
+                           "(戦略書の⑧に載る)。見出しを指定")
+    p_bt.add_argument("--record-note", help="--record に添える補足")
     p_bt.add_argument("--show-bets", action="store_true",
                       help="購入を1点ずつ表示する(本数が少ない日の目視確認用)")
     p_bt.set_defaults(func=_cmd_flow_backtest)
@@ -2122,6 +2220,10 @@ def main(argv: list[str] | None = None) -> int:
                            "★軸は『勝つ馬』を当てるが、相手に要るのは『2着に来る確率』。"
                            "どちらが良いかはデータに決めさせる")
     p_cb.add_argument("--amount", type=int, default=100)
+    p_cb.add_argument("--record", metavar="LABEL",
+                      help="★この検証を strategy_backtests に記録する"
+                           "(戦略書の⑧に載る)。見出しを指定")
+    p_cb.add_argument("--record-note", help="--record に添える補足")
     p_cb.set_defaults(func=_cmd_flow_combo)
 
     p_sw = sub.add_parser("flow-sweep",
@@ -2322,6 +2424,15 @@ def main(argv: list[str] | None = None) -> int:
                        help="却下(買わなかった馬・見送ったレース)と通過した規則も出す")
     p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
     p_dec.set_defaults(func=_cmd_decisions)
+
+    p_ev = sub.add_parser("evidence",
+                          help="★記録した机上検証を一覧(戦略書の⑧に載るもの)")
+    p_ev.add_argument("--all", action="store_true", help="取り下げたものも出す")
+    p_ev.add_argument("--verbose", action="store_true", help="実行コマンドも出す")
+    p_ev.add_argument("--supersede", type=int, metavar="ID",
+                      help="その検証を取り下げる(消さずに印を付ける)")
+    p_ev.add_argument("--note", help="--supersede の理由")
+    p_ev.set_defaults(func=_cmd_evidence)
 
     p_spec = sub.add_parser("strategy-spec",
                             help="★戦略書(仕様)。下書きを作り、編集し、確定する")
