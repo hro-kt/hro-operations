@@ -232,3 +232,27 @@ def test_race_day_flags(monkeypatch):
 def test_race_day_registered_on_both_servers():
     assert agent._COMMANDS["vm"]["race_day"] is agent._b_race_day
     assert agent._COMMANDS["windows"]["race_day"] is agent._b_race_day
+
+
+def test_settle_from_db_for_a_past_day(monkeypatch):
+    """★後日の決済。JSONL は run-day を回した機にしか無いので DB から読む。"""
+    cmd, cwd, _ = agent._b_settle({"date": "20261004", "from_db": True, "modes": "live"})
+    assert cmd == ["poetry", "run", "hro-buyer", "settle", "--from-db",
+                   "--budget-key", "20261004", "--write", "--modes", "live"]
+    assert cwd.endswith("hro-operations")
+
+
+def test_settle_defaults_to_the_jsonl_path(monkeypatch):
+    cmd, _, _ = agent._b_settle({"date": "20261004"})
+    assert "--results" in cmd and "--from-db" not in cmd
+
+
+def test_settle_rejects_a_crafted_modes_value():
+    with pytest.raises(ValueError):
+        agent._b_settle({"date": "20261004", "from_db": True, "modes": "live; rm -rf /"})
+
+
+def test_settle_runs_on_both_servers():
+    """おまかせを Windows で回しても「未対応の kind」で止まらないこと。"""
+    assert agent._COMMANDS["vm"]["settle"] is agent._b_settle
+    assert agent._COMMANDS["windows"]["settle"] is agent._b_settle

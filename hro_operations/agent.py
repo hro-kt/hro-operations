@@ -105,9 +105,19 @@ def _b_refresh(a: dict):
 
 def _b_settle(a: dict):
     d = _ymd(a.get("date"), _today_jst())
-    results = f"results_{d}.jsonl"   # 安全な固定パターン(任意パス不可)
     # --write で bet_settlements に記録(admin の損益/実績に反映)。
-    cmd = ["poetry", "run", "hro-buyer", "settle", "--results", results, "--write"]
+    if a.get("from_db"):
+        # ★DB の bet_results から決済する。JSONL は run-day を回した機にしか無いので、
+        #   **後日の決済**(払戻は開催の3〜5日後)はこちらでないと別の機から打てない。
+        cmd = ["poetry", "run", "hro-buyer", "settle", "--from-db",
+               "--budget-key", d, "--write"]
+        modes = str(a.get("modes") or "live")
+        if not re.fullmatch(r"[a-z_]+(,[a-z_]+)*", modes):
+            raise ValueError(f"modes は英小文字のカンマ区切り: {modes!r}")
+        cmd += ["--modes", modes]
+    else:
+        results = f"results_{d}.jsonl"   # 安全な固定パターン(任意パス不可)
+        cmd = ["poetry", "run", "hro-buyer", "settle", "--results", results, "--write"]
     if a.get("watch"):               # 常駐: 開催中は定期的に再決済(段階確定, 冪等)
         cmd += ["--watch"]
     return (cmd, os.path.join(_home(), "hro-operations"), {})
@@ -558,7 +568,10 @@ _COMMANDS = {
                 #   既定は VM を勧める
                 "close_day": _b_close_day,
                 # ★VM が無い/落ちている時の退避。Windows からでも開催日を回せる
-                "race_day": _b_race_day},
+                "race_day": _b_race_day,
+                # ★決済は DB しか触らないのでどちらでも動く。おまかせを Windows で
+                #   回したときに「未対応の kind」で止まらないよう両方に置く
+                "settle": _b_settle},
 }
 
 

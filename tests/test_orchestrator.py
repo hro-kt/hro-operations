@@ -58,9 +58,30 @@ def test_finish_steps_sync_before_close():
     assert not any(s.resident for s in fin)
 
 
-def test_finish_steps_no_settle_is_passed_through():
-    fin = orc.finish_steps("20261011", no_settle=True)
-    assert fin[-1].args["no_settle"] is True
+def test_same_day_close_never_settles():
+    """★払戻(HR)は開催の3〜5日後にしか配信されない。当日の決済は空振りするだけ。
+
+    当日に出せる確定値は IPAT 自身の記録(受付明細の払戻)の方で、close_day は
+    それを取り込んで損益まで出す。
+    """
+    close = next(s for s in orc.finish_steps("20261011") if s.kind == "close_day")
+    assert close.args["no_settle"] is True
+
+
+def test_finish_sync_carries_no_date_so_smart_sync_stays_on():
+    """★date を渡すと SYNC_SMART が切れて「その日以降のみ」になる。
+
+    取りに行きたいのは**過去の開催日の払戻**なので、日付を渡してはいけない。
+    """
+    sync = next(s for s in orc.finish_steps("20261011") if s.kind == "sync_all")
+    assert "date" not in sync.args
+
+
+def test_finish_steps_appends_settlement_for_arrived_payouts():
+    fin = orc.finish_steps("20261011", settle_dates=["20261004", "20261005"])
+    assert [s.kind for s in fin] == ["sync_all", "close_day", "settle", "settle"]
+    assert [s.args["date"] for s in fin if s.kind == "settle"] == ["20261004", "20261005"]
+    assert all(s.args["from_db"] for s in fin if s.kind == "settle")
 
 
 # --- 停止時刻 -----------------------------------------------------------
@@ -125,6 +146,8 @@ def test_describe_lists_every_step_with_target():
 class _FakeConn:
     """execute を SQL の先頭で振り分ける最小の偽接続。"""
 
+    pending_dates: list = []
+
     def __init__(self, *, running=(), statuses=None):
         self.running = {(k, t, d): i for i, (k, t, d) in enumerate(running, start=900)}
         self.statuses = dict(statuses or {})
@@ -156,6 +179,8 @@ class _FakeConn:
             self._result = [("",)]
         elif s.startswith("SELECT id, kind FROM ops_job WHERE target='windows'"):
             self._result = []                    # JV-Link は空いている
+        elif "FROM bet_results" in s:
+            self._result = [(d,) for d in self.pending_dates]
         else:                                    # pragma: no cover - 想定外は落とす
             raise AssertionError(f"未知のSQL: {s[:80]}")
         return self
@@ -275,20 +300,64 @@ def test_finish_refuses_sync_while_jvlink_is_still_held():
     assert rc == 1
 
 
-def test_failed_sync_makes_the_close_skip_settlement():
-    """★払戻(nl_hr)が入っていないのに決済まで行くと、全件ハズレとして書く。"""
+def test_failed_sync_skips_the_deferred_settlement():
+    """★同期に失敗したら、払戻が入っていないかもしれないので決済へ進まない。
+
+    当日の締め(IPAT の記録)はそのまま続ける。そちらは JV-Data に依らない。
+    """
     import json
 
-    class _FailSync(_FakeConn):
+    class _FailSync(_DoneConn):
+        pending_dates = ["20261004"]
+
         def execute(self, sql, params=()):
             out = super().execute(sql, params)
             if " ".join(sql.split()).startswith("INSERT INTO ops_job"):
-                jid = self._result[0][0]
-                self.statuses[jid] = "failed" if params[0] == "sync_all" else "done"
+                if params[0] == "sync_all":
+                    self.statuses[self._result[0][0]] = "failed"
             return out
 
     conn, cfg = _FailSync(), _cfg(job_id=42, poll_seconds=0.01,
                                   finish_timeout_seconds=2.0)
     assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 1
+    kinds = [k for k, _, _ in conn.inserted]
+    assert kinds == ["sync_all", "close_day"]            # settle へ進まない
     close = next(a for k, _, a in conn.inserted if k == "close_day")
     assert json.loads(close)["no_settle"] is True
+
+
+def test_arrived_payouts_are_settled_after_the_sync():
+    """★「今日の分を今日締める」のではなく「届いた分をその日に片付ける」。
+
+    払戻は開催の3〜5日後なので、開催日ごとに人が思い出して押す必要をなくす。
+    """
+    class _WithPending(_DoneConn):
+        pending_dates = ["20261004", "20261005"]
+
+    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
+                                     finish_timeout_seconds=2.0)
+    assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
+    assert [k for k, _, _ in conn.inserted] == ["sync_all", "close_day",
+                                                "settle", "settle"]
+
+
+def test_no_settle_disables_the_deferred_settlement():
+    class _WithPending(_DoneConn):
+        pending_dates = ["20261004"]
+
+    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
+                                     finish_timeout_seconds=2.0,
+                                     settle_pending=False)
+    assert orc._finish(conn, orc.finish_steps(cfg.date), cfg) == 0
+    assert [k for k, _, _ in conn.inserted] == ["sync_all", "close_day"]
+
+
+def test_settlement_targets_the_close_machine():
+    class _WithPending(_DoneConn):
+        pending_dates = ["20261004"]
+
+    conn, cfg = _WithPending(), _cfg(job_id=42, poll_seconds=0.01,
+                                     finish_timeout_seconds=2.0,
+                                     close_target="windows")
+    orc._finish(conn, orc.finish_steps(cfg.date, close_target="windows"), cfg)
+    assert [t for k, t, _ in conn.inserted if k == "settle"] == ["windows"]

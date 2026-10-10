@@ -1448,7 +1448,8 @@ def _cmd_race_day(args) -> int:
         date=args.date, flow_args=flow_args,
         flow_target=args.flow_target, close_target=args.close_target,
         with_run_odds=not args.no_run_odds, with_netkeiba=not args.no_netkeiba,
-        with_sync=not args.no_sync, no_settle=args.no_settle,
+        with_sync=not args.no_sync, settle_pending=not args.no_settle,
+        settle_within_days=args.settle_within_days,
         stop_after_minutes=args.stop_after_minutes, max_restarts=args.max_restarts,
         poll_seconds=args.poll_seconds, dry_run=args.dry_run, job_id=args.job_id))
 
@@ -1802,7 +1803,11 @@ def main(argv: list[str] | None = None) -> int:
                       help="速報オッズ(JV-Link)を起こさない(既に別経路で回している時)")
     p_rd.add_argument("--no-netkeiba", action="store_true", help="netkeiba を起こさない")
     p_rd.add_argument("--no-sync", action="store_true", help="最後の JV-Data 同期をしない")
-    p_rd.add_argument("--no-settle", action="store_true", help="締めで決済まで行かない")
+    p_rd.add_argument("--no-settle", action="store_true",
+                      help="払戻が届いた過去の開催日の決済をしない"
+                           "(当日分はそもそも決済しない。払戻は開催の3〜5日後)")
+    p_rd.add_argument("--settle-within-days", type=int, default=28,
+                      help="決済待ちの開催日を何日さかのぼって探すか(既定28)")
     p_rd.add_argument("--stop-after-minutes", type=int, default=3,
                       help="最終発走 + これ分 で常駐を止める(既定3)")
     p_rd.add_argument("--max-restarts", type=int, default=3,
