@@ -376,6 +376,24 @@ def _b_flow_day(a: dict):
     return (["bash", "scripts/flow_day.sh"], os.path.join(_home(), "hro-operations"), env)
 
 
+def _b_close_day(a: dict):
+    """開催日の締め(Windows)。IPAT の記録を取り込み、突合・損益・決済まで一度に。
+
+    ★IPAT を触るので Windows。JV-Link は使わないので run_odds と競合しない。
+    ★CLI を3回叩くと3回ログインする。1本にまとめてログインを1回で済ませる。
+    ★払戻(nl_hr)が未取込なら決済は飛ばせる(no_settle)。IPAT 側の損益は
+      nl_hr に依らず出るので、締め自体は成立する。
+    """
+    d = _ymd(a.get("date"), _today_jst())
+    cmd = ["poetry", "run", "hro-buyer", "ipat", "close-day", "--budget-key", d]
+    if a.get("no_settle"):
+        cmd.append("--no-settle")
+    recipe = os.environ.get("HRO_IPAT_RECIPE") or os.path.join(
+        os.path.expanduser("~"), "ipat_recipe.json")
+    cmd += ["--ipat-recipe", recipe]
+    return (cmd, os.path.join(_home(), "hro-buyer"), {})
+
+
 def _b_flow_day_windows(a: dict):
     """flow 戦略の day-runner(Windows)。IPAT を実績のある機械から叩く経路。
 
@@ -488,7 +506,9 @@ _COMMANDS = {
                 "tyb_poll": _b_tyb_poll, "reparse": _b_reparse, "jrdb_load": _b_jrdb_load,
                 "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
                 # IPAT を実績のある Windows から叩く経路(VM と二者択一。同時に走らせない)
-                "flow_day": _b_flow_day_windows},
+                "flow_day": _b_flow_day_windows,
+                # ★開催日の締め。IPAT を触るので Windows
+                "close_day": _b_close_day},
 }
 
 

@@ -320,3 +320,22 @@ def test_run_day_accepts_umatan():
 
     sh = (root.parent / "scripts" / "flow_day.sh").read_text(encoding="utf-8")
     assert "--flow-partners" in sh
+
+
+def test_close_day_runs_on_windows_with_the_recipe():
+    """★開催日の締めは IPAT を触るので Windows。JV-Link は使わないので
+    run_odds と競合しない。"""
+    from hro_operations.agent import _COMMANDS, _b_close_day
+
+    assert "close_day" in _COMMANDS["windows"]
+    assert "close_day" not in _COMMANDS["vm"]
+
+    cmd, cwd, _env = _b_close_day({"date": "20261010"})
+    assert cmd[:5] == ["poetry", "run", "hro-buyer", "ipat", "close-day"]
+    pairs = dict(zip(cmd, cmd[1:]))
+    assert pairs["--budget-key"] == "20261010"
+    assert pairs["--ipat-recipe"].endswith("ipat_recipe.json")
+    assert "hro-buyer" in cwd
+    # 払戻が未取込のときは決済だけ飛ばせる
+    cmd2, _c, _e = _b_close_day({"date": "20261010", "no_settle": True})
+    assert "--no-settle" in cmd2
