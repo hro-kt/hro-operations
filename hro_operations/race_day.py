@@ -340,16 +340,27 @@ def _persist_orders(cfg: DayConfig, orders: list, logs: list | None = None) -> N
     ★以前は decision_logs を空で渡していた。「どのロジックでこう判断した」が
       bet_orders.reason の**文字列**にしか無く、後から機械的に切れなかった。
       flow は評価した全頭ぶん(却下も)を constraints に構造化して積む。
+    ★**2回に分けて書く**。PostgresOrderSink.emit は orders と logs を同一
+      トランザクションで入れるので、根拠の書き込みが失敗すると**購入指示まで
+      巻き戻る**。根拠は後から読む資料で、購入指示は発注と突合の土台なので、
+      前者の失敗で後者を落としてはいけない。根拠は警告だけ出して先へ進む。
     """
     from hro_moneymanager.postgres import PostgresOrderSink
     now = datetime.now(JST)
-    for lg in (logs or []):
-        if getattr(lg, "decided_at", None) is None:
-            lg.decided_at = now
     sink = PostgresOrderSink(PostgresConfig.from_env(), budget_key=cfg.date,
                              decided_at=now)
     try:
-        sink.emit(orders, list(logs or []))
+        if orders:
+            sink.emit(orders, [])
+        for lg in (logs or []):
+            if getattr(lg, "decided_at", None) is None:
+                lg.decided_at = now
+        if logs:
+            try:
+                sink.emit([], list(logs))
+            except Exception as e:   # noqa: BLE001 - 根拠が残らなくても発注は続ける
+                log.warning("判断の記録に失敗(購入指示は記録済み): %s: %s",
+                            type(e).__name__, e)
     finally:
         close = getattr(sink, "close", None)
         if callable(close):

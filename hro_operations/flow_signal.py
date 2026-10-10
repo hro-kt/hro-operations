@@ -937,9 +937,16 @@ def _dlog(race_id: str, selection_id: str, bet_type: str, *, accepted: bool,
 
 
 def _failed(gates: list[dict]) -> str:
-    """落ちた規則を1行で。reason 欄(人が読む側)に入れる。"""
+    """落ちた規則を1行で。reason 欄(人が読む側)に入れる。
+
+    ★小数はそのまま出すと桁が邪魔なので丸める。正確な値は constraints 側にある。
+    """
+    def _v(x):
+        return f"{x:.4f}" if isinstance(x, float) else x
+
     bad = [g for g in gates if not g["pass"]]
-    return "; ".join(f"{g['rule']}({g.get('got')})" for g in bad) if bad else "all gates passed"
+    return ("; ".join(f"{g['rule']}({_v(g.get('got'))})" for g in bad) if bad
+            else "all gates passed")
 
 
 def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_version: str,

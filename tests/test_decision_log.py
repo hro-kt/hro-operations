@@ -121,3 +121,36 @@ def test_recommended_amount_is_zero_for_rejections():
     got = _by_sel(logs)
     assert got["01"].recommended_amount == 1000
     assert got["02"].recommended_amount == 0
+
+
+def test_order_persistence_survives_a_failing_decision_log(monkeypatch):
+    """★根拠の書き込み失敗で購入指示まで巻き戻してはいけない。
+
+    emit は同一トランザクションなので、1回で渡すと logs の失敗が orders を
+    道連れにする。根拠は後から読む資料、購入指示は発注と突合の土台。
+    """
+    from hro_operations import race_day
+
+    seen: list = []
+
+    class _Sink:
+        def __init__(self, *a, **k):
+            pass
+
+        def emit(self, orders, logs):
+            seen.append((len(orders), len(logs)))
+            if logs:
+                raise RuntimeError("jsonb error")
+
+        def close(self):
+            pass
+
+    import hro_moneymanager.postgres as mmpg
+    monkeypatch.setattr(mmpg, "PostgresOrderSink", _Sink)
+    monkeypatch.setattr(race_day.PostgresConfig, "from_env", staticmethod(lambda: None))
+
+    cfg = type("C", (), {"date": "20261011"})()
+    log = type("L", (), {"decided_at": None})()
+    race_day._persist_orders(cfg, ["o1", "o2"], [log])      # 例外が外へ出ないこと
+    assert log.decided_at is not None
+    assert seen == [(2, 0), (0, 1)]      # 購入指示が先、根拠は別トランザクション
