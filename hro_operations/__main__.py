@@ -1544,8 +1544,132 @@ def _tax_conn():
     return psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True)
 
 
+def _cmd_strategy_doc(args) -> int:
+    """★戦略書を生成する(コードと DB から。手書きしない)。"""
+    from datetime import datetime
+
+    from .strategy_doc import render
+    from .tax_report import build
+    with _tax_conn() as conn:
+        rep = build(conn, args.year)
+        rows = conn.execute(
+            "SELECT id, version, mode, effective_from, effective_to, params_hash, params"
+            " FROM strategy_versions WHERE mode='live' ORDER BY version").fetchall()
+    versions = [{"id": r[0], "version": r[1], "mode": r[2], "effective_from": r[3],
+                 "effective_to": r[4], "params_hash": r[5], "params": r[6]}
+                for r in rows]
+    now = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S JST")
+    doc = render(rep, versions=versions, now=now)
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            fh.write(doc)
+        print(f"書き出しました: {args.out}({len(doc):,} 文字)")
+        return 0
+    print(doc)
+    return 0
+
+
+def _cmd_coverage(args) -> int:
+    """★網羅性(全レースに規則を当てた記録)を見る。"""
+    from .coverage import STATUS_JP, summarize
+    where = ("left(budget_key,4)=%s" if args.year else "budget_key=%s")
+    key = args.year or args.date
+    with _tax_conn() as conn:
+        rows = [dict(zip(("budget_key", "race_id", "jyo_cd", "race_num", "hasso_time",
+                          "status", "reason", "n_bought", "amount"), r))
+                for r in conn.execute(
+                    "SELECT budget_key,race_id,jyo_cd,race_num,hasso_time,status,"
+                    "reason,n_bought,amount FROM race_coverage "
+                    f"WHERE {where} ORDER BY budget_key, hasso_time", (key,)).fetchall()]
+    if not rows:
+        print(f"{key}: 網羅性の記録がありません(hro-ops tax-seal --date ... で作られます)")
+        return 1
+    rep = summarize(rows)
+    print(f"=== 網羅性 {key} ===")
+    print(f"  対象レース      : {rep['races']}")
+    print(f"  規則を当てた    : {rep['evaluated']} ({rep['evaluated_ratio']:.1%})")
+    print(f"  買ったレース    : {rep['bought_races']} ({rep['bought_ratio']:.1%})"
+          f" / {rep['tickets']}点 {rep['amount']:,}円")
+    print("  内訳:")
+    for st, n in sorted(rep["by_status"].items(), key=lambda kv: -kv[1]):
+        print(f"    {STATUS_JP.get(st, st):<28} {n:>5}R")
+    if args.gaps:
+        print("")
+        print("  規則を当てられなかったレース:")
+        for r in rows:
+            if r["status"] in ("no_data", "not_running"):
+                print(f"    {r['budget_key']} {r['jyo_cd']}{int(r['race_num']):>2}R"
+                      f" {r['hasso_time']}  {STATUS_JP.get(r['status'])}"
+                      f"  {r['reason'] or ''}")
+    return 0
+
+
+def _cmd_tax_report(args) -> int:
+    """★年次の税務集計(live のみ・暦年)。"""
+    import json as _json
+
+    from .tax_report import build
+    with _tax_conn() as conn:
+        rep = build(conn, args.year)
+    if args.json:
+        print(_json.dumps(rep, ensure_ascii=False, indent=2, default=str))
+        return 0
+    t, c, st = rep["totals"], rep["coverage"], rep["settled"]
+    print(f"=== 税務集計 {args.year} (live のみ) ===")
+    print(f"  購入総額   : {t['bought']:>12,} 円   ← IPAT の記録(受付)が真実源")
+    print(f"  払戻総額   : {t['payout']:>12,} 円")
+    print(f"  収支       : {t['pnl']:>+12,} 円"
+          f"   回収率 {t['roi']:.4f}" if t["roi"] else "")
+    print(f"  購入日数   : {t['days']} 日 / 受付 {t['receipts']} 件"
+          f" / 購入のあった月 {rep['months_active']}")
+    print("")
+    print("  【継続性・網羅性】")
+    print(f"    対象レース    : {c['races']}")
+    if c["evaluated_ratio"] is not None:
+        print(f"    規則を当てた  : {c['evaluated']} ({c['evaluated_ratio']:.1%})")
+        print(f"    買ったレース  : {c['bought_races']} ({c['bought_ratio']:.1%})")
+    print("    月別:")
+    for m in rep["monthly"]:
+        cm = c["by_month"].get(m["ym"], {})
+        print(f"      {m['ym']}  {m['days']:>2}日 購入{m['bought']:>10,}"
+              f" 払戻{m['payout']:>10,}"
+              f"  対象{cm.get('races', 0):>4}R 当て{cm.get('evaluated', 0):>4}R"
+              f" 買{cm.get('bought', 0):>3}R")
+    print("")
+    print("  【所得の計算 ─ どちらを採るかは税理士の判断】")
+    print(f"    雑所得(全額経費)   : {rep['tax']['zatsu']:>+12,} 円"
+          f"  = 払戻 − 購入総額")
+    if rep["tax"]["ichiji"] is None:
+        print("    一時所得           : 計算できません(決済が未了。"
+              "払戻は開催の3〜5日後に配信されます)")
+    else:
+        print(f"    一時所得           : {rep['tax']['ichiji']:>+12,} 円"
+              f"  = (払戻 − 的中分の購入 {st['hit_cost']:,} − 特別控除"
+              f" {rep['tax']['ichiji_deduction']:,}) ÷ 2")
+    print(f"    決済済み           : {st['n_settled']} 件(的中 {st['n_hit']})")
+    print("")
+    m = rep["manual"]
+    if m["n"]:
+        print(f"  【手動購入 ─ 自動購入と分けて明示】 {m['n']} 件 {m['amount']:,} 円")
+        for r in m["rows"][:20]:
+            print(f"    {r['budget_key']} {r['race_id']} {r['bet_type']}"
+                  f" {r['selection_id']} {r['amount']:,}円 受付{r['receipt']}")
+    else:
+        print("  手動購入: なし(すべて自動購入)")
+    print("")
+    print(f"  戦略の版   : {len(rep['strategy_versions'])} 版")
+    for v in rep["strategy_versions"]:
+        print(f"    #{v['id']} v{v['version']} {v['effective_from']}"
+              f"〜{v['effective_to'] or '現行'} {v['params_hash'][:12]}…")
+    sl = rep["seals"]
+    print(f"  封印       : {sl['links']} 環 / {sl['days']} 日"
+          f"(最終 {sl['last']})")
+    return 0
+
+
 def _cmd_tax_seal(args) -> int:
     """★その日の記録を封印する(ハッシュ鎖)。締めの後に走らせる。"""
+    from .coverage import build_coverage
     from .tax_seal import seal_day, verify_chain
     with _tax_conn() as conn:
         if args.verify:
@@ -1566,6 +1690,20 @@ def _cmd_tax_seal(args) -> int:
             d = d.strip()
             if not d:
                 continue
+            # ★網羅性を先に作ってから封印する。封印に含めるので順序が要る。
+            #   1つのコマンドにまとめておけば順序を間違えようがない。
+            if not args.no_coverage:
+                try:
+                    cov = build_coverage(conn, d)
+                    if cov.get("races"):
+                        print(f"  {d} 網羅: 対象{cov['races']}R のうち"
+                              f" 規則を当てた {cov['evaluated']}R"
+                              f"({cov['evaluated_ratio']:.1%})"
+                              f" / 買った {cov['bought_races']}R {cov['tickets']}点")
+                        for st, n in sorted(cov["by_status"].items()):
+                            print(f"      {st}: {n}R")
+                except Exception as e:   # noqa: BLE001 - 封印は続ける
+                    print(f"  ⚠ {d} の網羅性を作れません: {type(e).__name__}: {e}")
             r = seal_day(conn, d, force=args.force)
             if r["status"] == "sealed":
                 print(f"✓ {d} を封印しました rev{r['revision']}"
@@ -2010,6 +2148,26 @@ def main(argv: list[str] | None = None) -> int:
     p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
     p_dec.set_defaults(func=_cmd_decisions)
 
+    p_doc = sub.add_parser("strategy-doc",
+                           help="★戦略書を生成(コードと DB から。手書きしない)")
+    p_doc.add_argument("--year", required=True)
+    p_doc.add_argument("--out", help="書き出し先(.md)。省略すると標準出力")
+    p_doc.set_defaults(func=_cmd_strategy_doc)
+
+    p_cov = sub.add_parser("coverage",
+                           help="★網羅性(全レースに規則を当てた記録)を見る")
+    g = p_cov.add_mutually_exclusive_group(required=True)
+    g.add_argument("--date", help="開催日 YYYYMMDD")
+    g.add_argument("--year", help="年 YYYY")
+    p_cov.add_argument("--gaps", action="store_true",
+                       help="規則を当てられなかったレースを列挙する")
+    p_cov.set_defaults(func=_cmd_coverage)
+
+    p_tr = sub.add_parser("tax-report", help="★年次の税務集計(live のみ・暦年)")
+    p_tr.add_argument("--year", required=True)
+    p_tr.add_argument("--json", action="store_true")
+    p_tr.set_defaults(func=_cmd_tax_report)
+
     p_seal = sub.add_parser("tax-seal",
                             help="★その日の記録を封印する(ハッシュ鎖)。締めの後に")
     p_seal.add_argument("--date", help="開催日 YYYYMMDD(カンマ区切りで複数可)")
@@ -2017,6 +2175,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="封印せず、鎖が壊れていないかだけ検証する")
     p_seal.add_argument("--force", action="store_true",
                         help="内容が同じでも新しい環を足す")
+    p_seal.add_argument("--no-coverage", action="store_true",
+                        help="網羅性の記録を作り直さない(封印だけやり直すとき)")
     p_seal.set_defaults(func=_cmd_tax_seal)
 
     p_sv = sub.add_parser("strategy",

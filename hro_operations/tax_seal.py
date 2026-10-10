@@ -47,6 +47,11 @@ SELECT receipt, coalesce(bought,0)::bigint, coalesce(payout,0)::bigint
 FROM ipat_receipts WHERE budget_key = %s ORDER BY receipt
 """
 
+_SQL_COVERAGE = """
+SELECT status, count(*)::int, sum(n_bought)::int, sum(amount)::int
+FROM race_coverage WHERE budget_key = %s GROUP BY status ORDER BY status
+"""
+
 _SQL_VERSIONS = """
 SELECT DISTINCT v.id, v.version, v.params_hash, v.mode
 FROM bet_orders o JOIN strategy_versions v ON v.id = o.strategy_version_id
@@ -68,6 +73,12 @@ def build_content(conn, budget_key: str) -> dict:
     n_dlogs = conn.execute(
         "SELECT count(*) FROM bet_decision_logs WHERE budget_key=%s",
         (budget_key,)).fetchone()[0]
+    # ★網羅性も封印に含める。「全レースに規則を当てた」という主張そのものが
+    #   後から書き換えられては意味がないので、金額と同じ鎖で守る。
+    try:
+        coverage = [list(r) for r in conn.execute(_SQL_COVERAGE, (budget_key,)).fetchall()]
+    except Exception:   # noqa: BLE001 - 30_race_coverage.sql 未適用でも封印はできる
+        coverage = None
     bought = sum(r[1] for r in receipts)
     payout = sum(r[2] for r in receipts)
     return {
@@ -77,6 +88,7 @@ def build_content(conn, budget_key: str) -> dict:
         "orders": orders,
         "ipat_votes": votes,
         "ipat_receipts": receipts,
+        "coverage": coverage,
         # ★金額の真実源は IPAT 側。bet_orders は「出した指示」であって成立額ではない
         "totals": {"bought": int(bought), "payout": int(payout),
                    "n_receipts": len(receipts), "n_orders": len(orders),

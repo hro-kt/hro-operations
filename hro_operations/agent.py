@@ -517,6 +517,9 @@ def _b_tax_seal(a: dict):
         cmd += ["--date", d]
         if a.get("force"):
             cmd.append("--force")
+        # ★網羅性は封印に含まれるので、既定で作り直す(順序はコマンド側が守る)
+        if a.get("no_coverage"):
+            cmd.append("--no-coverage")
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
