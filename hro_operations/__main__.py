@@ -1562,8 +1562,18 @@ def _cmd_strategy_doc(args) -> int:
     doc = render(rep, versions=versions, now=now)
     if args.save:
         from .strategy_doc import save, summary_of
-        with _tax_conn() as conn:
-            r = save(conn, args.year, doc, summary_of(rep))
+        try:
+            with _tax_conn() as conn:
+                r = save(conn, args.year, doc, summary_of(rep))
+        except Exception as e:   # noqa: BLE001 - 原因を名指しする
+            msg = str(e)
+            print(f"✗ 保存できません: {type(e).__name__}: {msg[:200]}")
+            if "strategy_documents" in msg:
+                print("    hro-db/schema/32_strategy_documents.sql が未適用です。"
+                      "29〜32 を番号順に適用してください:")
+                print("      for f in hro-db/schema/*.sql; do "
+                      "psql \"$CONN\" -v ON_ERROR_STOP=1 -f \"$f\"; done")
+            return 1
         if r["status"] == "saved":
             print(f"✓ 保存しました {args.year} rev{r['revision']}"
                   f" ({len(doc):,} 文字 hash={r['hash'][:16]}…)")

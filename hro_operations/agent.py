@@ -832,7 +832,14 @@ def _finish(conn, job_id, status: str, code) -> None:
 def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float = 5.0) -> None:
     builder = _COMMANDS.get(server, {}).get(kind)
     if builder is None:
-        _append_log(conn, job_id, f"[agent] 未対応の kind={kind!r} (server={server})\n")
+        # ★いちばん多い原因は「このエージェントが古い」。何をすれば直るかまで書く。
+        #   kind 名だけ出しても、admin の画面を見た人は次の手が分からない。
+        _append_log(
+            conn, job_id,
+            f"[agent] 未対応の kind={kind!r} (server={server})\n"
+            f"[agent] このエージェントが知っている kind: {sorted(_COMMANDS.get(server, {}))}\n"
+            f"[agent] 新しい処理なら、この機の hro-operations を更新して"
+            f"**エージェントを再起動**してください(kind はプロセス起動時に確定します)。\n")
         _finish(conn, job_id, "failed", -1)
         return
     try:
