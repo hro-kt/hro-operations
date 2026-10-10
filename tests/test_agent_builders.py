@@ -155,3 +155,80 @@ def test_vote_starts_10s_before_deadline_by_default(monkeypatch):
     p = agent._flow_day_params({"date": "20260922"})
     assert p["act_lead"] == 70 and p["deadline_lead"] == 60
     assert p["timing_problem"] is None
+
+
+# --- 開催日オーケストレータ -------------------------------------------------
+
+def _race_day_args(**kw):
+    a = {"date": "20261011", "source": "netkeiba", "thresholds": {"90": 0.1368},
+         "lead_seconds": 90, "act_before_deadline_seconds": 10, "mode": "paper"}
+    a.update(kw)
+    return a
+
+
+def _opt(cmd, flag):
+    return cmd[cmd.index(flag) + 1]
+
+
+def test_race_day_builds_cli_with_flow_args_as_json(monkeypatch):
+    import json
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, cwd, env = agent._b_race_day(_race_day_args(min_ninki=7,
+                                                     bet_type="tan:1000,umatan:100"))
+    assert cmd[:4] == ["poetry", "run", "hro-ops", "race-day"]
+    assert cwd.endswith("hro-operations")
+    fa = json.loads(_opt(cmd, "--flow-args"))
+    assert fa["min_ninki"] == 7 and fa["bet_type"] == "tan:1000,umatan:100"
+    assert fa["date"] == "20261011"
+
+
+def test_race_day_defaults_runner_to_windows_and_close_to_vm(monkeypatch):
+    """★IPAT は Windows 実績機、締めは JV-Link 不要なので VM(落ちにくい方)。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, _, _ = agent._b_race_day(_race_day_args())
+    assert _opt(cmd, "--flow-target") == "windows"
+    assert _opt(cmd, "--close-target") == "vm"
+
+
+def test_race_day_unknown_target_falls_back(monkeypatch):
+    """知らない値で勝手な機に投げない。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, _, _ = agent._b_race_day(_race_day_args(flow_target="mars",
+                                                 close_target="mars"))
+    assert _opt(cmd, "--flow-target") == "windows"
+    assert _opt(cmd, "--close-target") == "vm"
+
+
+def test_race_day_validates_flow_settings_at_enqueue(monkeypatch):
+    """★1日走って0件を避けるため、リードの矛盾は投入時点で落とす。"""
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    with pytest.raises(ValueError):
+        agent._b_race_day(_race_day_args(mode="live", lead_seconds=30,
+                                         act_before_deadline_seconds=10,
+                                         confirm_live=True,
+                                         max_amount_per_order=5000,
+                                         max_amount_per_day=20000))
+
+
+def test_race_day_live_requires_confirm_and_limits(monkeypatch):
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    with pytest.raises(ValueError):
+        agent._b_race_day(_race_day_args(mode="live"))
+
+
+def test_race_day_passes_own_job_id_as_parent(monkeypatch):
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, _, _ = agent._b_race_day(_race_day_args(job_id=421))
+    assert _opt(cmd, "--job-id") == "421"
+
+
+def test_race_day_flags(monkeypatch):
+    monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
+    cmd, _, _ = agent._b_race_day(_race_day_args(no_sync=True, dry_run=True))
+    assert "--no-sync" in cmd and "--dry-run" in cmd
+    assert "--no-netkeiba" not in cmd and "--no-run-odds" not in cmd
+
+
+def test_race_day_registered_on_both_servers():
+    assert agent._COMMANDS["vm"]["race_day"] is agent._b_race_day
+    assert agent._COMMANDS["windows"]["race_day"] is agent._b_race_day

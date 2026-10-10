@@ -14,6 +14,7 @@ kind をホワイトリストのコマンドに写像して subprocess 実行、
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -436,6 +437,43 @@ def _b_flow_day_windows(a: dict):
     return (cmd, os.path.join(_home(), "hro-operations"), {})
 
 
+def _b_race_day(a: dict):
+    """★開催日を1ジョブで回す(オーケストレータ)。
+
+    これ1本で: preflight → 常駐3本の起動 → 落ちたら再投入 → 最終発走後に停止
+    → JV-Link が空いてから sync_all → close_day。開催日に押すボタンはこれだけ。
+
+    ★自分では何も重い処理をしない。子ジョブを ops_job に投入して見張るだけなので、
+      **VM で回す**(Windows は 2 vCPU で、Update の自動再起動実績もある)。
+    ★flow の設定(args)は flow_day とまったく同じものを受ける。ここで
+      _flow_day_params を通して**投入時点で検証**する。1日走って0件を避けるため、
+      リードの大小や live の上限はここで落ちる。
+    ★子へは生の args をそのまま渡す。解決は子の builder が行う(設定の解釈を1箇所に)。
+    """
+    p = _flow_day_params(a)          # 投入時点の検証(不正なら例外→failed で即わかる)
+    flow_keys = ("threshold", "thresholds", "source", "lead_seconds", "flow_minutes",
+                 "act_lead_seconds", "act_before_deadline_seconds",
+                 "deadline_lead_seconds", "flat_amount", "max_per_race", "bet_type",
+                 "partners", "min_ninki", "max_ninki", "min_horses", "mode",
+                 "confirm_live", "max_amount_per_order", "max_amount_per_day", "date")
+    flow_args = {k: a[k] for k in flow_keys if k in a}
+    flow_args["date"] = p["date"]
+    cmd = ["poetry", "run", "hro-ops", "race-day", "--date", p["date"],
+           "--flow-args", json.dumps(flow_args, ensure_ascii=False),
+           "--flow-target", ("vm" if a.get("flow_target") == "vm" else "windows"),
+           "--close-target", ("windows" if a.get("close_target") == "windows" else "vm"),
+           "--stop-after-minutes", str(_int(a.get("stop_after_minutes"), 3)),
+           "--max-restarts", str(_int(a.get("max_restarts"), 3))]
+    if a.get("job_id"):
+        cmd += ["--job-id", str(_int(a.get("job_id"), 0))]
+    for flag, key in (("--no-run-odds", "no_run_odds"), ("--no-netkeiba", "no_netkeiba"),
+                      ("--no-sync", "no_sync"), ("--no-settle", "no_settle"),
+                      ("--dry-run", "dry_run")):
+        if a.get(key):
+            cmd.append(flag)
+    return (cmd, os.path.join(_home(), "hro-operations"), {})
+
+
 def _b_flow_check(a: dict):
     """締切前オッズの検査(flow-coverage + flow-usable)。発注はしない。翌日に回す。"""
     d = _ymd(a.get("date"), _today_jst())
@@ -500,6 +538,8 @@ _COMMANDS = {
     "vm": {"productionize": _b_productionize, "trio_day": _b_trio_day,
            "refresh": _b_refresh, "settle": _b_settle, "backfill": _b_backfill,
            "flow_day": _b_flow_day, "flow_check": _b_flow_check,
+           # ★開催日はこれ1本。他の kind を順に起こして止める
+           "race_day": _b_race_day,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
            # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
            "close_day": _b_close_day,
@@ -516,7 +556,9 @@ _COMMANDS = {
                 "flow_day": _b_flow_day_windows,
                 # ★Windows でも動く(レシピと認証情報がこちらに在るため)。
                 #   既定は VM を勧める
-                "close_day": _b_close_day},
+                "close_day": _b_close_day,
+                # ★VM が無い/落ちている時の退避。Windows からでも開催日を回せる
+                "race_day": _b_race_day},
 }
 
 
@@ -630,6 +672,28 @@ def _reclaim(conn, server: str, *, stale_sec: float, startup: bool = False) -> i
     return len(rows)
 
 
+def _sweep_orphans(conn) -> int:
+    """親(オーケストレータ)が終わっているのに残っている子ジョブに停止を要求する。
+
+    ★オーケストレータは自分で後始末をするが、Windows の中止は taskkill /F なので
+      後始末が走らずに降りることがある。そのとき常駐の子(run_odds / netkeiba /
+      flow ランナー)が**誰にも見られないまま動き続ける**。翌開催で二重起動の
+      原因になるので、親の終了を見て機械的に畳む。
+    ★ここでは cancel_requested を立てるだけ。実際に止めるのはその子を抱えている
+      agent なので、サーバをまたいでも効く。
+    """
+    rows = conn.execute(
+        "UPDATE ops_job c SET cancel_requested = true "
+        "FROM ops_job p "
+        "WHERE c.status IN ('queued','running') AND NOT c.cancel_requested "
+        "  AND (c.args->>'orchestrated_by') ~ '^[0-9]+$' "
+        "  AND p.id = (c.args->>'orchestrated_by')::bigint "
+        "  AND p.status IN ('done','failed','canceled') "
+        "RETURNING c.id").fetchall()
+    conn.commit()
+    return len(rows)
+
+
 def _canceled(conn, job_id) -> bool:
     r = conn.execute("SELECT cancel_requested FROM ops_job WHERE id=%s", (job_id,)).fetchone()
     conn.commit()
@@ -654,7 +718,9 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
         _finish(conn, job_id, "failed", -1)
         return
     try:
-        cmd, cwd, extra_env = builder(args or {})
+        # ★自分の job_id をビルダへ渡す。オーケストレータは子ジョブに親として
+        #   書き込み、自分の cancel_requested も見に行く必要がある。
+        cmd, cwd, extra_env = builder({**(args or {}), "job_id": job_id})
     except Exception as e:
         _append_log(conn, job_id, f"[agent] args検証エラー: {e}\n")
         _finish(conn, job_id, "failed", -1)
@@ -793,6 +859,10 @@ def run_agent(server: str, interval: float = 5.0, concurrency: int = 3) -> int:
                     n = _reclaim(conn, server, stale_sec=stale_sec)
                     if n:
                         print(f"agent: 心拍の途絶えたジョブ {n} 件を回収しました", flush=True)
+                    n = _sweep_orphans(conn)
+                    if n:
+                        print(f"agent: 親の終わった子ジョブ {n} 件に停止を要求しました",
+                              flush=True)
                 _heartbeat(conn, server, None)
                 if not slots.acquire(blocking=False):  # 空きスロット無し → 待つ
                     time.sleep(interval); continue

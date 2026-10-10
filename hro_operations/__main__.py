@@ -1430,6 +1430,29 @@ def _cmd_netkeiba_compare(args) -> int:
     return 0
 
 
+def _cmd_race_day(args) -> int:
+    """★開催日を1本で回す。常駐の起動・再投入・停止・同期・締めまで。"""
+    import json as _json
+
+    from .orchestrator import OrchestratorConfig, run
+    try:
+        flow_args = _json.loads(args.flow_args) if args.flow_args else {}
+    except ValueError as e:
+        print(f"--flow-args が JSON ではありません: {e}")
+        return 2
+    if not isinstance(flow_args, dict):
+        print("--flow-args は JSON オブジェクト({...})で指定してください")
+        return 2
+    flow_args.setdefault("date", args.date)
+    return run(OrchestratorConfig(
+        date=args.date, flow_args=flow_args,
+        flow_target=args.flow_target, close_target=args.close_target,
+        with_run_odds=not args.no_run_odds, with_netkeiba=not args.no_netkeiba,
+        with_sync=not args.no_sync, no_settle=args.no_settle,
+        stop_after_minutes=args.stop_after_minutes, max_restarts=args.max_restarts,
+        poll_seconds=args.poll_seconds, dry_run=args.dry_run, job_id=args.job_id))
+
+
 def _cmd_agent(args) -> int:
     from .agent import run_agent
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
@@ -1765,6 +1788,31 @@ def main(argv: list[str] | None = None) -> int:
     p_once.add_argument("--race", nargs=6, required=True,
                         metavar=("YEAR", "MONTHDAY", "JYO", "KAIJI", "NICHIJI", "RACENUM"))
     p_once.set_defaults(func=_cmd_once)
+
+    p_rd = sub.add_parser("race-day",
+                          help="★開催日を1ジョブで回す(常駐の起動/再投入/停止→同期→締め)")
+    p_rd.add_argument("--date", required=True)
+    p_rd.add_argument("--flow-args", default="",
+                      help="flow_day ジョブに渡す設定(JSON)。admin の flow 設定そのまま")
+    p_rd.add_argument("--flow-target", choices=("vm", "windows"), default="windows",
+                      help="IPAT を叩く機。二者択一(両方で走らせない)")
+    p_rd.add_argument("--close-target", choices=("vm", "windows"), default="vm",
+                      help="締めを走らせる機。JV-Link を使わないので VM が安定")
+    p_rd.add_argument("--no-run-odds", action="store_true",
+                      help="速報オッズ(JV-Link)を起こさない(既に別経路で回している時)")
+    p_rd.add_argument("--no-netkeiba", action="store_true", help="netkeiba を起こさない")
+    p_rd.add_argument("--no-sync", action="store_true", help="最後の JV-Data 同期をしない")
+    p_rd.add_argument("--no-settle", action="store_true", help="締めで決済まで行かない")
+    p_rd.add_argument("--stop-after-minutes", type=int, default=3,
+                      help="最終発走 + これ分 で常駐を止める(既定3)")
+    p_rd.add_argument("--max-restarts", type=int, default=3,
+                      help="常駐1本あたりの再投入上限(既定3)")
+    p_rd.add_argument("--poll-seconds", type=float, default=20.0)
+    p_rd.add_argument("--job-id", type=int, default=None,
+                      help="自分の ops_job.id(agent が渡す)。子ジョブの親として記録する")
+    p_rd.add_argument("--dry-run", action="store_true",
+                      help="計画と停止時刻だけ出して終わる(ジョブを投入しない)")
+    p_rd.set_defaults(func=_cmd_race_day)
 
     p_agent = sub.add_parser("agent", help="ops_jobキューを処理する常駐エージェント(admin画面から実行される)")
     p_agent.add_argument("--server", required=True, choices=("vm", "windows"),
