@@ -182,12 +182,12 @@ def test_race_day_builds_cli_with_flow_args_as_json(monkeypatch):
     assert fa["date"] == "20261011"
 
 
-def test_race_day_defaults_runner_to_windows_and_close_to_vm(monkeypatch):
-    """★IPAT は Windows 実績機、締めは JV-Link 不要なので VM(落ちにくい方)。"""
+def test_race_day_runs_flow_and_close_on_windows(monkeypatch):
+    """★締めは Windows 専用。IPAT のレシピと認証情報が在る機でしか締められない。"""
     monkeypatch.setattr(agent, "_daily_budget", lambda d: None)
     cmd, _, _ = agent._b_race_day(_race_day_args())
     assert _opt(cmd, "--flow-target") == "windows"
-    assert _opt(cmd, "--close-target") == "vm"
+    assert _opt(cmd, "--close-target") == "windows"
 
 
 def test_race_day_unknown_target_falls_back(monkeypatch):
@@ -196,7 +196,17 @@ def test_race_day_unknown_target_falls_back(monkeypatch):
     cmd, _, _ = agent._b_race_day(_race_day_args(flow_target="mars",
                                                  close_target="mars"))
     assert _opt(cmd, "--flow-target") == "windows"
-    assert _opt(cmd, "--close-target") == "vm"
+    assert _opt(cmd, "--close-target") == "windows"
+
+
+def test_close_day_is_windows_only():
+    """★VM でも技術的には動くが、認証情報を2か所に置くと置き忘れる。
+
+    2026-10-11 に VM で実行して FileNotFoundError(~/ipat_recipe.json)。
+    投票した機で締める、に一本化する。
+    """
+    assert agent._COMMANDS["windows"]["close_day"] is agent._b_close_day
+    assert "close_day" not in agent._COMMANDS["vm"]
 
 
 def test_race_day_validates_flow_settings_at_enqueue(monkeypatch):

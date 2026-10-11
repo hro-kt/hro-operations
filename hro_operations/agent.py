@@ -408,12 +408,11 @@ def _b_flow_day(a: dict):
 def _b_close_day(a: dict):
     """開催日の締め。IPAT の記録を取り込み、突合・損益・決済まで一度に。
 
-    ★**VM でも Windows でも動く**。IPAT にログインするのは最初の取り込みだけで、
-      残り(突合・収益・決済)は DB しか触らない。JV-Link も使わない。
-      必要なのは Playwright・IPAT のレシピ・IPAT の認証情報(環境変数)の3つ。
-    ★レース後に走るので flow ランナーとは競合しない。Windows は JV-Link 機で
-      2 vCPU、かつ Windows Update で勝手に再起動した実績がある(2026-10-04)ので、
-      **VM で回す方が安定する**。
+    ★**Windows 専用**。IPAT のレシピと認証情報は投票する機にしか無い。
+      VM でも技術的には動くが、認証情報を2か所に置くことになるうえ、
+      置き忘れると開催日の夜に FileNotFoundError で初めて気づく
+      (2026-10-11 に実害)。投票した機で締める、に一本化する。
+    ★レース後に走るので flow ランナーとは競合しない(JV-Link も使わない)。
     ★CLI を3回叩くと3回ログインする。1本にまとめてログインを1回で済ませる。
     ★払戻(nl_hr)が未取込なら決済は飛ばせる(no_settle)。IPAT 側の損益は
       nl_hr に依らず出るので、締め自体は成立する。
@@ -489,7 +488,8 @@ def _b_race_day(a: dict):
     cmd = ["poetry", "run", "hro-ops", "race-day", "--date", p["date"],
            "--flow-args", json.dumps(flow_args, ensure_ascii=False),
            "--flow-target", ("vm" if a.get("flow_target") == "vm" else "windows"),
-           "--close-target", ("windows" if a.get("close_target") == "windows" else "vm"),
+           # ★締めは Windows 専用(レシピと認証情報が在る機)
+           "--close-target", "windows",
            "--stop-after-minutes", str(_int(a.get("stop_after_minutes"), 3)),
            "--max-restarts", str(_int(a.get("max_restarts"), 3))]
     if a.get("job_id"):
@@ -665,8 +665,7 @@ _COMMANDS = {
            # ★戦略書(仕様)の下書きを生成。確定はジョブからはやらない
            "strategy_spec": _b_strategy_spec,
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
-           # ★締めは JV-Link を使わないので VM でも動く(むしろこちらが安定)
-           "close_day": _b_close_day,
+
            # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
            "netkeiba_odds": _b_netkeiba_odds},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
@@ -681,8 +680,7 @@ _COMMANDS = {
                 "fetch_ts_odds": _b_fetch_ts_odds, "env_check": _b_env_check,
                 # IPAT を実績のある Windows から叩く経路(VM と二者択一。同時に走らせない)
                 "flow_day": _b_flow_day_windows,
-                # ★Windows でも動く(レシピと認証情報がこちらに在るため)。
-                #   既定は VM を勧める
+                # ★締めは Windows 専用(レシピと認証情報がこの機にしか無い)
                 "close_day": _b_close_day,
                 # ★VM が無い/落ちている時の退避。Windows からでも開催日を回せる
                 "race_day": _b_race_day,

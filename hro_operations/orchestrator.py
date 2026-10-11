@@ -70,7 +70,7 @@ def start_steps(date: str, flow_args: dict, *, flow_target: str = "windows",
     return steps
 
 
-def finish_steps(date: str, *, close_target: str = "vm") -> list[Step]:
+def finish_steps(date: str, *, close_target: str = "windows") -> list[Step]:
     """最終レース後。**常駐を止めてから**、当日にしかできないことだけをやる。
 
     ★当日やる価値があるのは締めだけ。close_day は IPAT の**投票履歴**を読むが、
@@ -354,7 +354,8 @@ class OrchestratorConfig:
     date: str
     flow_args: dict = field(default_factory=dict)
     flow_target: str = "windows"       # IPAT を叩く機(Windows と VM の二択)
-    close_target: str = "vm"           # 締めは JV-Link を使わないので VM が安定
+    # ★締めは Windows 専用。IPAT のレシピと認証情報は投票する機にしか無い
+    close_target: str = "windows"
     with_run_odds: bool = True
     with_netkeiba: bool = True
     stop_after_minutes: int = 3        # 最終発走 + これ分 で常駐を止める

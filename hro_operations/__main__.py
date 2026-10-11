@@ -2419,8 +2419,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="flow_day ジョブに渡す設定(JSON)。admin の flow 設定そのまま")
     p_rd.add_argument("--flow-target", choices=("vm", "windows"), default="windows",
                       help="IPAT を叩く機。二者択一(両方で走らせない)")
-    p_rd.add_argument("--close-target", choices=("vm", "windows"), default="vm",
-                      help="締めを走らせる機。JV-Link を使わないので VM が安定")
+    p_rd.add_argument("--close-target", choices=("windows",), default="windows",
+                      help="締めを走らせる機。IPAT のレシピと認証情報が在る Windows 固定")
     p_rd.add_argument("--no-run-odds", action="store_true",
                       help="速報オッズ(JV-Link)を起こさない(既に別経路で回している時)")
     p_rd.add_argument("--no-netkeiba", action="store_true", help="netkeiba を起こさない")

@@ -322,15 +322,18 @@ def test_run_day_accepts_umatan():
     assert "--flow-partners" in sh
 
 
-def test_close_day_runs_on_either_machine():
-    """★IPAT にログインするのは最初の取り込みだけで、残りは DB しか触らない。
-    JV-Link も使わないので **VM でも動く**(むしろ Windows は JV-Link 機で
-    2 vCPU、勝手に再起動した実績もあるので VM の方が安定する)。
+def test_close_day_is_windows_only():
+    """★締めは**投票した機(Windows)**でやる。
+
+    技術的には VM でも動く(IPAT にログインするのは最初の取り込みだけで、残りは
+    DB しか触らない)。しかし IPAT のレシピと認証情報を2か所に置くことになり、
+    置き忘れると**開催日の夜に初めて気づく**(2026-10-11 に VM で実行して
+    FileNotFoundError: ~/ipat_recipe.json)。選択肢を残さない。
     """
     from hro_operations.agent import _COMMANDS, _b_close_day
 
     assert "close_day" in _COMMANDS["windows"]
-    assert "close_day" in _COMMANDS["vm"]
+    assert "close_day" not in _COMMANDS["vm"]
 
     cmd, cwd, _env = _b_close_day({"date": "20261010"})
     assert cmd[:5] == ["poetry", "run", "hro-buyer", "ipat", "close-day"]
