@@ -1605,6 +1605,25 @@ def _tax_conn():
     return psycopg.connect(PostgresConfig.from_env().conninfo, autocommit=True)
 
 
+def _cmd_win_check(args) -> int:
+    """★Windows 機(JV-Link / IPAT)の設定が揃っているかを一度に確認する。"""
+    from .wincheck import NG, OK, WARN, run_all
+    rows = run_all(skip_jvlink=args.skip_jvlink)
+    mark = {OK: "○", WARN: "△", NG: "✗"}
+    print("=== Windows 機の確認 ===")
+    for r in rows:
+        print(f"  {mark[r['level']]} {r['name']:<28} {r['detail']}")
+        if r["fix"]:
+            print(f"      → {r['fix']}")
+    ng = [r for r in rows if r["level"] == NG]
+    print("")
+    if ng:
+        print(f"✗ {len(ng)} 件を直す必要があります。このままでは開催日に動きません")
+        return 1
+    print("○ 設定は揃っています")
+    return 0
+
+
 def _cmd_evidence(args) -> int:
     """★記録した机上検証を一覧/取り下げる。"""
     from .evidence import fetch, supersede
@@ -2424,6 +2443,12 @@ def main(argv: list[str] | None = None) -> int:
                        help="却下(買わなかった馬・見送ったレース)と通過した規則も出す")
     p_dec.add_argument("--json", action="store_true", help="そのまま JSON で出す")
     p_dec.set_defaults(func=_cmd_decisions)
+
+    p_wc = sub.add_parser("win-check",
+                          help="★Windows 機(JV-Link/IPAT/DB/時計/エージェント)の確認")
+    p_wc.add_argument("--skip-jvlink", action="store_true",
+                      help="JV-Link の確認を飛ばす(開催中は run_odds が握っているため)")
+    p_wc.set_defaults(func=_cmd_win_check)
 
     p_ev = sub.add_parser("evidence",
                           help="★記録した机上検証を一覧(戦略書の⑧に載るもの)")
