@@ -229,3 +229,25 @@ def test_bet_unit_survives_a_small_per_type_stake():
                  amount=100, probability=0, odds=0, expected_return=0, edge=0,
                  kelly_fraction=0, model_version="t", reason="t")
     assert ex._amount_reason(o) is None, ex._amount_reason(o)
+
+
+def test_schema_error_names_the_file_to_apply():
+    """★列名だけ出しても次の手が分からない。適用するファイルまで名指しする。
+
+    記録に要る列が無いと _persist_orders が例外を投げ、process_race が中断する。
+    _run_races は1レースの失敗で日を止めないので、**全レースでログに traceback を
+    吐きながら1件も買わない**(2026-10-11 に実害)。走り出す前に落とす。
+    """
+    from hro_operations.race_day import _REQUIRED_SCHEMA, _REQUIRED_TABLES
+    assert ("bet_orders", "strategy_version_id", "hro-db/schema/29_tax_record.sql") \
+        in _REQUIRED_SCHEMA
+    assert any(t == "bet_orders_archive" for t, _ in _REQUIRED_TABLES)
+
+
+def test_run_day_checks_the_schema_before_waiting_for_races():
+    import inspect
+
+    from hro_operations import race_day
+    src = inspect.getsource(race_day.run_day)
+    i_chk, i_races = src.index("check_schema(cfg)"), src.index("day_races(db")
+    assert i_chk < i_races, "レースを引く前にスキーマを確かめること"

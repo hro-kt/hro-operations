@@ -389,7 +389,15 @@ def _persist_orders(cfg: DayConfig, orders: list, logs: list | None = None) -> N
                              decided_at=now)
     try:
         if orders:
-            sink.emit(orders, [])
+            try:
+                sink.emit(orders, [])
+            except Exception as e:
+                # ★ここで落ちると process_race が中断し、**購入まで到達しない**。
+                #   例外を握りつぶす _run_races のログに紛れると気づけないので、
+                #   何が起きているかを1行で名指しする。
+                log.error("★購入指示を記録できないため、このレースは買いません: "
+                          "%s: %s", type(e).__name__, str(e)[:200])
+                raise
         for lg in (logs or []):
             if getattr(lg, "decided_at", None) is None:
                 lg.decided_at = now
@@ -630,9 +638,59 @@ def _resolve_strategy_version(cfg: DayConfig) -> int | None:
     return vid
 
 
+class SchemaError(RuntimeError):
+    """記録に要るスキーマが足りない(走っても1件も買えない)。"""
+
+
+# 記録に要る列と表。足りないと **1レース目で初めて分かる** ことになる。
+_REQUIRED_SCHEMA = (
+    ("bet_orders", "strategy_version_id", "hro-db/schema/29_tax_record.sql"),
+)
+_REQUIRED_TABLES = (
+    ("bet_orders_archive", "hro-db/schema/29_tax_record.sql"),
+    ("bet_decision_logs_archive", "hro-db/schema/29_tax_record.sql"),
+)
+
+
+def check_schema(cfg: DayConfig) -> None:
+    """記録に要るスキーマが揃っているかを**開催日の最初に**確かめる。
+
+    ★揃っていないと _persist_orders が例外を投げる。process_race は1レースの
+      失敗で日全体を止めない作りなので、**全レースでログに traceback を吐き
+      ながら1件も買わない**という最悪の壊れ方をする(2026-10-11 に実害)。
+      1レースを落とすのと36レース黙って落とすのでは被害が違う。走り出す前に落とす。
+    ★不足している表/列と、適用するファイルまで名指しする。列名だけ出しても
+      次の手が分からない。
+    """
+    import psycopg
+    missing: list[str] = []
+    with psycopg.connect(PostgresConfig.from_env().conninfo) as conn:
+        for table, col, src in _REQUIRED_SCHEMA:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.columns"
+                " WHERE table_name=%s AND column_name=%s", (table, col)).fetchone()
+            if not row:
+                missing.append(f"{table}.{col} がありません → {src}")
+        for table, src in _REQUIRED_TABLES:
+            row = conn.execute(
+                "SELECT 1 FROM information_schema.tables WHERE table_name=%s",
+                (table,)).fetchone()
+            if not row:
+                missing.append(f"{table} がありません → {src}")
+    if missing:
+        raise SchemaError(
+            "DB のスキーマが足りません。このまま走ると**1件も買えません**:\n  "
+            + "\n  ".join(missing)
+            + "\n適用: for f in hro-db/schema/*.sql; do "
+              'psql "$CONN" -v ON_ERROR_STOP=1 -f "$f"; done')
+
+
 def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
     """開催日を通す。no_wait=True なら待機せず全レースを即処理(当日途中起動/検証用)。"""
     check_timing(cfg)
+    # ★記録に要るスキーマを**先に**確かめる。足りないと全レースで例外を吐きながら
+    #   1件も買わない(process_race は1レースの失敗で日を止めない作りのため)。
+    check_schema(cfg)
     # ★この日の購入指示が依拠する戦略の版。稼働した設定そのものから起こす
     #   (手で書いた宣言は後から書いたのではと疑われる余地が残る)。
     cfg.strategy_version_id = _resolve_strategy_version(cfg)

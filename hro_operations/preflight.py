@@ -48,6 +48,19 @@ def check(db, date: str, cfg) -> dict:
     key = {"y": date[:4], "m": date[4:8]}
     out: dict = {"date": date, "problems": [], "notes": []}
 
+    # ★記録に要るスキーマ。足りないと全レースで例外を吐きながら1件も買わない
+    #   (2026-10-11 に実害)。朝の確認で分かるようにする。
+    try:
+        have = {r["column_name"] for r in db.query(
+            "SELECT column_name FROM information_schema.columns"
+            " WHERE table_name='bet_orders'", {})}
+        if "strategy_version_id" not in have:
+            out["problems"].append(
+                "bet_orders.strategy_version_id がありません。このまま走ると"
+                "**1件も買えません**(hro-db/schema/29_tax_record.sql を適用)")
+    except Exception as e:   # noqa: BLE001 - 確認できなくても他は続ける
+        out["notes"].append(f"スキーマを確認できません: {e}")
+
     r = (db.query(_SQL_RACES, key) or [{}])[0]
     out["races"] = r
     if not (r.get("n") or 0):
