@@ -766,6 +766,60 @@ def _refresh_hasso(cfg: DayConfig, race: tuple[str, ...], fallback: str) -> str:
     return fallback
 
 
+# 開催中に投票履歴を取り込む最短間隔(秒)と、次の締切に要る余裕(秒)
+_VH_INTERVAL_SEC = 900.0
+_VH_NEED_SLACK_SEC = 240.0
+_vh_last: list[float] = []
+
+
+def refresh_vote_history(cfg: DayConfig, executor, slack_sec: float) -> bool:
+    """レース間の空き時間に IPAT の投票履歴を取り込む(当日のリターンを見るため)。
+
+    ★**なぜここでやるか**: IPAT は同時セッションを嫌う。別ジョブでログインしに
+      行くと投票側のセッションを奪いかねない。セッションを既に握っているのは
+      この executor なので、握っている側が片手間に取る(run_odds の中で RACE を
+      取り直すのと同じ理屈)。
+    ★払戻は IPAT の受付明細にその日のうちに載る。bet_settlements は払戻データ
+      (nl_hr)待ちで**開催の3〜5日後**にしか埋まらないので、開催中のリターンは
+      これでしか分からない。
+    ★締切前には絶対にやらない。画面を投票履歴へ移すので、戻る前に締切が来たら
+      そのレースを落とす。余裕(次の締切まで)が足りなければ黙って見送る。
+    ★失敗しても開催日は止めない。表示のための処理であって、購入ではない。
+    """
+    if executor is None or cfg.mode != MODE_LIVE:
+        return False
+    if slack_sec < _VH_NEED_SLACK_SEC:
+        return False
+    now = time.monotonic()
+    if _vh_last and now - _vh_last[0] < _VH_INTERVAL_SEC:
+        return False
+    client = getattr(executor, "client", None)
+    if client is None:
+        return False
+    _vh_last[:] = [now]
+    try:
+        from hro_buyer.__main__ import _cmd_ipat_detail_all
+        if not client.open_vote_history():
+            log.info("投票履歴を開けませんでした(当日のリターンの取り込みは見送り)")
+            return False
+        rows = client.vote_history_rows()
+        _cmd_ipat_detail_all(client, [r["receipt"] for r in rows], save=cfg.date)
+        log.info("投票履歴を取り込みました(受付 %d 件)", len(rows))
+        return True
+    except Exception as e:   # noqa: BLE001 - 表示のための処理。購入を止めない
+        log.warning("投票履歴の取り込みに失敗(購入には影響しません): %s: %s",
+                    type(e).__name__, e)
+        return False
+    finally:
+        # ★必ず投票画面へ戻す。履歴を開いたまま次のレースへ行くと投票できない。
+        try:
+            back = getattr(client, "goto_bet_basic", None)
+            if callable(back):
+                back()
+        except Exception:   # noqa: BLE001
+            log.warning("投票画面へ戻せませんでした。次のレースの投票前に再確認します")
+
+
 def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool, no_wait: bool) -> int:
     processed = 0
     for race, hasso in races:
@@ -785,6 +839,11 @@ def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool,
             if wait < -cfg.grace_seconds:
                 log.info("%s: 締切を %.0fs 超過 skip", race_id, -wait)
                 continue
+            # ★レース間の空きで投票履歴を取り込む(当日のリターンを見るため)。
+            #   締切に余裕があるときだけ。無ければ黙って見送る。
+            if wait > _VH_NEED_SLACK_SEC and not no_wait:
+                refresh_vote_history(cfg, executor, wait)
+                wait = (deadline - datetime.now(JST)).total_seconds()
             if wait > 0 and not no_wait:
                 # ★判断の前に、画面を「そのレースの式別」まで進めておく(preselect)。
                 #   配信遅れで判断は締切ぎりぎりになるので、締切直前に残す作業を
