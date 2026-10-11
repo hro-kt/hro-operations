@@ -91,3 +91,44 @@ def test_run_all_can_skip_jvlink():
     """★開催中は run_odds が JV-Link を握っている。確認のために奪わない。"""
     rows = wc.run_all(skip_jvlink=True)
     assert not any(r["name"] == "JV-Link" for r in rows)
+
+
+def test_home_points_at_the_real_location_when_misconfigured(tmp_path, monkeypatch):
+    """★「間違っている」だけでなく**直すべき値**を出す。
+
+    空の ~\\hro が存在すると、ディレクトリの有無だけでは気づけない
+    (2026-10-11 の新 VM で実際に踏んだ)。中身で判定し、このコードが動いている
+    場所を正解として提示する。
+    """
+    empty = tmp_path / "hro"
+    empty.mkdir()
+    monkeypatch.setenv("HRO_HOME", str(empty))
+    rows = wc.check_home()
+    assert rows[0]["level"] == wc.NG
+    assert "リポジトリがありません" in rows[0]["detail"]
+    # 直すべき値(= このコードの実在場所)が fix に入っている
+    assert wc.actual_home() in rows[0]["fix"]
+    assert "再起動" in rows[0]["fix"]
+
+
+def test_home_flags_the_gap_even_when_repos_exist(tmp_path, monkeypatch):
+    """別の場所にも一式あるが、コードは違う場所から動いている場合。"""
+    other = tmp_path / "hro"
+    for r in ("hro-operations", "hro-synchronizer", "hro-buyer"):
+        (other / r).mkdir(parents=True)
+    monkeypatch.setenv("HRO_HOME", str(other))
+    rows = wc.check_home()
+    assert any("実体とのずれ" in r["name"] for r in rows)
+
+
+def test_actual_home_is_the_repo_parent():
+    import os
+    assert os.path.isdir(os.path.join(wc.actual_home(), "hro-operations"))
+
+
+def test_jvlink_finds_the_synchronizer_even_with_a_broken_home(tmp_path, monkeypatch):
+    """★HRO_HOME が壊れていても JV-Link は確認したい。"""
+    monkeypatch.setenv("HRO_HOME", str(tmp_path))
+    r = wc.check_jvlink(home=str(tmp_path))
+    # 実体側に hro-synchronizer があるので「見つかりません」にはならない
+    assert "見つかりません" not in r["detail"]

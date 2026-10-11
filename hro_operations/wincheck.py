@@ -33,20 +33,49 @@ def check_bitness() -> dict:
               "(32bit は hro-synchronizer 専用)")
 
 
-def check_home() -> list[dict]:
-    """HRO_HOME とリポジトリの実体。
+def actual_home() -> str:
+    """**このコードが実在する場所**から、あるべき HRO_HOME を割り出す。
 
-    ★agent は HRO_HOME からジョブの cwd を組む。実体が
-      Documents\\hro なのに C:\\hro を指していると「作業ディレクトリが存在しません」
-      で全ジョブが落ちる(実際に踏んだ)。
+    ★環境変数を見るだけでは「間違っている」としか言えず、正解を言えない。
+      このファイルは <HOME>/hro-operations/hro_operations/wincheck.py に在るので、
+      3つ上がリポジトリ親=HRO_HOME のあるべき値。設定ミスを指摘するときは
+      **直すべき値まで出す**。
     """
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def check_home() -> list[dict]:
+    r"""HRO_HOME とリポジトリの実体。
+
+    ★agent は HRO_HOME からジョブの cwd を組む。実体が Documents\hro なのに
+      ~\hro を指していると「作業ディレクトリが存在しません」で全ジョブが落ちる
+      (2026-10-11 の新 VM で実際に踏んだ)。**空の ~\hro が存在すると、
+      ディレクトリの有無だけでは気づけない**ので、中身で判定する。
+    """
+    env_set = bool(os.environ.get("HRO_HOME"))
     home = os.environ.get("HRO_HOME") or os.path.join(os.path.expanduser("~"), "hro")
-    out = [_r("HRO_HOME", OK if os.path.isdir(home) else NG, home,
-              "" if os.path.isdir(home) else "実在するリポジトリ親を指すこと")]
-    for repo in ("hro-operations", "hro-synchronizer", "hro-buyer"):
-        p = os.path.join(home, repo)
-        out.append(_r(f"  {repo}", OK if os.path.isdir(p) else NG, p,
-                      "" if os.path.isdir(p) else "git clone / パスを確認"))
+    want = actual_home()
+    repos = ("hro-operations", "hro-synchronizer", "hro-buyer")
+    found = [r for r in repos if os.path.isdir(os.path.join(home, r))]
+
+    if not found:
+        detail = (f"{home}" + ("" if env_set else "(未設定なので既定)")
+                  + " にリポジトリがありません")
+        fix = (f'setx /M HRO_HOME "{want}" を実行し、**エージェントを再起動**'
+               "(環境変数はプロセス起動時に読まれます)")
+        return [_r("HRO_HOME", NG, detail, fix),
+                _r("  実体の場所", OK, f"{want}(このコードが動いている場所)")]
+
+    out = [_r("HRO_HOME", OK if len(found) == len(repos) else NG,
+              home + ("" if env_set else "(未設定なので既定)"))]
+    for r in repos:
+        p = os.path.join(home, r)
+        out.append(_r(f"  {r}", OK if os.path.isdir(p) else NG, p,
+                      "" if os.path.isdir(p) else f"git clone するか HRO_HOME を {want} に"))
+    if os.path.normcase(os.path.abspath(home)) != os.path.normcase(want):
+        out.append(_r("  ★実体とのずれ", NG,
+                      f"HRO_HOME={home} / このコードは {want} から動いています",
+                      f'setx /M HRO_HOME "{want}" → エージェント再起動'))
     return out
 
 
@@ -153,11 +182,14 @@ def check_jvlink(home: str | None = None) -> dict:
 
     ★ここだけは別 venv に出て確認する。この(64bit)プロセスからは COM を開けない。
     """
-    base = home or os.environ.get("HRO_HOME") or os.path.join(
-        os.path.expanduser("~"), "hro")
-    cwd = os.path.join(base, "hro-synchronizer")
-    if not os.path.isdir(cwd):
-        return _r("JV-Link", NG, f"{cwd} がありません")
+    # ★HRO_HOME が壊れていても JV-Link は確認したい。実体の場所も見る。
+    cands = [home, os.environ.get("HRO_HOME"),
+             os.path.join(os.path.expanduser("~"), "hro"), actual_home()]
+    cwd = next((os.path.join(b, "hro-synchronizer") for b in cands
+                if b and os.path.isdir(os.path.join(b, "hro-synchronizer"))), None)
+    if cwd is None:
+        return _r("JV-Link", NG, "hro-synchronizer が見つかりません",
+                  f"HRO_HOME を {actual_home()} に")
     env = {k: v for k, v in os.environ.items()
            if k not in ("VIRTUAL_ENV", "VIRTUAL_ENV_PROMPT", "POETRY_ACTIVE",
                         "PYTHONHOME", "PYTHONPATH")}
