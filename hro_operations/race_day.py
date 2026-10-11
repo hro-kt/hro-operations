@@ -398,15 +398,20 @@ def _persist_orders(cfg: DayConfig, orders: list, logs: list | None = None) -> N
                 log.error("★購入指示を記録できないため、このレースは買いません: "
                           "%s: %s", type(e).__name__, str(e)[:200])
                 raise
-        for lg in (logs or []):
-            if getattr(lg, "decided_at", None) is None:
-                lg.decided_at = now
         if logs:
+            # ★DecisionLog は frozen。代入すると FrozenInstanceError で例外が抜け、
+            #   process_race が中断して **execute_orders に到達しない**
+            #   = 全レースで1件も買わない(2026-10-11 に実害)。replace で作り直す。
+            # ★スタンプ付けも含めて try の中に置く。購入指示を記録した**後**の処理が
+            #   購入を止められる経路を残してはいけない。根拠は後から読む資料で、
+            #   購入はその日しかできない。
             try:
-                sink.emit([], list(logs))
+                stamped = [lg if getattr(lg, "decided_at", None) is not None
+                           else replace(lg, decided_at=now) for lg in logs]
+                sink.emit([], stamped)
             except Exception as e:   # noqa: BLE001 - 根拠が残らなくても発注は続ける
-                log.warning("判断の記録に失敗(購入指示は記録済み): %s: %s",
-                            type(e).__name__, e)
+                log.warning("判断の記録に失敗(購入指示は記録済み。購入は続けます): "
+                            "%s: %s", type(e).__name__, e)
     finally:
         close = getattr(sink, "close", None)
         if callable(close):

@@ -123,24 +123,29 @@ def test_recommended_amount_is_zero_for_rejections():
     assert got["02"].recommended_amount == 0
 
 
-def test_order_persistence_survives_a_failing_decision_log(monkeypatch):
-    """★根拠の書き込み失敗で購入指示まで巻き戻してはいけない。
+def _real_log():
+    """★偽物ではなく**本物の DecisionLog** を使う。
 
-    emit は同一トランザクションなので、1回で渡すと logs の失敗が orders を
-    道連れにする。根拠は後から読む資料、購入指示は発注と突合の土台。
+    frozen dataclass なので代入できない。偽のミュータブルなオブジェクトで
+    テストしていたため、`lg.decided_at = now` が通ってしまい、本番でだけ
+    FrozenInstanceError になった(2026-10-11 に実害: 全レースで1件も買えず)。
     """
-    from hro_operations import race_day
+    from hro_optimizer.models import DecisionLog
+    return DecisionLog(race_id="R", selection_id="08", bet_type="win",
+                       decision="accepted", reason="r", probability=0.0, odds=1.0,
+                       expected_return=0.0, edge=0.0, recommended_amount=1000,
+                       constraints={}, decided_at=None)
 
-    seen: list = []
+
+def _patch_sink(monkeypatch, emit):
+    from hro_operations import race_day
 
     class _Sink:
         def __init__(self, *a, **k):
             pass
 
         def emit(self, orders, logs):
-            seen.append((len(orders), len(logs)))
-            if logs:
-                raise RuntimeError("jsonb error")
+            emit(orders, logs)
 
         def close(self):
             pass
@@ -148,9 +153,67 @@ def test_order_persistence_survives_a_failing_decision_log(monkeypatch):
     import hro_moneymanager.postgres as mmpg
     monkeypatch.setattr(mmpg, "PostgresOrderSink", _Sink)
     monkeypatch.setattr(race_day.PostgresConfig, "from_env", staticmethod(lambda: None))
+    return type("C", (), {"date": "20261011"})()
 
-    cfg = type("C", (), {"date": "20261011"})()
-    log = type("L", (), {"decided_at": None})()
-    race_day._persist_orders(cfg, ["o1", "o2"], [log])      # 例外が外へ出ないこと
-    assert log.decided_at is not None
-    assert seen == [(2, 0), (0, 1)]      # 購入指示が先、根拠は別トランザクション
+
+def test_decision_log_is_stamped_without_mutating_a_frozen_object(monkeypatch):
+    """★frozen への代入は例外になり、購入まで巻き込む。replace で作り直す。"""
+    from hro_operations import race_day
+    seen = []
+    cfg = _patch_sink(monkeypatch, lambda o, l: seen.append((list(o), list(l))))
+    lg = _real_log()
+    race_day._persist_orders(cfg, ["o1"], [lg])
+    assert seen[0] == (["o1"], [])                 # 購入指示が先
+    stamped = seen[1][1][0]
+    assert stamped.decided_at is not None
+    assert lg.decided_at is None                   # 元のオブジェクトは変えない
+
+
+def test_existing_timestamp_is_kept(monkeypatch):
+    from datetime import datetime, timezone
+
+    from hro_operations import race_day
+    seen = []
+    cfg = _patch_sink(monkeypatch, lambda o, l: seen.append((list(o), list(l))))
+    when = datetime(2026, 10, 11, 9, 0, tzinfo=timezone.utc)
+    import dataclasses
+    lg = dataclasses.replace(_real_log(), decided_at=when)
+    race_day._persist_orders(cfg, ["o1"], [lg])
+    assert seen[1][1][0].decided_at == when
+
+
+def test_order_persistence_survives_a_failing_decision_log(monkeypatch):
+    """★根拠の書き込み失敗で購入指示まで巻き戻してはいけない。
+
+    emit は同一トランザクションなので、1回で渡すと logs の失敗が orders を
+    道連れにする。根拠は後から読む資料、購入指示は発注と突合の土台。
+    """
+    from hro_operations import race_day
+    seen = []
+
+    def _emit(orders, logs):
+        seen.append((len(orders), len(logs)))
+        if logs:
+            raise RuntimeError("jsonb error")
+
+    cfg = _patch_sink(monkeypatch, _emit)
+    race_day._persist_orders(cfg, ["o1", "o2"], [_real_log()])  # 例外が外へ出ない
+    assert seen == [(2, 0), (0, 1)]
+
+
+def test_nothing_after_the_order_write_can_stop_the_purchase(monkeypatch):
+    """★購入指示を記録した**後**の処理が購入を止められる経路を残さない。
+
+    根拠は後から読む資料で、購入はその日しかできない。
+    """
+    from hro_operations import race_day
+
+    class _Broken:
+        """decided_at の参照そのもので落ちる(想定外の型が来ても購入を止めない)。"""
+
+        @property
+        def decided_at(self):
+            raise RuntimeError("boom")
+
+    cfg = _patch_sink(monkeypatch, lambda o, l: None)
+    race_day._persist_orders(cfg, ["o1"], [_Broken()])     # 例外が外へ出ないこと
