@@ -812,12 +812,25 @@ def refresh_vote_history(cfg: DayConfig, executor, slack_sec: float) -> bool:
         return False
     finally:
         # ★必ず投票画面へ戻す。履歴を開いたまま次のレースへ行くと投票できない。
-        try:
-            back = getattr(client, "goto_bet_basic", None)
-            if callable(back):
+        back = getattr(client, "goto_bet_basic", None)
+        if not callable(back):
+            log.error("★goto_bet_basic がありません。画面を戻せません"
+                      "(IPAT クライアントの実装を確認)")
+        else:
+            try:
                 back()
+            except Exception as e:   # noqa: BLE001
+                log.warning("投票画面へ戻せませんでした(次の preselect でやり直します): "
+                            "%s: %s", type(e).__name__, e)
+        # ★preselect は (レース, 式別) でキャッシュされ、同じキーなら**画面を動かさない**。
+        #   履歴へ寄り道した以上、画面はもう投票画面ではないので、キャッシュを捨てて
+        #   次の preselect が必ずやり直すようにする。戻せたかどうかに関わらず捨てる
+        #   (「たまたま次のレースだからキーが違う」に依存しない)。
+        try:
+            if hasattr(client, "_preselected_for"):
+                client._preselected_for = None
         except Exception:   # noqa: BLE001
-            log.warning("投票画面へ戻せませんでした。次のレースの投票前に再確認します")
+            pass
 
 
 def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool, no_wait: bool) -> int:
