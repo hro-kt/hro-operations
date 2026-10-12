@@ -1242,3 +1242,26 @@ def test_umatan_orders_survive_the_round_trip_to_a_vote():
         axis, mate = o.selection_id.split("-")
         assert v.kumi == f"{axis}{mate}", f"{o.selection_id} → {v.kumi}"
         assert v.shikibetsu == 6
+
+
+def test_candidate_log_names_the_bet_type_and_ticket_count(caplog):
+    """★券種ごとに1回ずつ呼ばれるので、券種名が無いと同じ行が2回出て
+    「同じレースを二重に処理している」ように見える(2026-10-12 に実際そう見えた)。
+
+    組み合わせ券は点数が頭数と一致しないので、点数も併記する。
+    """
+    import logging
+
+    rows = []
+    for um, late, early, fuku in (("01", "20", "30", "15"), ("02", "30", "30", "20"),
+                                  ("03", "80", "60", "35")):
+        rows.append(_row(um, late, fuku, "late"))
+        rows.append(_row(um, early, fuku, "early"))
+    with caplog.at_level(logging.INFO):
+        flow_orders(FakeDB(rows), RACE, FlowConfig(threshold=0.0), 1000, "mv")
+        flow_orders(FakeDB(rows), RACE,
+                    FlowConfig(threshold=0.0, bet_type="umatan", partners=2), 100, "mv")
+    lines = [r.getMessage() for r in caplog.records if "flow 候補" in str(r.msg)]
+    assert len(lines) == 2
+    assert "[place]" in lines[0] and "[umatan]" in lines[1]
+    assert "点" in lines[0]

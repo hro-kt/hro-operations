@@ -713,8 +713,15 @@ def run_day(cfg: DayConfig, *, no_wait: bool = False) -> int:
                     "(synchronizer の当日同期を確認)", cfg.date)
         return 0
     if cfg.strategy == "flow":
-        log.info("%s: %d レース | flow flat¥%d place | 閾値%+.4f | T-%ds起点T-%dm src=%s | mode=%s",
-                 cfg.date, len(races), cfg.flat_amount, cfg.flow_threshold,
+        # ★サマリは**実際に使う値**を出す。以前は券種が "place" 固定、金額が
+        #   flat_amount 固定、閾値が flow_threshold 固定だった。券種ごとの金額と
+        #   リード別閾値を入れた後も直しておらず、「閾値+0.2802」と出ているのに
+        #   実際は +0.0345 で動く、という読み違えを招いた(2026-10-12)。
+        plan = " + ".join(f"{bt} ¥{amt:,}" for bt, amt in bet_plan(cfg))
+        thr = (" ".join(f"T-{k}s:{v:+.4f}" for k, v in sorted(cfg.flow_thresholds.items()))
+               if cfg.flow_thresholds else f"{cfg.flow_threshold:+.4f}")
+        log.info("%s: %d レース | %s | 閾値 %s | 決定T-%ds 起点T-%dm src=%s | mode=%s",
+                 cfg.date, len(races), plan, thr,
                  cfg.flow_lead_seconds, cfg.flow_minutes, cfg.flow_source, cfg.mode)
     else:
         log.info("%s: %d レース | flat¥%d place | min_er>=%.2f min_prob>=%.2f | T-%ds | mode=%s",

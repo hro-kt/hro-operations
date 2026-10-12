@@ -251,3 +251,36 @@ def test_run_day_checks_the_schema_before_waiting_for_races():
     src = inspect.getsource(race_day.run_day)
     i_chk, i_races = src.index("check_schema(cfg)"), src.index("day_races(db")
     assert i_chk < i_races, "レースを引く前にスキーマを確かめること"
+
+
+def test_startup_summary_shows_the_values_actually_used(caplog, monkeypatch):
+    """★サマリが券種 "place" 固定・金額 flat_amount 固定・閾値 flow_threshold 固定
+    だった。リード別閾値を入れた後も直しておらず、「閾値+0.2802」と出ているのに
+    実際は +0.0345 で動く、という読み違えを招いた(2026-10-12)。
+    """
+    import logging
+
+    from hro_operations import race_day as rd
+
+    cfg = rd.DayConfig(date="20261012", win_model="", place_model="", results_path="",
+                       strategy="flow", flow_source="netkeiba", flow_lead_seconds=90,
+                       flow_minutes=6, flow_threshold=0.2802,
+                       flow_thresholds={90: 0.0345},
+                       flow_bet_type="tan:2000,umatan:300", flat_amount=1000,
+                       mode="paper", deadline_lead_seconds=60, lead_seconds=89)
+    monkeypatch.setattr(rd, "check_timing", lambda c: None)
+    monkeypatch.setattr(rd, "check_schema", lambda c: None)
+    monkeypatch.setattr(rd, "_resolve_strategy_version", lambda c: None)
+    monkeypatch.setattr(rd, "FeatureDB", lambda *a, **k: type(
+        "D", (), {"close": lambda self: None})())
+    monkeypatch.setattr(rd, "day_races", lambda db, d: [(("2026", "1012", "05", "04",
+                                                          "05", "01"), "1000")])
+    monkeypatch.setattr(rd, "_run_races", lambda *a, **k: 0)
+    with caplog.at_level(logging.INFO):
+        rd.run_day(cfg, no_wait=True)
+    line = next(r.getMessage() for r in caplog.records
+                if "レース |" in str(r.msg))
+    assert "tan ¥2,000" in line and "umatan ¥300" in line
+    assert "T-90s:+0.0345" in line
+    assert "0.2802" not in line, "使っていない閾値を出している"
+    assert "place" not in line

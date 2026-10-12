@@ -1105,8 +1105,13 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
                     lg.constraints["gates"].append(
                         {"rule": "max_per_race", "max": cfg.max_per_race,
                          "got": len(dropped) + cfg.max_per_race, "pass": False})
-    log.info("%s: flow 候補 %d/%d 頭 (閾値 %+.4f, 実測 T-%ss, src=%s)",
-             race_id, len(orders), len(sc), thr, lead_used, cfg.source)
+    # ★券種を出す。券種ごとに1回ずつ呼ばれるので、無いと同じ行が2回出て
+    #   「同じレースを二重に処理している」ように見える(2026-10-12 に実際そう見えた)。
+    #   組み合わせ券は点数が頭数と一致しないので、点数も併記する。
+    log.info("%s: [%s] flow 候補 %d 頭 / %d 頭中 → %d 点 "
+             "(閾値 %+.4f, 実測 T-%ss, src=%s)",
+             race_id, bt, len({o.selection_id.split("-")[0] for o in orders}),
+             len(sc), len(orders), thr, lead_used, cfg.source)
     return orders
 
 
