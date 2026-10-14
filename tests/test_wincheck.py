@@ -132,3 +132,55 @@ def test_jvlink_finds_the_synchronizer_even_with_a_broken_home(tmp_path, monkeyp
     r = wc.check_jvlink(home=str(tmp_path))
     # 実体側に hro-synchronizer があるので「見つかりません」にはならない
     assert "見つかりません" not in r["detail"]
+
+
+def test_jvlink_check_fails_when_env_check_exits_nonzero(monkeypatch, tmp_path):
+    """★env-check が非ゼロなら NG。終了コードを無視してはいけない。
+
+    2026-10-15: env-check は 64ビット venv でも警告だけ出して 0 を返しており、
+    win-check が「JV-Link OK」と報告していた。開催日なら最初の JV-Link 呼び出しで
+    死んでいた。点検は、通らないなら通らないと言う。
+    """
+    import subprocess as _sp
+
+    from hro_operations import wincheck as wc
+
+    (tmp_path / "hro-synchronizer").mkdir()
+
+    class _P:
+        returncode = 1
+        stdout = ("Python      : 64ビット  C:\\x\\python.exe\n"
+                  "  ✗ JV-Link は32ビットの COM です。\n"
+                  "  ProgID が見えても…\n"
+                  "  実行中のビット数の側に無ければ…\n"
+                  "  両方にあるのに失敗するときは…\n"
+                  "\n✗ JV-Link を使えません: 64ビット Python\n")
+        stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _P())
+    r = wc.check_jvlink(home=str(tmp_path))
+    assert r["level"] == wc.NG
+    # ★固定の説明文ではなく、何が悪いのかが出ること
+    assert "64ビット" in r["detail"], r["detail"]
+    assert "ProgID" not in r["detail"], r["detail"]
+
+
+def test_jvlink_check_surfaces_the_verdict_line_on_success(monkeypatch, tmp_path):
+    import subprocess as _sp
+
+    from hro_operations import wincheck as wc
+
+    (tmp_path / "hro-synchronizer").mkdir()
+
+    class _P:
+        returncode = 0
+        stdout = ("Python      : 32ビット\npywin32     : あり\n"
+                  "  説明文1\n  説明文2\n  説明文3\n"
+                  "\n○ JV-Link を使える環境です\n")
+        stderr = ""
+
+    monkeypatch.setattr(_sp, "run", lambda *a, **k: _P())
+    r = wc.check_jvlink(home=str(tmp_path))
+    assert r["level"] == wc.OK
+    assert "使える環境です" in r["detail"]
+    assert "説明文" not in r["detail"]

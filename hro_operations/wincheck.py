@@ -199,11 +199,16 @@ def check_jvlink(home: str | None = None) -> dict:
                            timeout=180)
     except Exception as e:  # noqa: BLE001
         return _r("JV-Link", NG, f"env-check を実行できません: {str(e)[:150]}")
-    tail = (p.stdout or p.stderr or "").strip().splitlines()[-3:]
+    out = (p.stdout or p.stderr or "").strip()
+    # ★末尾3行は固定の説明文なので、何が悪いのかが出ない。env-check が出す
+    #   判定行(○/✗ で始まる)を拾う。無ければ末尾に落とす。
+    verdict = [ln.strip() for ln in out.splitlines()
+               if ln.strip().startswith(("○", "✗"))]
+    detail = " / ".join(verdict) or " / ".join(out.splitlines()[-3:])
     if p.returncode != 0:
-        return _r("JV-Link", NG, " / ".join(tail) or f"exit {p.returncode}",
+        return _r("JV-Link", NG, detail or f"exit {p.returncode}",
                   "32bit venv か、JV-Link の登録とサービスキーを確認すること")
-    return _r("JV-Link", OK, " / ".join(tail) or "env-check 正常")
+    return _r("JV-Link", OK, detail or "env-check 正常")
 
 
 def run_all(*, skip_jvlink: bool = False) -> list[dict]:
