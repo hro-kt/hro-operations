@@ -453,3 +453,90 @@ def test_missing_races_do_not_move_the_stop_time():
     conn.last_post = None
     cur = orc.stop_at("20261011", "1625", after_minutes=3)
     assert orc.refreshed_stop_at(conn, "20261011", cur, after_minutes=3) is None
+
+
+# --- 黙っている収集の立て直し ---------------------------------------------
+
+def _silent_cfg(**kw):
+    c = _cfg(job_id=42, max_restarts=3)
+    for k, v in kw.items():
+        setattr(c, k, v)
+    return c
+
+
+def _children(conn, cfg):
+    kids = [orc.Child(s) for s in orc.start_steps(cfg.date, cfg.flow_args)]
+    orc._start_all(conn, kids, cfg)
+    return kids
+
+
+def test_silent_collector_is_restarted(monkeypatch):
+    """★既存の再投入は「ジョブが終了した」ときしか効かない。netkeiba は
+    セッションが切れてもプロセスが生きたままなので running のまま何も採らない
+    (2026-10-10 に9分。午前を失った)。採れているかで判断する。
+    """
+    monkeypatch.setattr(orc, "_cancel", lambda c, i: None)
+    import hro_operations.collector_health as ch
+    monkeypatch.setattr(ch, "check", lambda c, d, silent_sec=0: {"silent": ["netkeiba"]})
+    conn, cfg = _FakeConn(), _silent_cfg()
+    kids = _children(conn, cfg)
+    before = len(conn.inserted)
+    orc._revive_silent(conn, kids, cfg)
+    assert [k for k, _, _ in conn.inserted[before:]] == ["netkeiba_odds"]
+    nk = next(c for c in kids if c.step.kind == "netkeiba_odds")
+    assert nk.restarts == 1
+
+
+def test_silent_sokuho_restarts_run_odds(monkeypatch):
+    monkeypatch.setattr(orc, "_cancel", lambda c, i: None)
+    import hro_operations.collector_health as ch
+    monkeypatch.setattr(ch, "check", lambda c, d, silent_sec=0: {"silent": ["sokuho"]})
+    conn, cfg = _FakeConn(), _silent_cfg()
+    kids = _children(conn, cfg)
+    before = len(conn.inserted)
+    orc._revive_silent(conn, kids, cfg)
+    assert [k for k, _, _ in conn.inserted[before:]] == ["run_odds"]
+
+
+def test_nothing_happens_when_collectors_are_healthy(monkeypatch):
+    import hro_operations.collector_health as ch
+    monkeypatch.setattr(ch, "check", lambda c, d, silent_sec=0: {"silent": []})
+    conn, cfg = _FakeConn(), _silent_cfg()
+    kids = _children(conn, cfg)
+    before = len(conn.inserted)
+    orc._revive_silent(conn, kids, cfg)
+    assert len(conn.inserted) == before
+
+
+def test_restart_budget_is_shared_with_normal_restarts(monkeypatch):
+    """★無限に入れ直さない。直らないものを投げ続けてもログが溢れるだけ。"""
+    monkeypatch.setattr(orc, "_cancel", lambda c, i: None)
+    import hro_operations.collector_health as ch
+    monkeypatch.setattr(ch, "check", lambda c, d, silent_sec=0: {"silent": ["netkeiba"]})
+    conn, cfg = _FakeConn(), _silent_cfg(max_restarts=2)
+    kids = _children(conn, cfg)
+    for _ in range(5):
+        orc._revive_silent(conn, kids, cfg)
+    nk = next(c for c in kids if c.step.kind == "netkeiba_odds")
+    assert nk.restarts == 2
+
+
+def test_health_check_failure_does_not_stop_the_day(monkeypatch):
+    """★監視のための処理。開催日を止めない。"""
+    import hro_operations.collector_health as ch
+
+    def _boom(*a, **k):
+        raise RuntimeError("relation does not exist")
+
+    monkeypatch.setattr(ch, "check", _boom)
+    conn, cfg = _FakeConn(), _silent_cfg()
+    orc._revive_silent(conn, _children(conn, cfg), cfg)   # 例外が外へ出ない
+
+
+def test_revive_can_be_disabled(monkeypatch):
+    import hro_operations.collector_health as ch
+    called = []
+    monkeypatch.setattr(ch, "check", lambda *a, **k: called.append(1) or {"silent": []})
+    conn, cfg = _FakeConn(), _silent_cfg(revive_silent=False)
+    orc._revive_silent(conn, _children(conn, cfg), cfg)
+    assert called == []

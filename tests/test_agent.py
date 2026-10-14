@@ -344,3 +344,57 @@ def test_close_day_is_windows_only():
     # 払戻が未取込のときは決済だけ飛ばせる
     cmd2, _c, _e = _b_close_day({"date": "20261010", "no_settle": True})
     assert "--no-settle" in cmd2
+
+
+def test_heartbeat_records_host_and_pid_and_counts_takeovers():
+    """★同じ役割が2台で動くと ops_agent の同じ行を交互に上書きする。
+
+    画面はどちらも online に見え、JV-Link を取り合っていても気づけない
+    (VM 入替で旧機を止め忘れたとき)。単なる再起動でも素性は変わるので、
+    **直近2分の連続入れ替わり**を数えて区別する。
+    """
+    from hro_operations.agent import _SQL_HEARTBEAT, _heartbeat, _identity
+
+    host, pid = _identity()
+    assert host and isinstance(pid, int) and pid > 0
+    q = " ".join(_SQL_HEARTBEAT.split())
+    assert "host            = EXCLUDED.host".replace("  ", " ") in q.replace("  ", " ") \
+        or "host = EXCLUDED.host" in q
+    # 素性が変わったときだけ数える
+    assert "IS DISTINCT FROM EXCLUDED.host" in q and "IS DISTINCT FROM EXCLUDED.pid" in q
+    # 2分より前の入れ替わりは数え直す(昔の再起動を積み上げない)
+    assert "interval '2 minutes'" in q and "ops_agent.takeovers + 1" in q
+
+    sent = []
+
+    class _C:
+        def execute(self, sql, params=()):
+            sent.append((sql, params))
+
+        def commit(self):
+            pass
+
+    _heartbeat(_C(), "windows", None)
+    assert sent[0][1][3] == host and sent[0][1][4] == pid
+
+
+def test_heartbeat_falls_back_when_the_columns_are_missing():
+    """★35_agent_identity.sql 未適用でも心拍は打つ(止まる方が困る)。"""
+    from hro_operations.agent import _heartbeat
+
+    sent = []
+
+    class _C:
+        def execute(self, sql, params=()):
+            sent.append(sql)
+            if "host" in sql and len(sent) == 1:
+                raise RuntimeError('column "host" does not exist')
+
+        def rollback(self):
+            sent.append("ROLLBACK")
+
+        def commit(self):
+            pass
+
+    _heartbeat(_C(), "vm", 3)
+    assert "ROLLBACK" in sent and "host" not in sent[-1]

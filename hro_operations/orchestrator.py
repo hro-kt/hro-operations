@@ -359,6 +359,10 @@ class OrchestratorConfig:
     with_run_odds: bool = True
     with_netkeiba: bool = True
     stop_after_minutes: int = 3        # 最終発走 + これ分 で常駐を止める
+    # ★「生きているが何も採れていない」収集を立て直す。プロセスが死んでいないので
+    #   既存の再投入は効かない(2026-10-10 の netkeiba セッション切れ)。
+    revive_silent: bool = True
+    silent_seconds: int = 180
     max_restarts: int = 3              # 常駐1本あたりの再投入上限
     poll_seconds: float = 20.0
     drain_seconds: float = 180.0       # 常駐の停止を待つ上限(JV-Link の解放待ち)
@@ -461,6 +465,44 @@ def refreshed_stop_at(conn, date: str, current: datetime, *,
     return fresh if fresh > current else None
 
 
+def _revive_silent(conn, children: list[Child], cfg: OrchestratorConfig) -> None:
+    """黙っている収集を立て直す。
+
+    ★既存の再投入は「ジョブが終了した」ときしか効かない。netkeiba はセッションが
+      切れてもプロセスが生きたままなので、running のまま何も採らなくなる
+      (2026-10-10 に9分。午前を失った)。**採れているか**で判断する必要がある。
+    ★発走が近いときだけ見る。収集は「発走N分以内」しか取りに行かないので、
+      レースが遠い時間帯に黙っているのは正常。
+    ★止めて入れ直す(cancel → enqueue)。中でセッションを張り直させるのが目的なので、
+      プロセスを作り直すのが確実。再投入の回数は通常の再起動と同じ上限で数える。
+    """
+    if not cfg.revive_silent:
+        return
+    try:
+        from .collector_health import check, job_kind
+        rep = check(conn, cfg.date, silent_sec=cfg.silent_seconds)
+    except Exception as e:      # noqa: BLE001 - 監視のための処理。開催日を止めない
+        _log(f"⚠ 収集の健全性を見られません: {type(e).__name__}: {e}")
+        return
+    if not rep.get("silent"):
+        return
+    for src in rep["silent"]:
+        kind = job_kind(src)
+        c = next((x for x in children if x.step.kind == kind), None)
+        if c is None or c.job_id is None:
+            continue
+        if c.restarts >= cfg.max_restarts:
+            _log(f"★{src} が黙っていますが、再投入の上限({cfg.max_restarts})に"
+                 "達しています。手で確認してください")
+            continue
+        _log(f"★{src} が {cfg.silent_seconds} 秒以上なにも採っていません"
+             f"(job#{c.job_id})。立て直します({c.restarts + 1}/{cfg.max_restarts})")
+        _cancel(conn, c.job_id)
+        c.job_id = _enqueue(conn, c.step, cfg.job_id)
+        c.restarts += 1
+        _log(f"▶ {c.step.name}: job#{c.job_id} を入れ直しました")
+
+
 def _monitor(conn, children: list[Child], cfg: OrchestratorConfig,
              stop_time: datetime) -> str:
     """停止時刻まで常駐を見張る。落ちていたら再投入する。
@@ -499,6 +541,8 @@ def _monitor(conn, children: list[Child], cfg: OrchestratorConfig,
             c.job_id = _enqueue(conn, c.step, cfg.job_id)
             c.restarts += 1
             _log(f"▶ {c.step.name}: job#{c.job_id} を再投入")
+        # ★死んでいなくても「採れていない」なら立て直す
+        _revive_silent(conn, children, cfg)
         if time.monotonic() - last_note > 600:   # 10分おきに生存を1行
             alive = [f"{c.step.name}#{c.job_id}={_status(conn, c.job_id)}"
                      for c in children if c.job_id]

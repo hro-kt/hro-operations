@@ -760,11 +760,50 @@ def _now():
     return datetime.now(timezone.utc)
 
 
+def _identity() -> tuple[str, int]:
+    """この心拍を書いているホストとプロセス。"""
+    import socket
+    try:
+        host = socket.gethostname()
+    except Exception:       # noqa: BLE001
+        host = "?"
+    return host, os.getpid()
+
+
+# ★素性が変わったか(= 別のプロセスが同じ server の行を書いた)。単なる再起動でも
+#   変わるので、**短時間に何度も**入れ替わっていることを二重起動の印とする。
+_SQL_HEARTBEAT = """
+INSERT INTO ops_agent(server, last_seen, current_job_id, host, pid, takeover_at, takeovers)
+VALUES (%s, %s, %s, %s, %s, NULL, 0)
+ON CONFLICT (server) DO UPDATE SET
+  last_seen       = EXCLUDED.last_seen,
+  current_job_id  = EXCLUDED.current_job_id,
+  host            = EXCLUDED.host,
+  pid             = EXCLUDED.pid,
+  takeover_at     = CASE
+      WHEN ops_agent.host IS DISTINCT FROM EXCLUDED.host
+        OR ops_agent.pid  IS DISTINCT FROM EXCLUDED.pid
+      THEN now() ELSE ops_agent.takeover_at END,
+  takeovers       = CASE
+      WHEN ops_agent.host IS DISTINCT FROM EXCLUDED.host
+        OR ops_agent.pid  IS DISTINCT FROM EXCLUDED.pid
+      THEN CASE WHEN ops_agent.takeover_at > now() - interval '2 minutes'
+                THEN ops_agent.takeovers + 1 ELSE 1 END
+      ELSE ops_agent.takeovers END
+"""
+
+
 def _heartbeat(conn, server: str, job_id) -> None:
-    conn.execute(
-        "INSERT INTO ops_agent(server,last_seen,current_job_id) VALUES(%s,%s,%s) "
-        "ON CONFLICT(server) DO UPDATE SET last_seen=EXCLUDED.last_seen, current_job_id=EXCLUDED.current_job_id",
-        (server, _now(), job_id))
+    host, pid = _identity()
+    try:
+        conn.execute(_SQL_HEARTBEAT, (server, _now(), job_id, host, pid))
+    except Exception:   # noqa: BLE001 - 35_agent_identity.sql 未適用でも心拍は打つ
+        conn.rollback()
+        conn.execute(
+            "INSERT INTO ops_agent(server,last_seen,current_job_id) VALUES(%s,%s,%s) "
+            "ON CONFLICT(server) DO UPDATE SET last_seen=EXCLUDED.last_seen, "
+            "current_job_id=EXCLUDED.current_job_id",
+            (server, _now(), job_id))
     conn.commit()
 
 
