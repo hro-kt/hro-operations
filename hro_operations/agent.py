@@ -629,6 +629,16 @@ def _b_env_check(a: dict):
             os.path.join(_home(), "hro-synchronizer"), {})
 
 
+def _b_netkeiba_check(a: dict):
+    """★netkeiba を収集できる状態かの確認(VM の朝の確認)。発注はしない。
+
+    Windows には win-check があるが VM 側には何も無かった。netkeiba が採れないと
+    信号そのものが無く、発注は0件になる(2026-09-27 に playwright 未導入で実害)。
+    """
+    return (["poetry", "run", "hro-synchronizer", "netkeiba-check"],
+            os.path.join(_home(), "hro-synchronizer"), {})
+
+
 def _b_netkeiba_odds(a: dict):
     """netkeiba の単勝オッズ(秒単位)を常駐取得。VM で動かす。
 
@@ -667,7 +677,9 @@ _COMMANDS = {
            "import_results": _b_import_results, "jrdb_load": _b_jrdb_load,
 
            # netkeiba は JV-Link を使わないので Windows の1プロセス制約と競合しない
-           "netkeiba_odds": _b_netkeiba_odds},
+           "netkeiba_odds": _b_netkeiba_odds,
+           # ★朝の確認(playwright/ブラウザ/ログイン/プレミアム)。発注はしない
+           "netkeiba_check": _b_netkeiba_check},
     "windows": {"sync_all": _b_sync_all, "run_odds": _b_run_odds,
                 # ★当週 RACE だけの軽い取り直し(発走時刻変更)。開催前/臨時用で、
                 #   開催中は run_odds が JV-Link を握っているので投入しないこと
