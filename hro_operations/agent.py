@@ -819,8 +819,43 @@ def _heartbeat(conn, server: str, job_id) -> None:
     conn.commit()
 
 
+_SQL_REJECT_DUP = """
+-- ★同じ常駐が**別経路から二重に投入される**のを止める。
+--   2026-10-17: オーケストレータ(orchestrator#210)と admin-ui の両方が
+--   netkeiba_odds / flow_day を投入し、flow ランナーが2本同時に走った。
+--   重複購入の防止はプロセス内の _seen と起動時の preload だけなので、
+--   同時に走る2本は互いを見られない = **同じ買い目を二重に買い得る**。
+UPDATE ops_job q
+   SET status = 'canceled', exit_code = 1, finished_at = now(),
+       log = coalesce(q.log,'')
+             || '[agent] 同じ常駐(' || q.kind || ')が既に走っているため起動しません。'
+             || '二重起動は同じ買い目の二重購入につながります' || chr(10)
+ WHERE q.target = %s AND q.status = 'queued'
+   AND (q.args->>'resident') = 'true'
+   AND EXISTS (
+       SELECT 1 FROM ops_job r
+        WHERE r.status = 'running' AND r.kind = q.kind AND r.id <> q.id
+          AND coalesce(r.args->>'date','') = coalesce(q.args->>'date',''))
+RETURNING q.id, q.kind
+"""
+
+
+def reject_duplicate_residents(conn, server: str) -> list[tuple]:
+    """走っている常駐と同じものが queued なら、起動せずに畳む。"""
+    rows = conn.execute(_SQL_REJECT_DUP, (server,)).fetchall()
+    conn.commit()
+    return [tuple(r) for r in rows]
+
+
 def _claim(conn, server: str):
-    """自分の target の最古 queued を1件 running に。SKIP LOCKED で多重実行を防ぐ。"""
+    """自分の target の最古 queued を1件 running に。SKIP LOCKED で多重実行を防ぐ。
+
+    ★SKIP LOCKED が防ぐのは「同じ行を2人が取る」ことだけ。**別の行として投入された
+      同じ常駐**は防げないので、取りに行く前に畳む。
+    """
+    for jid, kind in reject_duplicate_residents(conn, server):
+        print(f"  job#{jid} kind={kind} は同じ常駐が走っているため起動しません"
+              "(二重起動は同じ買い目の二重購入につながります)", flush=True)
     row = conn.execute(
         "UPDATE ops_job SET status='running', started_at=now(), heartbeat_at=now(), agent=%s "
         "WHERE id = (SELECT id FROM ops_job WHERE target=%s AND status='queued' "
