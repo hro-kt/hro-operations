@@ -125,12 +125,16 @@ def test_grace_never_outlives_the_hard_cutoff():
     assert block.index("cfg.deadline_lead_seconds") < block.rindex("cfg.grace_seconds")
 
 
-def test_the_hard_cutoff_check_comes_before_any_work():
-    """★購入指示(bet_orders)を残してから捨てるのが最悪。先に落とす。"""
+def test_the_hard_cutoff_check_comes_before_process_race():
+    """★購入指示(bet_orders)を残してから捨てるのが最悪。レースに入る前に落とす。
+
+    比べるのは**ループ内の実行順**。ファイル全体の位置で比べると、
+    関数の定義順(process_race が先に定義されている)に引きずられて嘘になる。
+    """
     from pathlib import Path
 
     src = (Path(__file__).resolve().parents[1]
            / "hro_operations" / "race_day.py").read_text(encoding="utf-8")
     cut = src.index("投票締切 %s を過ぎています skip")
-    persist = src.index("_persist_orders(cfg, orders, logs)")
-    assert cut < persist, "購入指示を記録した後に締切を見ている"
+    call = src.index("process_race(cfg, win_b, place_b, race, executor)")
+    assert cut < call, "レースの処理に入った後で締切を見ている"
