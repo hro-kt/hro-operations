@@ -49,6 +49,9 @@ class Step:
     required: bool = True       # 落ちたら致命的か(常駐のみ意味がある)
     # 単発の完了待ち上限。重い同期は既定より長くないと、終わる前に見限ってしまう
     timeout_seconds: float | None = None
+    # ★馬券を買う手順か。買う手順は、締切が全部過ぎた後に入れ直しても意味が無い。
+    #   収集は停止時刻まで回す必要があるので、この区別が要る。
+    buys: bool = False
 
 
 def start_steps(date: str, flow_args: dict, *, flow_target: str = "windows",
@@ -66,7 +69,7 @@ def start_steps(date: str, flow_args: dict, *, flow_target: str = "windows",
         steps.append(Step("netkeiba オッズ", "netkeiba_odds", "vm", {"date": date},
                           resident=_RESIDENT))
     steps.append(Step("flow ランナー", "flow_day", flow_target,
-                      {**flow_args, "date": date}, resident=_RESIDENT))
+                      {**flow_args, "date": date}, resident=_RESIDENT, buys=True))
     return steps
 
 
@@ -465,6 +468,22 @@ def refreshed_stop_at(conn, date: str, current: datetime, *,
     return fresh if fresh > current else None
 
 
+def buyable_remaining(conn, date: str, *, deadline_lead_seconds: int = 60,
+                      now: datetime | None = None) -> bool:
+    """まだ投票締切が先のレースが残っているか。
+
+    ★落ちた発注ジョブを、締切が全部過ぎた後に入れ直しても**1件も買えない**。
+      2026-10-17: 1回目が落ちた後 16:30:43 に再投入され、最終レース(締切16:29)を
+      既に過ぎていた。走り切って「1/36 レース処理」で終わるので、
+      ログだけ見ると正常に見え、元の失敗が隠れる。
+    """
+    last = _last_post(conn, date)
+    if not last:
+        return False
+    cutoff = parse_hhmm(date, last) - timedelta(seconds=max(0, deadline_lead_seconds))
+    return (now or datetime.now(_JST)) < cutoff
+
+
 def _revive_silent(conn, children: list[Child], cfg: OrchestratorConfig) -> None:
     """黙っている収集を立て直す。
 
@@ -534,6 +553,19 @@ def _monitor(conn, children: list[Child], cfg: OrchestratorConfig,
                                  stopping=False):
                 continue
             tail = _tail(conn, c.job_id or 0)
+            # ★買う手順は、締切が全部過ぎていたら入れ直さない。1件も買えないのに
+            #   走り切って「正常終了」に見えるログを残し、元の失敗を隠してしまう。
+            if c.step.buys and not buyable_remaining(
+                    conn, cfg.date,
+                    deadline_lead_seconds=int(
+                        c.step.args.get("deadline_lead_seconds") or 60)):
+                _log(f"★{c.step.name}(job#{c.job_id})が {st} で終了しましたが、"
+                     "投票締切が全部過ぎているので入れ直しません。"
+                     "**この時点で買えていないレースは取り返せません**")
+                if tail:
+                    _log(f"   直前のログ: …{tail[-400:]}")
+                c.job_id = None
+                continue
             _log(f"⚠ {c.step.name}(job#{c.job_id})が {st} で終了していました。"
                  f"再投入します({c.restarts + 1}/{cfg.max_restarts})")
             if tail:
