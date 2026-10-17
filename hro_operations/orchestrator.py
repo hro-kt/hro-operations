@@ -372,6 +372,9 @@ class OrchestratorConfig:
     # ★セッション切れを理由に入れ直す間隔。止めはしない(state を差し替えれば
     #   再起動で直る)が、3分おきに殺し続けても空転するだけ(2026-10-17 に2時間)。
     session_restart_interval_sec: float = 900.0
+    # ★セッションが切れていたら、入れ直す前に netkeiba-check を投げて
+    #   ログインを取り直させる。再ログインの手段があるのに人へ投げない。
+    relogin_on_dead_session: bool = True
     poll_seconds: float = 20.0
     drain_seconds: float = 180.0       # 常駐の停止を待つ上限(JV-Link の解放待ち)
     finish_timeout_seconds: float = 3600.0
@@ -569,6 +572,17 @@ def _revive_silent(conn, children: list[Child], cfg: OrchestratorConfig) -> None
             if not session_restart_due(c, cfg.session_restart_interval_sec):
                 continue
             c.last_session_restart = _now_mono()
+            # ★入れ直すだけでは直らない。**先にログインを取り直させる**。
+            #   再ログインの手段を持っているのに人に投げていた(2026-10-17)。
+            #   netkeiba-check は切れていれば自動でログインし、state を更新する。
+            if cfg.relogin_on_dead_session:
+                jid = _enqueue(conn, Step("netkeiba のログイン確認", "netkeiba_check",
+                                          "vm", {}), cfg.job_id)
+                _log(f"★{src} はセッションが切れています(job#{c.job_id})。"
+                     f"先に job#{jid} でログインを取り直させます"
+                     "(NETKEIBA_LOGIN_ID / NETKEIBA_PASSWORD が未設定なら"
+                     "確認だけで終わるので、手で netkeiba-login してください)")
+                continue        # ★state が新しくなってから入れ直す(次の周回)
             _log(f"★{src} はセッションが切れています(job#{c.job_id})。"
                  "入れ直しますが、**ログインを取り直さない限り直りません**。"
                  "netkeiba-login で state を作り直すか、"

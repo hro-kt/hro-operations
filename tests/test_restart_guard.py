@@ -115,7 +115,7 @@ def test_dead_session_restart_is_rate_limited_not_forbidden():
     src = (Path(__file__).resolve().parents[1]
            / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
     i = src.index("なにも採っていません")
-    block = src[max(0, i - 1200):i]
+    block = src[max(0, i - 2200):i]
     assert "_job_dead_session" in block
     assert "session_restart_due" in block, "間隔を見ていない"
     assert "c.restarts = cfg.max_restarts" not in block, "恒久的に止めている"
@@ -157,14 +157,16 @@ def test_the_marker_is_searched_over_the_whole_log_not_the_tail():
 
 
 def test_a_dead_session_collector_is_not_cancelled_in_a_loop(monkeypatch):
-    """★実挙動で確かめる。切れているなら cancel も再投入もしない。"""
+    """★実挙動で確かめる。切れているなら、まず再ログインを投げ、collector は殺さない。
+
+    そして間隔内に再度来ても何もしない(2026-10-17 は約3分おきに6回空転した)。
+    """
     import hro_operations.orchestrator as orc
 
     calls = {"cancel": 0, "enqueue": 0}
     monkeypatch.setattr(orc, "_cancel", lambda c, j: calls.__setitem__("cancel", calls["cancel"] + 1))
     monkeypatch.setattr(orc, "_enqueue", lambda c, s, p: calls.__setitem__("enqueue", calls["enqueue"] + 1) or 99)
     monkeypatch.setattr(orc, "_job_dead_session", lambda conn, jid: True)
-    monkeypatch.setattr(orc, "check", lambda *a, **k: {"silent": ["netkeiba"]}, raising=False)
 
     import sys as _s
     mod = type(_s)("hro_operations.collector_health")
@@ -182,9 +184,72 @@ def test_a_dead_session_collector_is_not_cancelled_in_a_loop(monkeypatch):
         return
     cfg.revive_silent = True
     orc._revive_silent(object(), [child], cfg)
-    # ★初回は入れ直す(state を差し替えていれば直るため)
-    assert calls == {"cancel": 1, "enqueue": 1}, calls
-    # ★直後にもう一度来ても入れ直さない(空転させない)
+    # ★初回は再ログインのジョブだけ。collector は殺さない
+    assert calls == {"cancel": 0, "enqueue": 1}, calls
+    # ★直後にもう一度来ても何もしない(空転させない)
     calls.clear(); calls.update({"cancel": 0, "enqueue": 0})
     orc._revive_silent(object(), [child], cfg)
     assert calls == {"cancel": 0, "enqueue": 0}, calls
+
+
+# --------------------------------------------------------------------------- #
+# ★セッションが切れたら、人に投げる前に自動で入り直させる
+# --------------------------------------------------------------------------- #
+def test_dead_session_triggers_a_relogin_job_first(monkeypatch):
+    """★再ログインの手段を持っているのに人へ投げていた(2026-10-17)。
+
+    入れ直す前に netkeiba_check を投げる。あれは切れていれば自動でログインし、
+    state を更新する。collector を入れ直すのは state が新しくなった次の周回。
+    """
+    import sys as _s
+
+    import hro_operations.orchestrator as orc
+
+    enq: list = []
+    monkeypatch.setattr(orc, "_cancel", lambda c, j: enq.append(("cancel", j)))
+    monkeypatch.setattr(orc, "_enqueue",
+                        lambda c, s, p: (enq.append(("enqueue", s.kind)), 77)[1])
+    monkeypatch.setattr(orc, "_job_dead_session", lambda conn, jid: True)
+
+    mod = type(_s)("hro_operations.collector_health")
+    mod.check = lambda conn, date, silent_sec=0: {"silent": ["netkeiba"]}
+    mod.job_kind = lambda src: "netkeiba_odds"
+    monkeypatch.setitem(_s.modules, "hro_operations.collector_health", mod)
+
+    child = orc.Child(step=orc.Step("netkeiba", "netkeiba_odds", "vm", {}), job_id=5)
+    cfg = orc.OrchestratorConfig(date="20261017", job_id=1)
+    orc._revive_silent(object(), [child], cfg)
+
+    assert enq == [("enqueue", "netkeiba_check")], enq
+    # ★collector はまだ殺さない(state が新しくなる前に入れ直しても同じ)
+    assert not any(k == "cancel" for k, _ in enq)
+
+
+def test_relogin_can_be_turned_off(monkeypatch):
+    import sys as _s
+
+    import hro_operations.orchestrator as orc
+
+    enq: list = []
+    monkeypatch.setattr(orc, "_cancel", lambda c, j: enq.append(("cancel", j)))
+    monkeypatch.setattr(orc, "_enqueue",
+                        lambda c, s, p: (enq.append(("enqueue", s.kind)), 77)[1])
+    monkeypatch.setattr(orc, "_job_dead_session", lambda conn, jid: True)
+
+    mod = type(_s)("hro_operations.collector_health")
+    mod.check = lambda conn, date, silent_sec=0: {"silent": ["netkeiba"]}
+    mod.job_kind = lambda src: "netkeiba_odds"
+    monkeypatch.setitem(_s.modules, "hro_operations.collector_health", mod)
+
+    child = orc.Child(step=orc.Step("netkeiba", "netkeiba_odds", "vm", {}), job_id=5)
+    cfg = orc.OrchestratorConfig(date="20261017", job_id=1)
+    cfg.relogin_on_dead_session = False
+    orc._revive_silent(object(), [child], cfg)
+    assert ("cancel", 5) in enq and ("enqueue", "netkeiba_odds") in enq
+
+
+def test_netkeiba_check_is_a_known_job_kind():
+    """★投げる先が agent に無ければ、永久に queued のまま残る。"""
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "agent.py").read_text(encoding="utf-8")
+    assert '"netkeiba_check"' in src
