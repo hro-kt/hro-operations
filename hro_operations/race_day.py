@@ -563,10 +563,49 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor
     res = execute_orders(cfg, orders, executor)   # 実行 → JSONL + bet_results
     log.info("%s: %d件発注 -> %s (intended=%d円) DB+追記=%s",
              race_id, len(orders), res.count_by_status(), res.total_amount, cfg.results_path)
+    _log_skips(race_id, res)
     for r in res.results:
         if r.status == "unknown":
             log.error("%s: ★受付確認不能(unknown) %s/%s %d円 → IPAT 投票履歴で手動照合。再送はしない",
                       race_id, r.bet_type, r.selection_id, r.amount)
+
+
+def skip_reason(message: str) -> str:
+    """見送りの理由だけを取り出す(まとめるためのキー)。
+
+    '[LIVE] skipped: duplicate order (idempotency_key=…)' → 'duplicate order'
+    ★鍵や金額が入ったままだと1件ごとに別グループになり、まとめる意味がなくなる。
+    """
+    m = (message or "").strip()
+    for pre in ("[LIVE] skipped:", "[PAPER] skipped:", "[DRY-RUN] skipped:"):
+        if m.startswith(pre):
+            m = m[len(pre):].strip()
+            break
+    return m.split(" (")[0].strip() or "(理由なし)"
+
+
+def _log_skips(race_id: str, res) -> None:
+    """見送りの**理由**を出す。
+
+    ★件数だけでは何も分からない。2026-10-17: 「4件発注 -> {'skipped': 4}」としか
+      出ず、「指示は出たのに買われない」を調べるのに JSONL を開く必要があった。
+      理由は executor が message に入れているので、その場に出すだけでよい。
+    """
+    skipped = [r for r in getattr(res, "results", []) if r.status == "skipped"]
+    if not skipped:
+        return
+    groups: dict[str, list] = {}
+    for r in skipped:
+        groups.setdefault(skip_reason(r.message), []).append(r)
+    all_skipped = len(skipped) == len(res.results)
+    emit = log.warning if all_skipped else log.info
+    if all_skipped:
+        emit("%s: ★発注指示は出たが**1件も買っていません**(%d件すべて見送り)",
+             race_id, len(skipped))
+    for reason, rs in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        ex = rs[0]
+        emit("%s:   見送り %d件 — %s  (例 %s/%s %d円)",
+             race_id, len(rs), reason, ex.bet_type, ex.selection_id, ex.amount)
 
 
 class TimingError(ValueError):
