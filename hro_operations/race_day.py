@@ -561,8 +561,11 @@ def process_race(cfg: DayConfig, win_b, place_b, race: tuple[str, ...], executor
         return
     _persist_orders(cfg, orders, logs)    # bet_orders(admin「購入指示」)+ 判断の記録
     res = execute_orders(cfg, orders, executor)   # 実行 → JSONL + bet_results
+    # ★相対パスのままログに出すと「どこにあるの」になる(2026-10-17 に実際に聞かれた)。
+    #   cwd はジョブの起動元によって変わるので、絶対パスで出す。
     log.info("%s: %d件発注 -> %s (intended=%d円) DB+追記=%s",
-             race_id, len(orders), res.count_by_status(), res.total_amount, cfg.results_path)
+             race_id, len(orders), res.count_by_status(), res.total_amount,
+             os.path.abspath(cfg.results_path))
     _log_skips(race_id, res)
     for r in res.results:
         if r.status == "unknown":
