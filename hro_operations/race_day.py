@@ -897,7 +897,21 @@ def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool,
             if deadline is None:
                 log.info("%s: 締切不明(hasso_time=%r) skip", race_id, hasso)
                 continue
-            wait = (deadline - datetime.now(JST)).total_seconds()
+            # ★猶予は**硬い締切を追い越してはいけない**。
+            #   ループは post-lead_seconds に grace を足して通すが、executor は
+            #   post-deadline_lead_seconds を過ぎた発注を past voting deadline で
+            #   必ず捨てる。この窓(既定で lead89/grace180/deadline60 なら151秒)では、
+            #   flow 計算も購入指示の記録も IPAT 操作も全部やった末に**必ず0件**になる。
+            #   2026-10-17: 16:30:43 起動で東京12R(締切16:29)が通過し、
+            #   4件の購入指示を残して全件 skipped。
+            hard = deadline_from(race_id, hasso, cfg.deadline_lead_seconds)
+            now_jst = datetime.now(JST)
+            if hard is not None and now_jst > hard:
+                log.info("%s: 投票締切 %s を過ぎています skip(%.0fs 超過)",
+                         race_id, hard.strftime("%H:%M:%S"),
+                         (now_jst - hard).total_seconds())
+                continue
+            wait = (deadline - now_jst).total_seconds()
             if wait < -cfg.grace_seconds:
                 log.info("%s: 締切を %.0fs 超過 skip", race_id, -wait)
                 continue

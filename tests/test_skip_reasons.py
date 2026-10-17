@@ -100,3 +100,37 @@ def test_an_example_order_is_shown(caplog):
     with caplog.at_level(logging.INFO):
         _log_skips("R1", res)
     assert "umatan" in caplog.text and "08>03" in caplog.text and "300" in caplog.text
+
+
+# --------------------------------------------------------------------------- #
+# ★猶予が硬い締切を追い越さないこと
+# --------------------------------------------------------------------------- #
+def test_grace_never_outlives_the_hard_cutoff():
+    """★2026-10-17: 16:30:43 起動で東京12R(投票締切16:29)がループを通過し、
+    flow 計算も購入指示の記録も IPAT 操作もやった末に全件 skipped になった。
+
+    ループ   : post - lead_seconds(89) - grace(180)  → post+91 まで通す
+    executor : post - deadline_lead_seconds(60)      → post-60 で打ち切り
+    差の151秒は**必ず0件になる窓**。そこへ入らせない。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "race_day.py").read_text(encoding="utf-8")
+    i = src.index("超過 skip")
+    block = src[max(0, i - 1400):i]
+    assert "cfg.deadline_lead_seconds" in block, "硬い締切を見ていない"
+    assert "投票締切" in block
+    # 猶予の判定より**前**に硬い締切で落としていること
+    assert block.index("cfg.deadline_lead_seconds") < block.rindex("cfg.grace_seconds")
+
+
+def test_the_hard_cutoff_check_comes_before_any_work():
+    """★購入指示(bet_orders)を残してから捨てるのが最悪。先に落とす。"""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "race_day.py").read_text(encoding="utf-8")
+    cut = src.index("投票締切 %s を過ぎています skip")
+    persist = src.index("_persist_orders(cfg, orders, logs)")
+    assert cut < persist, "購入指示を記録した後に締切を見ている"
