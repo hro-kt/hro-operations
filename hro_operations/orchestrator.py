@@ -468,6 +468,30 @@ def refreshed_stop_at(conn, date: str, current: datetime, *,
     return fresh if fresh > current else None
 
 
+# ★セッション切れは「入れ直し」では直らない。収集プロセスは落ちずに
+#   非ログインのまま行を保存し続けるので、監視からは「採れていない」に見え、
+#   cancel→再投入を延々と繰り返す。2026-10-17 はこれで2時間近く空転した。
+_DEAD_SESSION_MARKS = ("member_rank=NotLogin", "logged_in=False",
+                       "プレミアムではない")
+
+
+def dead_session(log_text: str) -> bool:
+    """その収集が「セッション切れで採れていない」状態か。"""
+    t = log_text or ""
+    return any(m in t for m in _DEAD_SESSION_MARKS)
+
+
+def _job_dead_session(conn, job_id: int) -> bool:
+    """★印は**プロセス起動直後に1回だけ**出る。数時間回った後の末尾には残らない。
+    末尾を切って探すと必ず取り逃すので、ログ全体を DB 側で見る。
+    """
+    row = conn.execute(
+        "SELECT bool_or(position(m IN coalesce(log,'')) > 0) FROM ops_job,"
+        " unnest(%s::text[]) AS m WHERE id = %s",
+        (list(_DEAD_SESSION_MARKS), job_id)).fetchone()
+    return bool(row and row[0])
+
+
 def buyable_remaining(conn, date: str, *, deadline_lead_seconds: int = 60,
                       now: datetime | None = None) -> bool:
     """まだ投票締切が先のレースが残っているか。
@@ -513,6 +537,14 @@ def _revive_silent(conn, children: list[Child], cfg: OrchestratorConfig) -> None
         if c.restarts >= cfg.max_restarts:
             _log(f"★{src} が黙っていますが、再投入の上限({cfg.max_restarts})に"
                  "達しています。手で確認してください")
+            continue
+        if _job_dead_session(conn, c.job_id):
+            # ★入れ直しても直らない。同じ理由で何度も殺さない(2026-10-17 に6回空転)。
+            _log(f"★{src} はセッションが切れています(job#{c.job_id})。"
+                 "**入れ直しても直りません**。netkeiba のログインを取り直すか、"
+                 "NETKEIBA_LOGIN_ID / NETKEIBA_PASSWORD を設定して"
+                 "自動再ログインを有効にしてください")
+            c.restarts = cfg.max_restarts      # これ以上このサイクルを回さない
             continue
         _log(f"★{src} が {cfg.silent_seconds} 秒以上なにも採っていません"
              f"(job#{c.job_id})。立て直します({c.restarts + 1}/{cfg.max_restarts})")

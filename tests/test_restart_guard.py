@@ -83,3 +83,77 @@ def test_monitor_checks_buyable_before_restarting_a_buying_step():
     assert "入れ直しません" in block
     # ★入れ直さないときこそ、直前のログを長めに出す(原因がそこにある)
     assert "tail[-400:]" in src
+
+
+# --------------------------------------------------------------------------- #
+# ★セッション切れは「入れ直し」では直らない
+# --------------------------------------------------------------------------- #
+def test_dead_session_is_recognised_from_the_log():
+    """2026-10-17 の実ログ。収集は落ちずに非ログインのまま行を保存し続けた。"""
+    from hro_operations.orchestrator import dead_session
+
+    real = ("netkeiba: ページを開いた logged_in=False member_rank=NotLogin "
+            "race_id=2026101708040610")
+    assert dead_session(real) is True
+    assert dead_session("netkeiba: プレミアムではない。秒単位の更新は得られない") is True
+
+
+def test_a_healthy_log_is_not_mistaken_for_a_dead_session():
+    from hro_operations.orchestrator import dead_session
+
+    assert dead_session("logged_in=True member_rank=Premium") is False
+    assert dead_session("") is False
+    assert dead_session(None) is False
+
+
+def test_revive_does_not_restart_a_dead_session():
+    """★入れ直しても直らないものを6回入れ直した(2026-10-17、約2時間)。
+
+    同じ理由でサイクルを回し続けず、何をすればよいかを言う。
+    """
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    i = src.index("なにも採っていません")
+    block = src[max(0, i - 900):i]
+    assert "_job_dead_session" in block, "セッション切れを見ていない"
+    assert "入れ直しても直りません" in block
+    assert "c.restarts = cfg.max_restarts" in block, "同じサイクルを止めていない"
+
+
+def test_the_marker_is_searched_over_the_whole_log_not_the_tail():
+    """★警告はプロセス起動直後に1回だけ。末尾を切ると必ず取り逃す。"""
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    m = src[src.index("def _job_dead_session"):src.index("def buyable_remaining")]
+    assert "coalesce(log,'')" in m
+    assert "_tail(" not in m, "末尾だけを見ている"
+
+
+def test_a_dead_session_collector_is_not_cancelled_in_a_loop(monkeypatch):
+    """★実挙動で確かめる。切れているなら cancel も再投入もしない。"""
+    import hro_operations.orchestrator as orc
+
+    calls = {"cancel": 0, "enqueue": 0}
+    monkeypatch.setattr(orc, "_cancel", lambda c, j: calls.__setitem__("cancel", calls["cancel"] + 1))
+    monkeypatch.setattr(orc, "_enqueue", lambda c, s, p: calls.__setitem__("enqueue", calls["enqueue"] + 1) or 99)
+    monkeypatch.setattr(orc, "_job_dead_session", lambda conn, jid: True)
+    monkeypatch.setattr(orc, "check", lambda *a, **k: {"silent": ["netkeiba"]}, raising=False)
+
+    import sys as _s
+    mod = type(_s)("hro_operations.collector_health")
+    mod.check = lambda conn, date, silent_sec=0: {"silent": ["netkeiba"]}
+    mod.job_kind = lambda src: "netkeiba_odds"
+    monkeypatch.setitem(_s.modules, "hro_operations.collector_health", mod)
+
+    step = orc.Step("netkeiba", "netkeiba_odds", "vm", {})
+    child = orc.Child(step=step, job_id=5) if hasattr(orc, "Child") else None
+    if child is None:
+        return
+    cfg = orc.OrchestratorConfig(date="20261017", job_id=1) \
+        if hasattr(orc, "OrchestratorConfig") else None
+    if cfg is None:
+        return
+    cfg.revive_silent = True
+    orc._revive_silent(object(), [child], cfg)
+    assert calls == {"cancel": 0, "enqueue": 0}, calls
+    assert child.restarts >= cfg.max_restarts

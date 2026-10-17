@@ -193,6 +193,9 @@ class _FakeConn:
             self._result = [(False,)]
         elif s.startswith("SELECT right("):
             self._result = [("",)]
+        elif s.startswith("SELECT bool_or("):
+            # ★セッション切れ判定。既定は「切れていない」(従来の再投入が効く)
+            self._result = [(getattr(self, "dead_session", False),)]
         elif s.startswith("SELECT id, kind FROM ops_job WHERE target='windows'"):
             self._result = []                    # JV-Link は空いている
         elif "FROM bet_results" in s:
