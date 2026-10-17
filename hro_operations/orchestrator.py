@@ -165,6 +165,8 @@ class Child:
     job_id: int | None = None
     restarts: int = 0
     adopted: bool = False       # 既に走っていたものを引き継いだ
+    # ★セッション切れを理由に入れ直した時刻(monotonic)。間隔を空けるためだけに持つ。
+    last_session_restart: float | None = None
 
 
 def needs_restart(step: Step, status: str | None, child: Child, *,
@@ -367,6 +369,9 @@ class OrchestratorConfig:
     revive_silent: bool = True
     silent_seconds: int = 180
     max_restarts: int = 3              # 常駐1本あたりの再投入上限
+    # ★セッション切れを理由に入れ直す間隔。止めはしない(state を差し替えれば
+    #   再起動で直る)が、3分おきに殺し続けても空転するだけ(2026-10-17 に2時間)。
+    session_restart_interval_sec: float = 900.0
     poll_seconds: float = 20.0
     drain_seconds: float = 180.0       # 常駐の停止を待つ上限(JV-Link の解放待ち)
     finish_timeout_seconds: float = 3600.0
@@ -481,6 +486,24 @@ def dead_session(log_text: str) -> bool:
     return any(m in t for m in _DEAD_SESSION_MARKS)
 
 
+def _now_mono() -> float:
+    import time as _t
+    return _t.monotonic()
+
+
+def session_restart_due(child: "Child", interval_sec: float,
+                        now: float | None = None) -> bool:
+    """セッション切れを理由に入れ直してよい時刻か。
+
+    ★「入れ直しても直らない」から止める、は行き過ぎだった。state を差し替えれば
+      再起動で直るので、入れ直す道は残す。問題は**頻度**(2026-10-17 は約3分おきに
+      6回、2時間空転)。間隔を空ける。
+    """
+    now = _now_mono() if now is None else now
+    last = child.last_session_restart
+    return last is None or (now - last) >= interval_sec
+
+
 def _job_dead_session(conn, job_id: int) -> bool:
     """★印は**プロセス起動直後に1回だけ**出る。数時間回った後の末尾には残らない。
     末尾を切って探すと必ず取り逃すので、ログ全体を DB 側で見る。
@@ -539,13 +562,18 @@ def _revive_silent(conn, children: list[Child], cfg: OrchestratorConfig) -> None
                  "達しています。手で確認してください")
             continue
         if _job_dead_session(conn, c.job_id):
-            # ★入れ直しても直らない。同じ理由で何度も殺さない(2026-10-17 に6回空転)。
+            # ★止めてはいけない。state ファイルを差し替えれば**再起動で直る**
+            #   (手でログインし直して VM へコピーする、あの手順)。
+            #   2026-10-17 の問題は「入れ直したこと」ではなく「3分おきに入れ直して
+            #   2時間空転したこと」。止めるのではなく**間隔を空ける**。
+            if not session_restart_due(c, cfg.session_restart_interval_sec):
+                continue
+            c.last_session_restart = _now_mono()
             _log(f"★{src} はセッションが切れています(job#{c.job_id})。"
-                 "**入れ直しても直りません**。netkeiba のログインを取り直すか、"
+                 "入れ直しますが、**ログインを取り直さない限り直りません**。"
+                 "netkeiba-login で state を作り直すか、"
                  "NETKEIBA_LOGIN_ID / NETKEIBA_PASSWORD を設定して"
                  "自動再ログインを有効にしてください")
-            c.restarts = cfg.max_restarts      # これ以上このサイクルを回さない
-            continue
         _log(f"★{src} が {cfg.silent_seconds} 秒以上なにも採っていません"
              f"(job#{c.job_id})。立て直します({c.restarts + 1}/{cfg.max_restarts})")
         _cancel(conn, c.job_id)

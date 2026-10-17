@@ -106,18 +106,45 @@ def test_a_healthy_log_is_not_mistaken_for_a_dead_session():
     assert dead_session(None) is False
 
 
-def test_revive_does_not_restart_a_dead_session():
-    """★入れ直しても直らないものを6回入れ直した(2026-10-17、約2時間)。
+def test_dead_session_restart_is_rate_limited_not_forbidden():
+    """★止めてはいけない。state を差し替えれば**再起動で直る**。
 
-    同じ理由でサイクルを回し続けず、何をすればよいかを言う。
+    2026-10-17 の問題は「入れ直したこと」ではなく、約3分おきに6回入れ直して
+    2時間空転したこと。止めるのではなく間隔を空ける。
     """
     src = (Path(__file__).resolve().parents[1]
            / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
     i = src.index("なにも採っていません")
-    block = src[max(0, i - 900):i]
-    assert "_job_dead_session" in block, "セッション切れを見ていない"
-    assert "入れ直しても直りません" in block
-    assert "c.restarts = cfg.max_restarts" in block, "同じサイクルを止めていない"
+    block = src[max(0, i - 1200):i]
+    assert "_job_dead_session" in block
+    assert "session_restart_due" in block, "間隔を見ていない"
+    assert "c.restarts = cfg.max_restarts" not in block, "恒久的に止めている"
+
+
+def test_session_restart_interval():
+    """間隔内は入れ直さない。空けば入れ直す。"""
+    from hro_operations.orchestrator import Child, Step, session_restart_due
+
+    c = Child(step=Step("x", "netkeiba_odds", "vm", {}), job_id=1)
+    assert session_restart_due(c, 900, now=1000.0) is True      # 初回は必ず通す
+    c.last_session_restart = 1000.0
+    assert session_restart_due(c, 900, now=1100.0) is False
+    assert session_restart_due(c, 900, now=1899.0) is False
+    assert session_restart_due(c, 900, now=1900.0) is True
+
+
+def test_the_2026_10_17_thrash_would_be_prevented():
+    """実際の間隔(約3分おきに6回)が1回に収まること。"""
+    from hro_operations.orchestrator import Child, Step, session_restart_due
+
+    c = Child(step=Step("x", "netkeiba_odds", "vm", {}), job_id=1)
+    allowed = 0
+    for t in range(0, 70 * 60, 200):        # 約3分おきに70分
+        if session_restart_due(c, 900, now=float(t)):
+            allowed += 1
+            c.last_session_restart = float(t)
+    assert allowed <= 5, allowed
+    assert allowed >= 2, "まったく入れ直せないのも行き過ぎ"
 
 
 def test_the_marker_is_searched_over_the_whole_log_not_the_tail():
@@ -155,5 +182,9 @@ def test_a_dead_session_collector_is_not_cancelled_in_a_loop(monkeypatch):
         return
     cfg.revive_silent = True
     orc._revive_silent(object(), [child], cfg)
+    # ★初回は入れ直す(state を差し替えていれば直るため)
+    assert calls == {"cancel": 1, "enqueue": 1}, calls
+    # ★直後にもう一度来ても入れ直さない(空転させない)
+    calls.clear(); calls.update({"cancel": 0, "enqueue": 0})
+    orc._revive_silent(object(), [child], cfg)
     assert calls == {"cancel": 0, "enqueue": 0}, calls
-    assert child.restarts >= cfg.max_restarts
