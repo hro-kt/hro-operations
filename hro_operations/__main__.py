@@ -1980,6 +1980,7 @@ def _cmd_tax_seal(args) -> int:
                 continue
             # ★網羅性を先に作ってから封印する。封印に含めるので順序が要る。
             #   1つのコマンドにまとめておけば順序を間違えようがない。
+            cov_ok = True
             if not args.no_coverage:
                 try:
                     cov = build_coverage(conn, d)
@@ -1990,9 +1991,19 @@ def _cmd_tax_seal(args) -> int:
                               f" / 買った {cov['bought_races']}R {cov['tickets']}点")
                         for st, n in sorted(cov["by_status"].items()):
                             print(f"      {st}: {n}R")
-                except Exception as e:   # noqa: BLE001 - 封印は続ける
-                    print(f"  ⚠ {d} の網羅性を作れません: {type(e).__name__}: {e}")
-            r = seal_day(conn, d, force=args.force)
+                except Exception as e:   # noqa: BLE001
+                    # ★ここで封印に進まない。網羅性が欠けたまま鎖に入れると、
+                    #   「全レースに規則を当てた」という主張の裏付けが無い環ができる。
+                    #   2026-10-17: ⚠ を出したまま封印し、coverage=null の rev1 が残った。
+                    cov_ok = False
+                    print(f"  ✗ {d} の網羅性を作れません: {type(e).__name__}: {e}")
+                    print("      封印しません。直してから再実行するか、"
+                          "意図して省くなら --no-coverage を付けてください")
+                    rc = 1
+            if not cov_ok:
+                continue
+            r = seal_day(conn, d, force=args.force,
+                         require_coverage=not args.no_coverage)
             if r["status"] == "sealed":
                 print(f"✓ {d} を封印しました rev{r['revision']}"
                       f" 購入{r['bought']:,}円 払戻{r['payout']:,}円")

@@ -155,6 +155,11 @@ class _SealConn:
             self._r = self.content.get("versions", [])
         elif q.startswith("SELECT count(*) FROM bet_decision_logs"):
             self._r = [(self.content.get("n_dlogs", 0),)]
+        elif q.startswith("SELECT status, count(*)"):
+            # ★coverage を与えていない偽接続は、表が無い本番を模す(ここで落ちる)
+            if "coverage" not in self.content:
+                raise AssertionError("race_coverage が無い")
+            self._r = list(self.content["coverage"])
         else:                                    # pragma: no cover - 想定外は落とす
             raise AssertionError(f"未知のSQL: {q[:70]}")
         return self
@@ -166,8 +171,9 @@ class _SealConn:
         return list(self._r)
 
 
-def _conn(bought=8900, payout=24110):
+def _conn(bought=8900, payout=24110, coverage=None):
     return _SealConn({
+        **({"coverage": coverage} if coverage is not None else {}),
         "orders": [("R1", "win", "08", 1000, 1, 7)],
         "votes": [("0007", "R1", "win", "08", 1000)],
         "receipts": [("0007", bought, payout)],
@@ -179,24 +185,24 @@ def _conn(bought=8900, payout=24110):
 def test_seal_records_the_ipat_amounts_as_the_truth():
     """★金額の真実源は IPAT 側。bet_orders は『出した指示』で成立額ではない。"""
     conn = _conn()
-    r = seal_day(conn, "20261010")
+    r = seal_day(conn, "20261010", require_coverage=False)
     assert r["status"] == "sealed" and r["revision"] == 1
     assert r["bought"] == 8900 and r["payout"] == 24110
 
 
 def test_sealing_twice_with_the_same_content_is_a_no_op():
     conn = _conn()
-    seal_day(conn, "20261010")
-    assert seal_day(conn, "20261010")["status"] == "unchanged"
+    seal_day(conn, "20261010", require_coverage=False)
+    assert seal_day(conn, "20261010", require_coverage=False)["status"] == "unchanged"
     assert len(conn.rows) == 1
 
 
 def test_a_later_correction_appends_a_link_instead_of_overwriting():
     """★締めをやり直して払戻が増えても上書きしない。訂正の事実ごと残す。"""
     conn = _conn(payout=0)
-    seal_day(conn, "20261010")
+    seal_day(conn, "20261010", require_coverage=False)
     conn.content["receipts"] = [("0007", 8900, 24110)]
-    r = seal_day(conn, "20261010")
+    r = seal_day(conn, "20261010", require_coverage=False)
     assert r["status"] == "sealed" and r["revision"] == 2
     assert len(conn.rows) == 2
     assert conn.rows[1][5] == conn.rows[0][4]      # prev_hash が前の環を指す
@@ -204,18 +210,18 @@ def test_a_later_correction_appends_a_link_instead_of_overwriting():
 
 def test_chain_is_healthy_when_untouched():
     conn = _conn()
-    seal_day(conn, "20261010")
+    seal_day(conn, "20261010", require_coverage=False)
     conn.content["receipts"] = [("0007", 1000, 0)]
-    seal_day(conn, "20261011")
+    seal_day(conn, "20261011", require_coverage=False)
     assert verify_chain(conn) == []
 
 
 def test_rewriting_a_sealed_day_breaks_the_chain():
     """★これが本題。過去の1日を書き換えたら分かること。"""
     conn = _conn()
-    seal_day(conn, "20261010")
+    seal_day(conn, "20261010", require_coverage=False)
     conn.content["receipts"] = [("0007", 1000, 0)]
-    seal_day(conn, "20261011")
+    seal_day(conn, "20261011", require_coverage=False)
 
     seq, bk, rev, content, h, prev, at = conn.rows[0]
     content["totals"]["payout"] = 999999          # こっそり書き換える
@@ -234,5 +240,63 @@ def test_prev_hash_is_part_of_the_hash_input():
 
 def test_empty_day_is_not_sealed():
     conn = _SealConn({})
-    assert seal_day(conn, "20261012")["status"] == "empty"
+    assert seal_day(conn, "20261012", require_coverage=False)["status"] == "empty"
     assert conn.rows == []
+
+
+# --------------------------------------------------------------------------- #
+# ★網羅性が欠けたまま封印しない
+# --------------------------------------------------------------------------- #
+def test_sealing_refuses_when_coverage_cannot_be_read():
+    """★2026-10-17: 網羅性の作成が失敗したのに封印は成功し、
+    coverage=null のまま rev1 が鎖に入った。
+
+    「全レースに規則を当てた」という主張の裏付けが無い環を作らない。
+    """
+    import pytest
+
+    from hro_operations.tax_seal import build_content
+
+    conn = _conn()
+    with pytest.raises(RuntimeError) as ei:
+        build_content(conn, "20261010")
+    assert "網羅性を読めないので封印しません" in str(ei.value)
+    assert "--no-coverage" in str(ei.value)
+
+
+def test_omitting_coverage_on_purpose_is_recorded_in_the_content():
+    """★「意図して省いた」と「失敗して欠けた」を後から区別できるようにする。
+
+    null だけでは、読む人にはどちらか分からない。
+    """
+    from hro_operations.tax_seal import build_content
+
+    c = build_content(_conn(), "20261010", require_coverage=False)
+    assert c["coverage"] is None
+    assert c.get("coverage_omitted"), "省いた理由が残っていない"
+
+
+def test_content_has_no_omission_marker_when_coverage_is_present():
+    """通常の封印では内容の形を変えない(既存の鎖と比較できるように)。"""
+    from hro_operations.tax_seal import build_content
+
+    conn = _conn(coverage=[("bought", 3, 5, 1700)])
+    c = build_content(conn, "20261010")
+    assert c["coverage"] == [["bought", 3, 5, 1700]]
+    assert "coverage_omitted" not in c
+
+
+def test_executemany_is_called_on_a_cursor_not_the_connection():
+    """★executemany は**カーソル**の機能。Connection には無い。
+
+    2026-10-17: conn.executemany で AttributeError。
+    conn.execute は psycopg3 が持っているので DELETE は通り、ここだけ落ちた。
+    """
+    import re as _re
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "coverage.py").read_text(encoding="utf-8")
+    assert "conn.executemany" not in src
+    assert _re.search(r"cur(?:sor)?\s*\.\s*executemany", src), "カーソルで呼んでいない"
+    assert "cur.close()" in src, "カーソルを閉じていない"

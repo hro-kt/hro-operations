@@ -163,10 +163,17 @@ def build_coverage(conn, budget_key: str) -> dict:
         })
 
     conn.execute("DELETE FROM race_coverage WHERE budget_key = %s", (budget_key,))
-    conn.executemany(
-        "INSERT INTO race_coverage(budget_key,race_id,jyo_cd,race_num,hasso_time,"
-        " status,reason,n_horses,n_eligible,n_bought,amount,strategy_version_id)"
-        " VALUES(%(budget_key)s,%(race_id)s,%(jyo_cd)s,%(race_num)s,%(hasso_time)s,"
-        " %(status)s,%(reason)s,%(n_horses)s,%(n_eligible)s,%(n_bought)s,%(amount)s,"
-        " %(strategy_version_id)s)", rows)
+    # ★executemany は**カーソル**の機能。Connection には無い。
+    #   conn.execute は psycopg3 が持つので動いてしまい、ここだけ落ちた
+    #   (2026-10-17: 封印ジョブで AttributeError)。
+    cur = conn.cursor()
+    try:
+        cur.executemany(
+            "INSERT INTO race_coverage(budget_key,race_id,jyo_cd,race_num,hasso_time,"
+            " status,reason,n_horses,n_eligible,n_bought,amount,strategy_version_id)"
+            " VALUES(%(budget_key)s,%(race_id)s,%(jyo_cd)s,%(race_num)s,%(hasso_time)s,"
+            " %(status)s,%(reason)s,%(n_horses)s,%(n_eligible)s,%(n_bought)s,%(amount)s,"
+            " %(strategy_version_id)s)", rows)
+    finally:
+        cur.close()
     return summarize(rows)

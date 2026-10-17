@@ -59,7 +59,7 @@ WHERE o.budget_key = %s ORDER BY v.id
 """
 
 
-def build_content(conn, budget_key: str) -> dict:
+def build_content(conn, budget_key: str, *, require_coverage: bool = True) -> dict:
     """その日の「封印する内容」を組む。
 
     ★入れるのは**金額と件数と依拠した戦略の版**。判断の中身(decision logs)まで
@@ -75,10 +75,21 @@ def build_content(conn, budget_key: str) -> dict:
         (budget_key,)).fetchone()[0]
     # ★網羅性も封印に含める。「全レースに規則を当てた」という主張そのものが
     #   後から書き換えられては意味がないので、金額と同じ鎖で守る。
+    # ★取れなかったときに黙って null を入れない。
+    #   2026-10-17: 網羅性の作成が AttributeError で失敗したのに封印は成功し、
+    #   coverage=null のまま rev1 が鎖に入った。「意図して省いた」のか
+    #   「失敗して欠けた」のかが後から区別できない記録は、税務上いちばん困る。
+    coverage_omitted = None
     try:
         coverage = [list(r) for r in conn.execute(_SQL_COVERAGE, (budget_key,)).fetchall()]
-    except Exception:   # noqa: BLE001 - 30_race_coverage.sql 未適用でも封印はできる
+    except Exception as e:      # noqa: BLE001
+        if require_coverage:
+            raise RuntimeError(
+                f"網羅性を読めないので封印しません: {type(e).__name__}: {e}\n"
+                "  先に race_coverage を作るか、意図して省くなら --no-coverage を"
+                "付けてください(その旨が封印の内容に残ります)") from e
         coverage = None
+        coverage_omitted = f"{type(e).__name__}: {str(e)[:200]}"
     bought = sum(r[1] for r in receipts)
     payout = sum(r[2] for r in receipts)
     return {
@@ -89,6 +100,8 @@ def build_content(conn, budget_key: str) -> dict:
         "ipat_votes": votes,
         "ipat_receipts": receipts,
         "coverage": coverage,
+        # ★null の理由を残す。省いた記録と欠けた記録を取り違えさせない。
+        **({"coverage_omitted": coverage_omitted} if coverage is None else {}),
         # ★金額の真実源は IPAT 側。bet_orders は「出した指示」であって成立額ではない
         "totals": {"bought": int(bought), "payout": int(payout),
                    "n_receipts": len(receipts), "n_orders": len(orders),
@@ -104,12 +117,13 @@ def last_seal(conn) -> tuple[int, str | None]:
     return (int(row[0]), row[1]) if row else (0, GENESIS)
 
 
-def seal_day(conn, budget_key: str, *, force: bool = False) -> dict:
+def seal_day(conn, budget_key: str, *, force: bool = False,
+             require_coverage: bool = True) -> dict:
     """その日を封印する。内容が前回と同じなら何もしない(冪等)。
 
     戻り: {"status": "sealed"|"unchanged"|"empty", "revision":..., "hash":...}
     """
-    content = build_content(conn, budget_key)
+    content = build_content(conn, budget_key, require_coverage=require_coverage)
     if not force and not content["totals"]["n_orders"] \
             and not content["totals"]["n_receipts"]:
         return {"status": "empty", "budget_key": budget_key}
