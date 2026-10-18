@@ -91,3 +91,33 @@ def test_claim_rejects_duplicates_before_taking_a_job():
     body = m.group(1)
     assert "reject_duplicate_residents(conn, server)" in body
     assert body.index("reject_duplicate_residents") < body.index("UPDATE ops_job SET status='running'")
+
+
+# --------------------------------------------------------------------------- #
+# ★手で起動した常駐を引き継ぐ(date が空でも)
+# --------------------------------------------------------------------------- #
+def test_adopt_also_matches_jobs_without_a_date():
+    """★常駐は date 省略なら当日を見る。手動起動(admin UI)は args に date が
+    入らないことがある。完全一致だけを見ていたため 2026-10-17 に
+    flow ランナーが2本走った(job 220 date=20261017 / job 221 date 無し)。
+    """
+    import re as _re
+
+    src = (_ROOT / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    m = _re.search(r"def _adopt\(.*?\n(?=\n\ndef )", src, _re.S)
+    assert m, "_adopt が見つからない"
+    body = m.group(0)
+    assert "IN (%s, '')" in body, "date が空のジョブを引き継げない"
+    assert "status IN ('queued','running')" in body
+    assert "NOT cancel_requested" in body
+
+
+def test_adopt_is_used_before_enqueue():
+    """★先に引き継ぎを試すこと。投入してから気づいても遅い。"""
+    import re as _re
+
+    src = (_ROOT / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    m = _re.search(r"def _start_all\(.*?\n(?=\n\ndef )", src, _re.S)
+    assert m
+    body = m.group(0)
+    assert body.index("_adopt(") < body.index("_enqueue(")

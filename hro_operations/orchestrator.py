@@ -256,10 +256,14 @@ def _adopt(conn, step: Step, date: str) -> int | None:
     ★二重起動を防ぐのが目的。netkeiba を2本起こせば片方は無駄にブラウザを掴み、
       flow ランナーを2本起こせば**同じレースを2回買う**。ボタンの二度押しや
       オーケストレータの再投入で簡単に起きるので、投入前に必ず見る。
+    ★date が**空の**ジョブも引き継ぐ。常駐は date 省略なら当日を見るので、
+      手で起動したもの(admin UI 等)は args に date が入らないことがある。
+      完全一致だけを見ていたため 2026-10-17 に flow ランナーが2本走った
+      (job 220 date=20261017 / job 221 date 無し)。
     """
     row = conn.execute(
         "SELECT id FROM ops_job WHERE kind=%s AND target=%s AND status IN ('queued','running') "
-        "  AND coalesce(args->>'date','') = %s AND NOT cancel_requested "
+        "  AND coalesce(args->>'date','') IN (%s, '') AND NOT cancel_requested "
         "ORDER BY requested_at DESC LIMIT 1", (step.kind, step.target, date)).fetchone()
     return int(row[0]) if row else None
 
