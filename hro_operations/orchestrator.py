@@ -314,7 +314,8 @@ def _sleep_until(deadline: datetime, *, poll: float) -> float:
     return poll
 
 
-def _preflight(date: str, flow_args: dict) -> list[str]:
+def _preflight(date: str, flow_args: dict, *,
+               collectors_starting: bool = True) -> list[str]:
     """走り出す前に致命的な欠落を見る。問題の一覧(空なら OK)を返す。
 
     flow_args は **UI の生の設定**(flow_day ジョブに渡すものと同一)。
@@ -346,7 +347,7 @@ def _preflight(date: str, flow_args: dict) -> list[str]:
         _log(f"  note: {p['threshold_note']}")
     db = FeatureDB(load_features_config())
     try:
-        res = check(db, date, cfg)
+        res = check(db, date, cfg, collectors_starting=collectors_starting)
     finally:
         db.close()
     for n in res.get("notes") or []:

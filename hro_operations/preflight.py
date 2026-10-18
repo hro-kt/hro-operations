@@ -43,8 +43,16 @@ WHERE year = %(y)s AND month_day = %(m)s
 """
 
 
-def check(db, date: str, cfg) -> dict:
-    """cfg は DayConfig。lead_seconds は**発注時刻**(agent が締切-N秒から変換したもの)。"""
+def check(db, date: str, cfg, *, collectors_starting: bool = False) -> dict:
+    """cfg は DayConfig。lead_seconds は**発注時刻**(agent が締切-N秒から変換したもの)。
+
+    Args:
+        collectors_starting: 呼び出し側が**これから収集を起動する**なら True。
+            ★オーケストレータの preflight がこれ。収集を起こすのは自分自身なので、
+              その時点でオッズが空なのは常に正常。問題として挙げると、
+              開催日の朝に必ず止まる(2026-10-18 に実害)。
+            flow_day 単体のように「他で動いている収集に依存する」側は False。
+    """
     key = {"y": date[:4], "m": date[4:8]}
     out: dict = {"date": date, "problems": [], "notes": []}
 
@@ -96,7 +104,11 @@ def check(db, date: str, cfg) -> dict:
     #   netkeiba-odds の既定は発走20分以内(--within-minutes 20)。
     mins = r.get("mins_to_first")
     window = int(getattr(cfg, "collect_within_minutes", 20) or 20)
-    too_early = mins is not None and mins > window
+    # ★境界は >=。ちょうど window 分前は収集がいま始まる瞬間で、まだ空が正常。
+    #   2026-10-18: 最終発走16:30の日の09:30 は mins=20 で、`>` だと催促側に倒れた。
+    # ★None(予定のレースが無い等)は従来どおり「遅い」扱い。
+    #   「分からないから催促しない」にすると、収集が本当に死んでいる場合を隠す。
+    too_early = mins is not None and mins >= window
 
     # ★netkeiba を使うなら複勝オッズは JV 由来。速報が止まっていると全頭落ちる
     sok = out.get("ts_sokuho_o1") or {}
@@ -105,11 +117,18 @@ def check(db, date: str, cfg) -> dict:
             f"次の発走まで {mins:.0f} 分。オッズ収集は発走 {window} 分以内のレースが"
             f"対象なので、いま空なのは正常です。発走 {window} 分前になったら流し直して"
             f"ください(ジョブの args の date が今日になっているかだけ先に確認を)")
+    # ★これから収集を起こすなら、空は催促の対象ではない。note に落とす。
+    bucket = out["notes"] if collectors_starting else out["problems"]
     if not too_early and cfg.flow_source == "netkeiba" and not (sok.get("rows") or 0):
-        out["problems"].append(
+        bucket.append(
             "速報(ts_sokuho_o1)が空です。netkeiba は単勝しか出さないので、"
-            "**複勝オッズが無いと全頭落ちて0件**になります。poll-odds を起動してください")
+            "**複勝オッズが無いと全頭落ちて0件**になります。"
+            + ("これから起動するので、数分後に行が増えることを確認してください"
+               if collectors_starting else "poll-odds を起動してください"))
     nk = out.get("ts_netkeiba_o1") or {}
     if not too_early and cfg.flow_source == "netkeiba" and not (nk.get("rows") or 0):
-        out["problems"].append("netkeiba(ts_netkeiba_o1)が空です。netkeiba-odds を起動してください")
+        bucket.append(
+            "netkeiba(ts_netkeiba_o1)が空です。"
+            + ("これから起動するので、数分後に行が増えることを確認してください"
+               if collectors_starting else "netkeiba-odds を起動してください"))
     return out
