@@ -121,3 +121,50 @@ def test_adopt_is_used_before_enqueue():
     assert m
     body = m.group(0)
     assert body.index("_adopt(") < body.index("_enqueue(")
+
+
+# --------------------------------------------------------------------------- #
+# ★親(オーケストレータ)の二重起動
+# --------------------------------------------------------------------------- #
+class _OrcConn:
+    def __init__(self, other_id):
+        self.other_id, self.params = other_id, None
+
+    def execute(self, sql, params=None):
+        self.sql, self.params = sql, params
+        return self
+
+    def fetchone(self):
+        return (self.other_id,) if self.other_id else None
+
+
+def test_another_orchestrator_for_the_same_day_is_detected():
+    """★子の引き継ぎ(_adopt)では防げない。
+
+    2本の親が同じ子を引き継ぎ、互いに立て直し合う。
+    flow ランナーが2本になれば**同じレースを2回買う**。
+    """
+    from hro_operations.orchestrator import other_orchestrator
+
+    assert other_orchestrator(_OrcConn(210), "20261018", 246) == 210
+    assert other_orchestrator(_OrcConn(None), "20261018", 246) is None
+
+
+def test_the_check_excludes_itself():
+    from hro_operations.orchestrator import _SQL_OTHER_ORCHESTRATOR
+
+    assert "id <> %s::bigint" in _SQL_OTHER_ORCHESTRATOR
+    assert "status = 'running'" in _SQL_OTHER_ORCHESTRATOR
+    assert "NOT cancel_requested" in _SQL_OTHER_ORCHESTRATOR
+    # ★date 無しの親も拾う(手動投入で args に date が入らないことがある)
+    assert "IN (%s, '')" in _SQL_OTHER_ORCHESTRATOR
+
+
+def test_run_checks_before_starting_children():
+    """★子を起こしてから気づいても遅い。"""
+    import re as _re
+
+    src = (_ROOT / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    chk = src.index("other_orchestrator(conn, cfg.date, cfg.job_id)")
+    start = src.index("_start_all(conn, children, cfg)")
+    assert chk < start

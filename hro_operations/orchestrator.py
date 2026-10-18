@@ -268,6 +268,25 @@ def _adopt(conn, step: Step, date: str) -> int | None:
     return int(row[0]) if row else None
 
 
+_SQL_OTHER_ORCHESTRATOR = """
+-- ★同じ日のオーケストレータが2本走ると、互いの子を引き継ぎ合い、
+--   片方が入れ直した子をもう片方が「知らない子」として立て直す。
+--   flow ランナーが2本になれば**同じレースを2回買う**。
+SELECT id FROM ops_job
+ WHERE kind = 'race_day' AND status = 'running' AND NOT cancel_requested
+   AND coalesce(args->>'date','') IN (%s, '')
+   AND (%s::bigint IS NULL OR id <> %s::bigint)
+ ORDER BY id LIMIT 1
+"""
+
+
+def other_orchestrator(conn, date: str, self_job_id: int | None) -> int | None:
+    """同じ日の別のオーケストレータ。いればその id。"""
+    row = conn.execute(_SQL_OTHER_ORCHESTRATOR,
+                       (date, self_job_id, self_job_id)).fetchone()
+    return int(row[0]) if row else None
+
+
 def _enqueue(conn, step: Step, parent_id: int | None) -> int:
     args = dict(step.args)
     if parent_id is not None:
@@ -429,6 +448,15 @@ def run(cfg: OrchestratorConfig) -> int:
         _log("dry-run のためここまで(ジョブは投入していません)")
         conn.close()
         return 0
+
+    # ★親の二重起動を先に落とす。子の引き継ぎ(_adopt)では防げない
+    #   (2本の親が同じ子を引き継ぎ、互いに立て直し合う)。
+    other = other_orchestrator(conn, cfg.date, cfg.job_id)
+    if other is not None:
+        _log(f"✗ 同じ日のオーケストレータ job#{other} が既に走っています。"
+             "2本動かすと互いの子を立て直し合い、flow ランナーが二重になります"
+             "(=同じレースを2回買う)。先に job#%s を止めてください" % other)
+        return 2
 
     problems = _preflight(cfg.date, cfg.flow_args)
     if problems:
