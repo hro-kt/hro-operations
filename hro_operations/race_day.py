@@ -475,6 +475,31 @@ def check_recipe_verified(cfg: DayConfig) -> None:
             "  ★このまま走ると、確認画面まで進んだ末に**送信だけ拒否**され、"
             "締切を過ぎてから気付くことになります。")
 
+    # ★止めはしないが、朝のうちに言う。
+    warn_click_cache_cold()
+
+
+def warn_click_cache_cold() -> bool:
+    """クリック候補の学習がまだなら、朝のうちに言う。戻りは「冷えている」か。
+
+    ★止めない。学習が無くても買えるが、**1レース目に約9秒を払う**
+      (当たらない候補が per_click のタイムアウトを消化する。2026-10-18 実測)。
+      判断から受付までの予算は29秒なので、1レース目だけ締切に間に合わない
+      ことが起こりうる。100円の live-test で温めておけば避けられる。
+    """
+    try:
+        from hro_buyer.ipat import CLICK_CACHE_DEFAULT, load_click_cache
+        if load_click_cache(CLICK_CACHE_DEFAULT):
+            return False
+    except Exception as e:  # noqa: BLE001 - 助言のための処理。開催日を止めない
+        log.debug("クリック候補の学習を確認できません: %s", e)
+        return False
+    log.warning(
+        "クリック候補の学習がまだありません(%s)。1レース目に約9秒を余計に使います。"
+        "開催前に `hro-buyer ipat live-test --confirm-live --amount 100 …` を"
+        "1回通しておくと避けられます", CLICK_CACHE_DEFAULT)
+    return True
+
 
 def build_day_executor(cfg: DayConfig):
     """開催日を通して使う executor を作る(live のみ。paper/dry_run は None=レース毎に自動構築)。
