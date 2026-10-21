@@ -50,6 +50,25 @@ Write-Host "Using PYEXE = $pyexe"
 
 Set-Location (Join-Path $env:HRO_HOME 'hro-operations')
 
+# --- Refuse to start a second agent ---------------------------------------
+# With auto-logon, the "at logon" task fires on the console logon AND again
+# when you connect by RDP (same user, different session). Two agents claim
+# jobs from the same queue and fight: ops_agent has one row per server, so the
+# heartbeat flaps between them and `takeovers` climbs. Worse, two flow runners
+# can buy the same race twice (seen 2026-10-17 with two orchestrators).
+# Task Scheduler's "Do not start a new instance" also covers this; keep both.
+$me = $PID
+$others = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='python3.exe'" |
+            Where-Object { $_.ProcessId -ne $me -and
+                           $_.CommandLine -match 'hro_operations.*agent.*--server\s+windows' })
+if ($others.Count -gt 0) {
+    Write-Host "[SKIP] agent already running (PID $($others[0].ProcessId)). Not starting a second one."
+    Write-Host '       Two agents claim the same jobs and can buy the same race twice.'
+    Write-Host '       If that process is dead, kill it and re-run this task.'
+    Start-Sleep -Seconds 5
+    exit 0
+}
+
 # --- Resident loop (restart the agent if it exits) ---
 while ($true) {
     & $pyexe -m hro_operations agent --server windows --interval 5
