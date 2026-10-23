@@ -43,3 +43,37 @@ def test_it_still_documents_the_session_zero_constraint():
     """★サービス化できない理由。消すと、また Session 0 を試す人が出る。"""
     assert "INTERACTIVE desktop" in _PS1
     assert "session-0" in _PS1
+
+
+# --------------------------------------------------------------------------- #
+# ★git pull で機械の設定を壊さない
+# --------------------------------------------------------------------------- #
+def test_hro_home_is_only_a_fallback():
+    """★2026-10-24: git pull でこのファイルが戻り、HRO_HOME が既定値(C:\\hro)に
+       化けて agent が起動しなくなった。実体は Documents\\hro。
+       既に設定されている値を上書きしない。
+    """
+    assert "if (-not $env:HRO_HOME) { $env:HRO_HOME = 'C:\\hro' }" in _PS1
+    assert "\n$env:HRO_HOME = " not in _PS1, "無条件に代入している"
+
+
+def test_credentials_never_overwrite_existing_values():
+    """★同じ pull で POSTGRES_PASSWORD も CHANGE_ME に戻っていた。
+
+    このファイルは git 管理下なので、機械固有の値を置く場所ではない。
+    """
+    assert "function Set-IfEmpty" in _PS1
+    assert "$value -eq 'CHANGE_ME'" in _PS1, "CHANGE_ME を書き込んでいる"
+    for name in ("POSTGRES_HOST", "POSTGRES_USER", "POSTGRES_SSLMODE"):
+        assert f"$env:{name}      =" not in _PS1 and f"$env:{name}  =" not in _PS1, name
+    assert "POSTGRES_PASSWORD" not in _PS1, "パスワードを雛形に残さない"
+
+
+def test_it_points_at_env_file_for_real_values():
+    assert ".env" in _PS1 and "NOT here" in _PS1
+
+
+def test_the_venv_error_names_hro_home():
+    """★『venv が無い』だけでは、パスが間違っていることに気づけない。"""
+    assert "HRO_HOME = $env:HRO_HOME" in _PS1
+    assert "setx /M HRO_HOME" in _PS1

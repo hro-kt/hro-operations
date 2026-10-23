@@ -5,7 +5,8 @@
 # ASCII-only on purpose: Windows PowerShell 5.1 reads a BOM-less .ps1 as the
 # system code page (CP932 on Japanese Windows), which corrupts non-ASCII text
 # and breaks parsing. Keep this file ASCII.
-# Edit the CHANGE_ME values. This file holds a password -> restrict its ACL.
+# DO NOT put machine settings in this file: it is tracked in git and a pull
+# overwrites them. Use <HRO_HOME>\hro-operations\.env instead.
 #
 # Manual run:
 #   powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-agent-windows.ps1
@@ -20,21 +21,28 @@ $env:PYTHONUTF8 = '1'
 $env:PYTHONIOENCODING = 'utf-8'
 
 # --- Repo base ---
-$env:HRO_HOME = 'C:\hro'
+# Prefer an already-set HRO_HOME (machine env var, or the caller's shell), so a
+# `git pull` of this file never clobbers this machine's layout.
+#   setx /M HRO_HOME "C:\Users\kyosuke.tomoda\Documents\hro"
+if (-not $env:HRO_HOME) { $env:HRO_HOME = 'C:\hro' }
 
 # --- DB / JRDB credentials ---
-# (Alternative: put these in C:\hro\hro-operations\.env and delete the lines
-#  below; hro_operations auto-loads .env after cd. env wins over .env, so if you
-#  keep both, the values here take precedence.)
-$env:POSTGRES_HOST      = 'hro-db-prod1.postgres.database.azure.com'
-$env:POSTGRES_PORT      = '5432'
-$env:POSTGRES_DATABASE  = 'hro'
-$env:POSTGRES_USER      = 'hrouser'
-$env:POSTGRES_PASSWORD  = 'CHANGE_ME'
-$env:POSTGRES_SSLMODE   = 'require'
-$env:JRDB_USER          = 'CHANGE_ME'
-$env:JRDB_PWD           = 'CHANGE_ME'
-$env:SYNC_LOOKBACK_DAYS = '7'
+# Put the real values in <HRO_HOME>\hro-operations\.env (untracked), NOT here.
+# Only fill gaps below. Never overwrite a value that is already set, otherwise a
+# `git pull` of this file silently replaces the real password with CHANGE_ME
+# (that happened 2026-10-24).
+function Set-IfEmpty([string]$name, [string]$value) {
+    if (-not $value -or $value -eq 'CHANGE_ME') { return }
+    if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($name))) {
+        Set-Item -Path "env:$name" -Value $value
+    }
+}
+Set-IfEmpty 'POSTGRES_HOST'      'hro-db-prod1.postgres.database.azure.com'
+Set-IfEmpty 'POSTGRES_PORT'      '5432'
+Set-IfEmpty 'POSTGRES_DATABASE'  'hro'
+Set-IfEmpty 'POSTGRES_USER'      'hrouser'
+Set-IfEmpty 'POSTGRES_SSLMODE'   'require'
+Set-IfEmpty 'SYNC_LOOKBACK_DAYS' '7'
 
 # --- Auto-detect venv python (python.exe or python3.exe) ---
 $scripts = Join-Path $env:HRO_HOME 'hro-operations\.venv\Scripts'
@@ -42,7 +50,12 @@ $pyexe = Join-Path $scripts 'python.exe'
 if (-not (Test-Path $pyexe)) { $pyexe = Join-Path $scripts 'python3.exe' }
 if (-not (Test-Path $pyexe)) {
     Write-Host "[ERROR] venv python not found under $scripts"
-    Write-Host 'Create it: cd C:\hro\hro-operations; py -m venv .venv; .venv\Scripts\pip install psycopg[binary]'
+    Write-Host "       HRO_HOME = $env:HRO_HOME"
+    Write-Host '       If that path is wrong, HRO_HOME is unset on this machine and the'
+    Write-Host '       script fell back to the default. Set it once, machine-wide:'
+    Write-Host '         setx /M HRO_HOME "C:\Users\<you>\Documents\hro"'
+    Write-Host '       (open a NEW shell afterwards; setx does not affect the current one)'
+    Write-Host "       Or create the venv: cd $env:HRO_HOME\hro-operations; py -m venv .venv" 
     Read-Host 'Press Enter to exit'
     exit 1
 }
