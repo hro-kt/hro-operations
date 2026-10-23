@@ -284,3 +284,57 @@ def test_cli_watch_supports_one_pass(monkeypatch, capsys):
     _fake_windows(monkeypatch, [_SETUP])
     assert ops_main(["popups", "watch", "--once"]) == 0
     assert "jvlink-setup" in capsys.readouterr().out
+
+
+# --- 押す対象の決め方(★2026-10-24 の取りこぼしの再発防止) ------------------- #
+from hro_operations.popup_guard import is_toggle, resolve_handles
+
+# JV-Link のセットアップの子ウィンドウ(handle, text, class)。
+# ★同じ文言の STATIC が隣にいる形を再現する。
+_CHILDREN = [
+    (101, "スタートキット(CD/DVD-ROM)を持っていない", "Static"),   # ラベル側が先
+    (102, "スタートキット(CD/DVD-ROM)を持っている（推奨）", "Button"),
+    (103, "スタートキット(CD/DVD-ROM)を持っていない", "Button"),   # 本物のラジオ
+    (104, "OK", "Button"),
+    (105, "キャンセル", "Button"),
+]
+
+
+def test_only_real_buttons_are_clicked():
+    """★STATIC に BM_CLICK を送っても何も起きない。それに気づかないまま
+       次の OK を押すと、既定の選択肢(＝持っている)で先へ進む。
+       2026-10-24 にこれで DVD 側が選ばれた。
+    """
+    got = resolve_handles(_CHILDREN, ["スタートキット(CD/DVD-ROM)を持っていない", "OK"])
+    assert [h for _, h in got] == [103, 104]      # 101(Static) ではない
+
+
+def test_resolve_keeps_the_given_order():
+    got = resolve_handles(_CHILDREN, ["OK", "キャンセル"])
+    assert [label for label, _ in got] == ["OK", "キャンセル"]
+
+
+def test_resolve_refuses_when_a_label_is_missing():
+    """★見つからないものがあれば、1つも押さない。"""
+    with pytest.raises(RuntimeError, match="何も押しませんでした"):
+        resolve_handles(_CHILDREN, ["持っていない", "OK"])   # 完全一致しない
+
+
+def test_resolve_lists_what_was_actually_there():
+    """★次に規則を直す人に、何があったのかを見せる。"""
+    with pytest.raises(RuntimeError, match="ある BUTTON"):
+        resolve_handles(_CHILDREN, ["はい"])
+
+
+def test_radio_and_checkbox_styles_need_a_read_back():
+    """★押しボタンは押せば終わり。選択式は『選ばれたか』を読み返す必要がある。"""
+    for style in (0x02, 0x03, 0x04, 0x05, 0x06, 0x09):   # チェック/ラジオ各種
+        assert is_toggle(style), hex(style)
+    for style in (0x00, 0x01, 0x07):                      # 押しボタン/グループ枠
+        assert not is_toggle(style), hex(style)
+
+
+def test_toggle_detection_ignores_the_other_style_bits():
+    """★BS_* の上位ビット(左寄せ・枠線など)が立っていても種類は変わらない。"""
+    assert is_toggle(0x50012009)      # WS_CHILD|WS_VISIBLE|...|BS_AUTORADIOBUTTON
+    assert not is_toggle(0x50010001)  # ...|BS_DEFPUSHBUTTON

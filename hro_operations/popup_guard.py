@@ -211,8 +211,57 @@ def dump_rules(rules: list[Rule], path: str | None = None) -> str:
 # Win32(ここだけが OS 依存。判断は上の純粋関数が持つ)
 # --------------------------------------------------------------------------- #
 WM_CLOSE = 0x0010
+WM_COMMAND = 0x0111
+BM_GETCHECK = 0x00F0
+BM_SETCHECK = 0x00F1
 BM_CLICK = 0x00F5
+BST_CHECKED = 1
+BN_CLICKED = 0
+GWL_STYLE = -16
+BS_TYPEMASK = 0x0F
+# ★状態を持つボタン(押すと「選ばれた」になるもの)。押しただけで満足せず、
+#   本当に選ばれたかを読み返す必要がある種類。
+_TOGGLE_STYLES = frozenset((
+    0x02,   # BS_CHECKBOX
+    0x03,   # BS_AUTOCHECKBOX
+    0x04,   # BS_RADIOBUTTON
+    0x05,   # BS_3STATE
+    0x06,   # BS_AUTO3STATE
+    0x09,   # BS_AUTORADIOBUTTON
+))
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+
+def is_toggle(style: int) -> bool:
+    """ラジオ / チェックボックスか。★純粋関数。"""
+    return (style & BS_TYPEMASK) in _TOGGLE_STYLES
+
+
+def resolve_handles(children, clicks: list[str]) -> list[tuple[str, int]]:
+    """押す対象の子ウィンドウを決める。★純粋関数。
+
+    children は (handle, text, class_name) の並び。
+
+    ★**BUTTON クラスだけ**を見る。ここで絞らないと、同じ文言の
+      STATIC(説明文やラベル)に当たる。STATIC に BM_CLICK を送っても
+      何も起きないので、「押したことになっているのに選ばれていない」まま
+      次の OK を押してしまう(2026-10-24 にこれで既定の選択肢が通った)。
+    ★全部そろわなければ例外。半端に押さない。
+    """
+    buttons = [(h, t) for h, t, c in children if (c or "").lower() == "button"]
+    out: list[tuple[str, int]] = []
+    missing: list[str] = []
+    for label in clicks:
+        hit = next((h for h, t in buttons if t == label), None)
+        if hit is None:
+            missing.append(label)
+        else:
+            out.append((label, hit))
+    if missing:
+        raise RuntimeError(
+            f"ボタンが見つかりません: {missing} / "
+            f"ある BUTTON: {[t for _, t in buttons]}(何も押しませんでした)")
+    return out
 
 
 def _win32():
@@ -245,27 +294,49 @@ def _exe_of(ctypes, wintypes, pid: int) -> str:
         k32.CloseHandle(h)
 
 
+def _enum_children(ctypes, wintypes, user32, hwnd) -> list[tuple[int, str, str]]:
+    """子ウィンドウを (handle, text, class) で全部返す。"""
+    out: list[tuple[int, str, str]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def _child(child, _lp):
+        cls = _text(ctypes, user32, child, lambda h: 255, user32.GetClassNameW)
+        txt = _text(ctypes, user32, child, user32.GetWindowTextLengthW, user32.GetWindowTextW)
+        out.append((int(child), txt, cls))
+        return True
+
+    user32.EnumChildWindows(hwnd, _child, 0)
+    return out
+
+
+def _user32(ctypes, wintypes):
+    """argtypes を明示した user32。
+
+    ★既定のまま呼ぶと引数が C の int に落ちる。ハンドルや wParam が
+      黙って切り詰められても例外は出ず、「送ったのに効かない」になる。
+    """
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    u.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                               wintypes.WPARAM, wintypes.LPARAM]
+    u.SendMessageW.restype = wintypes.LPARAM
+    u.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    u.GetWindowLongW.restype = ctypes.c_long
+    u.GetDlgCtrlID.argtypes = [wintypes.HWND]
+    u.GetDlgCtrlID.restype = ctypes.c_int
+    return u
+
+
 def list_windows(*, with_buttons: bool = True) -> list[Win]:
     """見えているトップレベルウィンドウを全部返す。"""
     ctypes, wintypes = _win32()
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32 = _user32(ctypes, wintypes)
     out: list[Win] = []
 
     def _buttons(hwnd) -> tuple[str, ...]:
-        names: list[str] = []
-
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def _child(child, _lp):
-            cls = _text(ctypes, user32, child, lambda h: 255, user32.GetClassNameW)
-            if cls.lower() == "button":
-                t = _text(ctypes, user32, child, user32.GetWindowTextLengthW,
-                          user32.GetWindowTextW)
-                if t:
-                    names.append(t)
-            return True
-
-        user32.EnumChildWindows(hwnd, _child, 0)
-        return tuple(names)
+        # ★BUTTON だけ。押す側(resolve_handles)と同じ絞り方にしておかないと、
+        #   「一覧に出た文言が押せない」というずれが起きる。
+        return tuple(t for _h, t, c in _enum_children(ctypes, wintypes, user32, hwnd)
+                     if (c or "").lower() == "button" and t)
 
     @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     def _cb(hwnd, _lp):
@@ -284,42 +355,62 @@ def list_windows(*, with_buttons: bool = True) -> list[Win]:
     return out
 
 
+def inspect_buttons(hwnd: int) -> list[dict]:
+    """その窓のボタンを、種類と選択状態つきで返す(採取と診断に使う)。"""
+    ctypes, wintypes = _win32()
+    u = _user32(ctypes, wintypes)
+    out = []
+    for h, t, c in _enum_children(ctypes, wintypes, u, hwnd):
+        if (c or "").lower() != "button":
+            continue
+        style = u.GetWindowLongW(h, GWL_STYLE)
+        tog = is_toggle(style)
+        out.append({"text": t, "kind": "選択式" if tog else "押しボタン",
+                    "checked": bool(u.SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED)
+                    if tog else None})
+    return out
+
+
 def close_window(w: Win, clicks: list[str] | None) -> str:
     """指定されたボタンを**この順に**押す。空なら WM_CLOSE。何をしたかを返す。
 
-    ★ラジオも BUTTON クラスなので BM_CLICK で選べる。JV-Link のセットアップは
-      「ラジオを選ぶ → OK」の2手で、順番を逆にすると意味が変わる。
+    ★ラジオを押したら、**本当に選ばれたかを読み返す**。ここを省くと
+      「押したことにはなっているが既定の選択肢のまま OK」になる
+      (2026-10-24 に JV-Link のセットアップで実際に起きた)。
+      選べなかったら、そこで止める。OK は押さない。
     """
     ctypes, wintypes = _win32()
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    u = _user32(ctypes, wintypes)
 
-    def _find(label: str) -> int | None:
-        found: list[int] = []
+    if not clicks:
+        u.PostMessageW(w.hwnd, WM_CLOSE, 0, 0)
+        return "WM_CLOSE"
 
-        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-        def _child(child, _lp):
-            t = _text(ctypes, user32, child, user32.GetWindowTextLengthW, user32.GetWindowTextW)
-            if t == label:
-                found.append(int(child))
-                return False
-            return True
+    # ★先に全部の在処を確かめてから押す(半端な状態で残さない)。
+    targets = resolve_handles(_enum_children(ctypes, wintypes, u, w.hwnd), clicks)
 
-        user32.EnumChildWindows(w.hwnd, _child, 0)
-        return found[0] if found else None
-
-    if clicks:
-        # ★先に全部の在処を確かめてから押す。途中で見つからずに止まると、
-        #   «ラジオは選んだが OK は押していない» のような半端な状態で残る。
-        handles = [(label, _find(label)) for label in clicks]
-        missing = [label for label, h in handles if h is None]
-        if missing:
-            raise RuntimeError(f"ボタンが見つかりません: {missing}(何も押しませんでした)")
-        for label, h in handles:
-            user32.SendMessageW(h, BM_CLICK, 0, 0)
-            time.sleep(0.2)      # ラジオの選択が効いてから次へ
-        return "click[" + " → ".join(clicks) + "]"
-    user32.PostMessageW(w.hwnd, WM_CLOSE, 0, 0)
-    return "WM_CLOSE"
+    steps: list[str] = []
+    for label, h in targets:
+        style = u.GetWindowLongW(h, GWL_STYLE)
+        u.SendMessageW(h, BM_CLICK, 0, 0)
+        time.sleep(0.2)
+        if not is_toggle(style):
+            steps.append(label)
+            continue
+        if u.SendMessageW(h, BM_GETCHECK, 0, 0) != BST_CHECKED:
+            # ★BM_CLICK を無視する作りの窓がある。状態を直接立て、親に
+            #   「押された」と伝える(ダイアログ側はこの通知で選択を覚える)。
+            u.SendMessageW(h, BM_SETCHECK, BST_CHECKED, 0)
+            cid = u.GetDlgCtrlID(h)
+            u.SendMessageW(w.hwnd, WM_COMMAND,
+                           (BN_CLICKED << 16) | (cid & 0xFFFF), h)
+            time.sleep(0.2)
+        if u.SendMessageW(h, BM_GETCHECK, 0, 0) != BST_CHECKED:
+            raise RuntimeError(
+                f"{label!r} を選べませんでした(押したが選択状態になりません)。"
+                f"残り {[c for c, _ in targets[len(steps) + 1:]]} は押していません")
+        steps.append(f"{label}=選択済")
+    return "click[" + " → ".join(steps) + "]"
 
 
 # --------------------------------------------------------------------------- #
