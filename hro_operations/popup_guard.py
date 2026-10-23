@@ -79,7 +79,7 @@ def _hit(pat: str, value: str, *, ignore_case: bool = False) -> bool:
 
 
 def match(w: Win, rules: list[Rule]) -> Rule | None:
-    """閉じてよいなら、その規則を返す。★純粋関数。
+    """窓の**見分け**だけ。その規則が押せるかは見ない。★純粋関数。
 
     ★title が空のウィンドウは**絶対に閉じない**。タスクトレイの隠しウィンドウや
       IME の常駐窓は title が空で、閉じると巻き添えで変なことが起きる。
@@ -94,6 +94,34 @@ def match(w: Win, rules: list[Rule]) -> Rule | None:
                 and _hit(r.exe, w.exe, ignore_case=True)):
             return r
     return None
+
+
+def choose(w: Win, rules: list[Rule]) -> tuple[Rule | None, list[str]]:
+    """実際に押せる規則を1つ選ぶ。選ばなかった理由も返す。★純粋関数。
+
+    ★同じ title/class/exe の窓が、場面によって違うボタンを出すことがある。
+      JV-Link のセットアップがそれで、1枚目は「ラジオ + OK」、2枚目は
+      「OK / キャンセル」。title はどちらも『セットアップ』。
+      見分けはボタンの顔ぶれでしかつかないので、**押せるかどうかで選ぶ**。
+    ★「当たったが押せない」規則で打ち切らない。打ち切ると、2枚目が
+      1枚目の規則に当たったまま永久に進まない(2026-10-24 に実際に止まった)。
+    """
+    if not w.title.strip():
+        return None, []
+    notes: list[str] = []
+    for r in rules:
+        if not r.enabled:
+            continue
+        if not (_hit(r.title, w.title)
+                and _hit(r.class_name, w.class_name)
+                and _hit(r.exe, w.exe, ignore_case=True)):
+            continue
+        if pick_clicks(w, r) is None:
+            notes.append(f"{r.name}: ボタンが揃わないので見送り"
+                         f"(要 {list(r.clicks)} / ある {list(w.buttons)})")
+            continue
+        return r, notes
+    return None, notes
 
 
 def pick_clicks(w: Win, rule: Rule) -> list[str] | None:
@@ -157,6 +185,17 @@ DEFAULT_RULES: list[Rule] = [
         class_name="^#32770$",            # Win32 の標準ダイアログ
         exe=r"python(w|3)?\.exe$",        # JV-Link の COM を抱えている自分自身
         clicks=("持っていない$", "^OK$"),
+    ),
+    # 2枚目。「合計 N Mバイトのディスク空き容量が必要です。よろしいですか？」
+    # ★title も class も exe も1枚目と同じ。見分けはボタンの顔ぶれだけ
+    #   (1枚目にはラジオが在り、こちらは OK/キャンセルのみ)。
+    #   だから choose() が「押せる規則」を選ぶ。順番は 1枚目が先。
+    Rule(
+        name="jvlink-setup-confirm",
+        title="^セットアップ$",
+        class_name="^#32770$",
+        exe=r"python(w|3)?\.exe$",
+        clicks=("^OK$",),
     ),
 ]
 
@@ -467,21 +506,18 @@ def watch(*, rules: list[Rule], interval: float = 3.0, close: bool = False,
             seen.add(key)
             if not w.title.strip():
                 continue
-            r = match(w, rules)
-            tag = f"[{r.name}]" if r else "[規則なし]"
+            r, notes = choose(w, rules)
+            tag = f"[{r.name}]" if r else ("[当たるが押せない]" if notes else "[規則なし]")
             _log(f"窓 {tag} title={w.title!r} class={w.class_name!r} "
                  f"exe={os.path.basename(w.exe)!r} buttons={list(w.buttons)}", log_path)
+            for n in notes:
+                _log(f"  ・{n}", log_path)
             if r is None:
                 continue
             if not close:
                 _log(f"  → 閉じる対象ですが、記録のみの設定なので触りません({r.name})", log_path)
                 continue
             btn = pick_clicks(w, r)
-            if btn is None:
-                # ★半端に押すくらいなら押さない。意図と違う選択肢で先へ進むほうが悪い。
-                _log(f"  ✗ {r.name}: 押すボタンが揃いません(clicks={list(r.clicks)} / "
-                     f"ある={list(w.buttons)})。何もしません", log_path)
-                continue
             try:
                 how = closer(w, btn)
                 closed += 1

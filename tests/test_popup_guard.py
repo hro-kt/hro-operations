@@ -3,8 +3,8 @@ import json
 import pytest
 
 from hro_operations.popup_guard import (
-    Rule, Win, match, pick_clicks, suggest_rule, load_rules, dump_rules, watch,
-    DEFAULT_RULES,
+    Rule, Win, choose, match, pick_clicks, suggest_rule, load_rules, dump_rules,
+    watch, DEFAULT_RULES,
 )
 
 
@@ -71,15 +71,46 @@ def test_the_setup_dialog_picks_no_start_kit_then_ok_in_that_order():
     """★この機に DVD は無い。既定で選ばれている「持っている」のまま OK を押すと、
        空のドライブを読みに行って進まない。ラジオが**先**であること。
     """
-    r = match(_SETUP, DEFAULT_RULES)
+    r, _ = choose(_SETUP, DEFAULT_RULES)
+    assert r.name == "jvlink-setup"
     assert pick_clicks(_SETUP, r) == [
         "スタートキット(CD/DVD-ROM)を持っていない", "OK"]
 
 
 def test_the_setup_rule_does_not_grab_the_recommended_radio():
     """★「持っている（推奨）」に当たると、意味が真逆になる。"""
-    r = match(_SETUP, DEFAULT_RULES)
+    r, _ = choose(_SETUP, DEFAULT_RULES)
     assert "持っている（推奨）" not in pick_clicks(_SETUP, r)[0]
+
+
+# 2枚目。「合計 N Mバイトのディスク空き容量が必要です。よろしいですか？」
+# ★title も class も exe も1枚目と**まったく同じ**。違うのはボタンだけ。
+_CONFIRM = Win(hwnd=2, title="セットアップ", class_name="#32770", pid=9,
+               exe=_SETUP.exe, buttons=("OK", "キャンセル"))
+
+
+def test_the_second_setup_dialog_is_told_apart_by_its_buttons():
+    """★1枚目の規則は『当たるが押せない』。そこで打ち切ると2枚目が永久に残り、
+       セットアップが進まない(2026-10-24 に実際に止まった)。
+    """
+    r, notes = choose(_CONFIRM, DEFAULT_RULES)
+    assert r.name == "jvlink-setup-confirm"
+    assert pick_clicks(_CONFIRM, r) == ["OK"]
+    assert any("jvlink-setup" in n and "見送り" in n for n in notes)
+
+
+def test_the_confirm_rule_never_steals_the_first_dialog():
+    """★2枚目の規則(OK を押すだけ)が1枚目に当たると、ラジオを選ばずに
+       OK を押すことになり、意味が真逆になる。順番が効いていること。
+    """
+    r, _ = choose(_SETUP, DEFAULT_RULES)
+    assert r.name == "jvlink-setup"
+
+
+def test_choose_reports_why_it_passed_a_rule_over():
+    """★黙って見送ると、規則を直す手掛かりが残らない。"""
+    _, notes = choose(_CONFIRM, DEFAULT_RULES)
+    assert "持っていない$" in notes[0] and "OK" in notes[0]
 
 
 def test_the_setup_rule_does_not_fire_on_someone_elses_dialog():
@@ -265,7 +296,9 @@ def test_a_same_named_rule_overrides_just_that_default(tmp_path):
     dump_rules([Rule(name="jvlink-setup", title="^別の窓$", enabled=False)], p)
     rules = load_rules(p)
     assert [r.name for r in rules].count("jvlink-setup") == 1
-    assert match(_SETUP, rules) is None      # 差し替わっている
+    mine = next(r for r in rules if r.name == "jvlink-setup")
+    assert mine.title == "^別の窓$" and not mine.enabled   # 差し替わっている
+    assert [r.name for r in rules] != ["jvlink-setup"]     # 他の既定は残る
 
 
 def test_replace_defaults_is_available_when_you_really_mean_it(tmp_path):
