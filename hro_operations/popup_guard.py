@@ -355,17 +355,25 @@ def list_windows(*, with_buttons: bool = True) -> list[Win]:
     return out
 
 
-def inspect_buttons(hwnd: int) -> list[dict]:
-    """その窓のボタンを、種類と選択状態つきで返す(採取と診断に使う)。"""
+def inspect_buttons(hwnd: int, *, all_children: bool = False) -> list[dict]:
+    """その窓の子を、種類と選択状態つきで返す(採取と診断に使う)。
+
+    ★all_children=True は「同じ文言の STATIC が居ないか」を見るため。
+      居ると、BUTTON で絞らない実装はそちらを押してしまう(2026-10-24)。
+    """
     ctypes, wintypes = _win32()
     u = _user32(ctypes, wintypes)
     out = []
     for h, t, c in _enum_children(ctypes, wintypes, u, hwnd):
-        if (c or "").lower() != "button":
+        is_btn = (c or "").lower() == "button"
+        if not is_btn:
+            if all_children:
+                out.append({"text": t, "class": c, "kind": "その他", "checked": None})
             continue
         style = u.GetWindowLongW(h, GWL_STYLE)
         tog = is_toggle(style)
-        out.append({"text": t, "kind": "選択式" if tog else "押しボタン",
+        out.append({"text": t, "class": c,
+                    "kind": "選択式" if tog else "押しボタン",
                     "checked": bool(u.SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED)
                     if tog else None})
     return out

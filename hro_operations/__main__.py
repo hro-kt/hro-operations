@@ -2110,12 +2110,14 @@ def _cmd_popups(args) -> int:
             print(f"- title={w.title!r} class={w.class_name!r} "
                   f"exe={w.exe!r} buttons={list(w.buttons)} "
                   f"規則={'(' + r.name + ')' if r else 'なし'}")
-            if args.buttons:
+            if args.buttons or args.children:
                 # ★「押した」と「選ばれた」は別。ラジオの現在の状態まで見せる。
-                for b in inspect_buttons(w.hwnd):
+                #   --children は同じ文言の STATIC が居ないかを見るため。
+                for b in inspect_buttons(w.hwnd, all_children=args.children):
                     mark = "" if b["checked"] is None else (
                         " [選択中]" if b["checked"] else " [未選択]")
-                    print(f"    · {b['text']!r} ({b['kind']}){mark}")
+                    print(f"    · {b['text']!r} class={b['class']!r} "
+                          f"({b['kind']}){mark}")
         if args.suggest:
             print("\n--- popup_rules.json の雛形(中身を確かめてから enabled を true に) ---")
             print(_json.dumps({"rules": [suggest_rule(w) for w in wins]},
@@ -2615,6 +2617,8 @@ def main(argv: list[str] | None = None) -> int:
     p_pl.add_argument("--all", action="store_true", help="規則に当たる窓も出す")
     p_pl.add_argument("--buttons", action="store_true",
                       help="★各ボタンの種類と選択状態まで出す(ラジオがどれか見る)")
+    p_pl.add_argument("--children", action="store_true",
+                      help="ボタン以外の子も出す(同じ文言の STATIC が居ないか確認)")
     p_pl.add_argument("--suggest", action="store_true",
                       help="popup_rules.json の雛形を出す(enabled は false のまま)")
     p_pw = sub_pop.add_parser("watch", help="新しく出た窓を記録しつづける(既定は閉じない)")
