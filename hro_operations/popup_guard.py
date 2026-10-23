@@ -49,6 +49,9 @@ class Rule:
     # 押すボタンの正規表現を**この順に**。空なら WM_CLOSE。
     # ★ラジオを選んでから OK、のような順番つきの操作のためにリストにしてある。
     clicks: tuple[str, ...] = ()
+    # ★押したあと窓が消えるはずか。消えなければ別の押し方に移り、
+    #   どれも効かなければ例外にする(「押したつもり」を成功と書かない)。
+    expect_gone: bool = True
     enabled: bool = True
 
     def __post_init__(self) -> None:
@@ -258,6 +261,9 @@ BST_CHECKED = 1
 BN_CLICKED = 0
 GWL_STYLE = -16
 BS_TYPEMASK = 0x0F
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+MK_LBUTTON = 0x0001
 # ★状態を持つボタン(押すと「選ばれた」になるもの)。押しただけで満足せず、
 #   本当に選ばれたかを読み返す必要がある種類。
 _TOGGLE_STYLES = frozenset((
@@ -362,6 +368,12 @@ def _user32(ctypes, wintypes):
     u.GetWindowLongW.restype = ctypes.c_long
     u.GetDlgCtrlID.argtypes = [wintypes.HWND]
     u.GetDlgCtrlID.restype = ctypes.c_int
+    u.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
+                               wintypes.WPARAM, wintypes.LPARAM]
+    u.PostMessageW.restype = wintypes.BOOL
+    u.IsWindow.argtypes = [wintypes.HWND]
+    u.IsWindowVisible.argtypes = [wintypes.HWND]
+    u.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     return u
 
 
@@ -418,45 +430,112 @@ def inspect_buttons(hwnd: int, *, all_children: bool = False) -> list[dict]:
     return out
 
 
-def close_window(w: Win, clicks: list[str] | None) -> str:
+def _press_methods(ctypes, wintypes, u):
+    """ボタンを押す手。上から順に試す。
+
+    ★BM_CLICK が効かない窓がある(2026-10-24 の JV-Link セットアップ2枚目)。
+      «送ったら押せたはず» は成り立たない。効いたかを確かめ、駄目なら次の手に
+      移る。どの手で通ったかはログに残す — 次の窓の手掛かりになる。
+    """
+    def _bm_click(dlg, btn, cid):
+        u.SendMessageW(btn, BM_CLICK, 0, 0)
+
+    def _wm_command_post(dlg, btn, cid):
+        u.PostMessageW(dlg, WM_COMMAND, (BN_CLICKED << 16) | (cid & 0xFFFF), btn)
+
+    def _wm_command_send(dlg, btn, cid):
+        u.SendMessageW(dlg, WM_COMMAND, (BN_CLICKED << 16) | (cid & 0xFFFF), btn)
+
+    def _mouse(dlg, btn, cid):
+        # ★本物のクリックに一番近い。ボタンの中心に押下→解放を投げる。
+        r = wintypes.RECT()
+        u.GetClientRect(btn, ctypes.byref(r))
+        x, y = (r.right - r.left) // 2, (r.bottom - r.top) // 2
+        pos = (y << 16) | (x & 0xFFFF)
+        u.PostMessageW(btn, WM_LBUTTONDOWN, MK_LBUTTON, pos)
+        time.sleep(0.05)
+        u.PostMessageW(btn, WM_LBUTTONUP, 0, pos)
+
+    return (("BM_CLICK", _bm_click),
+            ("WM_COMMAND(post)", _wm_command_post),
+            ("WM_COMMAND(send)", _wm_command_send),
+            ("mouse", _mouse))
+
+
+def press_until(methods, verify, label: str, *, wait: float = 1.5,
+                now=time.monotonic, sleep=time.sleep) -> str:
+    """効くまで手を変えて押す。効いた手の名前を返す。駄目なら例外。★純粋な段取り。
+
+    methods は (名前, 押す関数) の並び。verify() が True になったら成功。
+    ★結果が出るまで少し待つ。窓が消えるのも、ラジオが点くのも即座ではない。
+    ★どれも効かなければ例外。「押したつもり」を成功と書かない。
+    """
+    tried: list[str] = []
+    for name, fn in methods:
+        fn()
+        tried.append(name)
+        deadline = now() + wait
+        while now() < deadline:
+            if verify():
+                return name
+            sleep(0.1)
+    raise RuntimeError(f"{label!r} を押せませんでした(試した手: {tried})")
+
+
+def _press(ctypes, wintypes, u, dlg: int, btn: int, label: str, verify,
+           *, wait: float = 1.5) -> str:
+    cid = u.GetDlgCtrlID(btn)
+    methods = [(name, (lambda f=fn: f(dlg, btn, cid)))
+               for name, fn in _press_methods(ctypes, wintypes, u)]
+    return press_until(methods, verify, label, wait=wait)
+
+
+def close_window(w: Win, clicks: list[str] | None, *, expect_gone: bool = True) -> str:
     """指定されたボタンを**この順に**押す。空なら WM_CLOSE。何をしたかを返す。
 
-    ★ラジオを押したら、**本当に選ばれたかを読み返す**。ここを省くと
-      「押したことにはなっているが既定の選択肢のまま OK」になる
-      (2026-10-24 に JV-Link のセットアップで実際に起きた)。
-      選べなかったら、そこで止める。OK は押さない。
+    ★押しっぱなしにしない。毎回**結果を確かめる**:
+        ラジオ/チェック → 本当に選択状態になったか(BM_GETCHECK)
+        最後のボタン    → 窓が本当に消えたか(expect_gone)
+      ここを省いたせいで、2026-10-24 に «click[OK] と記録したのに
+      ダイアログは残ったまま» を2度繰り返した。嘘のログが一番高くつく。
+    ★途中で確かめられなくなったら、そこで例外。以降のボタンは押さない。
     """
     ctypes, wintypes = _win32()
     u = _user32(ctypes, wintypes)
 
+    def _gone() -> bool:
+        return not (u.IsWindow(w.hwnd) and u.IsWindowVisible(w.hwnd))
+
     if not clicks:
         u.PostMessageW(w.hwnd, WM_CLOSE, 0, 0)
+        if expect_gone:
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline and not _gone():
+                time.sleep(0.1)
+            if not _gone():
+                raise RuntimeError("WM_CLOSE を送りましたが窓が残っています")
         return "WM_CLOSE"
 
     # ★先に全部の在処を確かめてから押す(半端な状態で残さない)。
     targets = resolve_handles(_enum_children(ctypes, wintypes, u, w.hwnd), clicks)
 
     steps: list[str] = []
-    for label, h in targets:
+    for i, (label, h) in enumerate(targets):
+        last = i == len(targets) - 1
         style = u.GetWindowLongW(h, GWL_STYLE)
+        if is_toggle(style):
+            how = _press(ctypes, wintypes, u, w.hwnd, h, label,
+                         lambda: u.SendMessageW(h, BM_GETCHECK, 0, 0) == BST_CHECKED)
+            steps.append(f"{label}=選択済({how})")
+            continue
+        if last and expect_gone:
+            how = _press(ctypes, wintypes, u, w.hwnd, h, label, _gone)
+            steps.append(f"{label}=窓が閉じた({how})")
+            continue
+        # ★確かめようがない押しボタン。押したとだけ記録する(成功とは書かない)。
         u.SendMessageW(h, BM_CLICK, 0, 0)
         time.sleep(0.2)
-        if not is_toggle(style):
-            steps.append(label)
-            continue
-        if u.SendMessageW(h, BM_GETCHECK, 0, 0) != BST_CHECKED:
-            # ★BM_CLICK を無視する作りの窓がある。状態を直接立て、親に
-            #   「押された」と伝える(ダイアログ側はこの通知で選択を覚える)。
-            u.SendMessageW(h, BM_SETCHECK, BST_CHECKED, 0)
-            cid = u.GetDlgCtrlID(h)
-            u.SendMessageW(w.hwnd, WM_COMMAND,
-                           (BN_CLICKED << 16) | (cid & 0xFFFF), h)
-            time.sleep(0.2)
-        if u.SendMessageW(h, BM_GETCHECK, 0, 0) != BST_CHECKED:
-            raise RuntimeError(
-                f"{label!r} を選べませんでした(押したが選択状態になりません)。"
-                f"残り {[c for c, _ in targets[len(steps) + 1:]]} は押していません")
-        steps.append(f"{label}=選択済")
+        steps.append(f"{label}=押下(未確認)")
     return "click[" + " → ".join(steps) + "]"
 
 
@@ -519,9 +598,9 @@ def watch(*, rules: list[Rule], interval: float = 3.0, close: bool = False,
                 continue
             btn = pick_clicks(w, r)
             try:
-                how = closer(w, btn)
+                how = closer(w, btn, expect_gone=r.expect_gone)
                 closed += 1
-                _log(f"  → 閉じました({r.name}, {how})", log_path)
+                _log(f"  → 片付けました({r.name}, {how})", log_path)
             except Exception as e:                   # noqa: BLE001
                 _log(f"  ✗ 閉じられませんでした({r.name}): {e}", log_path)
         # ★消えた窓は忘れる。同じ hwnd が再利用されても、次に出たら記録したい。

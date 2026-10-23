@@ -182,7 +182,7 @@ def test_missing_file_gives_the_defaults(tmp_path):
 # --- 監視ループ ------------------------------------------------------------- #
 def _run(wins, rules, **kw):
     acted = []
-    def closer(w, b):
+    def closer(w, b, expect_gone=True):
         acted.append((w.title, b))
         return "click"
     n = watch(rules=rules, once=True, lister=lambda: list(wins),
@@ -216,7 +216,7 @@ def test_watch_logs_every_window_it_sees_so_rules_can_be_written(capsys):
 
 
 def test_a_failure_to_close_does_not_stop_the_watch(capsys):
-    def boom(w, b):
+    def boom(w, b, expect_gone=True):
         raise OSError("アクセスが拒否されました")
     n = watch(rules=[Rule(name="jv", title="お知らせ", enabled=True)], once=True,
               close=True, lister=lambda: [_w()], sleep=lambda s: None, closer=boom)
@@ -371,3 +371,70 @@ def test_toggle_detection_ignores_the_other_style_bits():
     """★BS_* の上位ビット(左寄せ・枠線など)が立っていても種類は変わらない。"""
     assert is_toggle(0x50012009)      # WS_CHILD|WS_VISIBLE|...|BS_AUTORADIOBUTTON
     assert not is_toggle(0x50010001)  # ...|BS_DEFPUSHBUTTON
+
+
+# --- 押し方を変えながら、効いたかを確かめる -------------------------------- #
+# ★2026-10-24: BM_CLICK を送っただけで「閉じました」と記録し、実際には
+#   ダイアログが残っていた。嘘のログが一番高くつく。
+from hro_operations.popup_guard import press_until
+
+
+def _methods(names, log):
+    return [(n, (lambda n=n: log.append(n))) for n in names]
+
+
+def _clock():
+    t = [0.0]
+    return (lambda: t[0]), (lambda s: t.__setitem__(0, t[0] + s))
+
+
+def test_the_first_method_that_works_is_the_answer():
+    log = []
+    now, sleep = _clock()
+    got = press_until(_methods(["BM_CLICK", "mouse"], log), lambda: True, "OK",
+                      now=now, sleep=sleep)
+    assert got == "BM_CLICK" and log == ["BM_CLICK"]
+
+
+def test_it_moves_on_when_a_method_does_not_take():
+    """★BM_CLICK が効かない窓がある。1手で諦めない。"""
+    log = []
+    now, sleep = _clock()
+    got = press_until(_methods(["a", "b", "c"], log),
+                      lambda: log[-1:] == ["c"], "OK", now=now, sleep=sleep)
+    assert got == "c" and log == ["a", "b", "c"]
+
+
+def test_it_waits_for_the_result_instead_of_checking_once():
+    """★窓が消えるのもラジオが点くのも即座ではない。1回見て諦めない。"""
+    log, ticks = [], [0]
+    now, sleep = _clock()
+
+    def verify():
+        ticks[0] += 1
+        return ticks[0] >= 4          # 4回目でようやく True
+
+    got = press_until(_methods(["a", "b"], log), verify, "OK", now=now, sleep=sleep)
+    assert got == "a" and log == ["a"]
+
+
+def test_it_raises_instead_of_claiming_success():
+    """★ここが肝。効かなかったものを「閉じました」と書かない。"""
+    log = []
+    now, sleep = _clock()
+    with pytest.raises(RuntimeError, match="押せませんでした"):
+        press_until(_methods(["a", "b"], log), lambda: False, "OK",
+                    now=now, sleep=sleep)
+    assert log == ["a", "b"]          # 全部試してから諦める
+
+
+def test_the_failure_says_what_was_tried():
+    """★次の窓のために、何が効かなかったかを残す。"""
+    now, sleep = _clock()
+    try:
+        press_until(_methods(["BM_CLICK", "mouse"], []), lambda: False, "OK",
+                    now=now, sleep=sleep)
+    except RuntimeError as e:
+        assert "BM_CLICK" in str(e) and "mouse" in str(e)
+    else:
+        raise AssertionError("例外にならない")
