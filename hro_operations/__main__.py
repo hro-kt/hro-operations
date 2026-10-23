@@ -2123,7 +2123,8 @@ def _cmd_popups(args) -> int:
         print(f"   規則ファイル: {args.rules or '(既定)'}")
         print("   先に `hro-ops popups list --suggest` で雛形を採ってください。")
         return 1
-    watch(rules=rules, interval=args.interval, close=args.close, log_path=args.log)
+    watch(rules=rules, interval=args.interval, close=args.close, log_path=args.log,
+          once=args.once)
     return 0
 
 
@@ -2612,6 +2613,8 @@ def main(argv: list[str] | None = None) -> int:
                       help="★規則に当たったものを実際に閉じる。先に記録で中身を確かめること")
     p_pw.add_argument("--interval", type=float, default=3.0, help="確認周期(秒)")
     p_pw.add_argument("--log", default="", help="記録を追記するファイル")
+    p_pw.add_argument("--once", action="store_true",
+                      help="1周だけ見て終わる(いま出ている窓を片付けたい時)")
     for _p in (p_pl, p_pw):
         _p.add_argument("--rules", default="",
                         help="規則ファイル(既定: $HRO_HOME/hro-operations/popup_rules.json)")

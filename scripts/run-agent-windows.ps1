@@ -83,13 +83,13 @@ if ($others.Count -gt 0) {
 }
 
 # --- Popup guard ----------------------------------------------------------
-# JV-Link and friends sometimes raise a modal dialog. Until somebody clicks it,
-# sync-all does not move, so an unattended race day stalls there. This watcher
-# logs every window that appears and closes ONLY the ones listed in
-# <HRO_HOME>\hro-operations\popup_rules.json.
-# It starts in RECORD-ONLY mode on purpose: closing a window you have not seen
-# is how you lose a race day. Collect titles first (the log), write the rules,
-# then set HRO_POPUP_CLOSE=1.
+# JV-Link raises a modal "setup" dialog (JVOpen option 3/4). Until somebody
+# clicks it, sync-all does not move, so an unattended race day stalls there.
+# This watcher logs every window that appears and acts ONLY on the vetted rules
+# in popup_guard.DEFAULT_RULES, plus whatever is in
+# <HRO_HOME>\hro-operations\popup_rules.json (that file replaces the defaults).
+# It starts in RECORD-ONLY mode on purpose: clicking a window you have not seen
+# is how you lose a race day. Read the log first, then set HRO_POPUP_CLOSE=1.
 $popupLog = Join-Path $env:HRO_HOME 'hro-operations\logs\popups.log'
 New-Item -ItemType Directory -Force -Path (Split-Path $popupLog) | Out-Null
 $popupRunning = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='python3.exe'" |

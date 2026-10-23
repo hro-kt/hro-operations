@@ -3,7 +3,7 @@ import json
 import pytest
 
 from hro_operations.popup_guard import (
-    Rule, Win, match, pick_button, suggest_rule, load_rules, dump_rules, watch,
+    Rule, Win, match, pick_clicks, suggest_rule, load_rules, dump_rules, watch,
     DEFAULT_RULES,
 )
 
@@ -52,24 +52,65 @@ def test_a_broken_regex_is_refused_at_construction():
         Rule(name="bad", title="(お知らせ")
 
 
-def test_default_rules_are_empty():
-    """★既定で何も閉じない。実物を見る前に閉じにいかない。"""
-    assert DEFAULT_RULES == []
+# --- 既定の規則は「実物を採って確かめたもの」だけ ---------------------------- #
+# 2026-10-24 に Windows で実際に採れた JV-Link セットアップダイアログ。
+_SETUP = Win(
+    hwnd=1, title="セットアップ", class_name="#32770", pid=9,
+    exe=r"C:\Users\kyosuke.tomoda\AppData\Local\Programs\Python\Python312-32\python.exe",
+    buttons=("OK", "キャンセル",
+             "スタートキット(CD/DVD-ROM)を持っている（推奨）",
+             "スタートキット(CD/DVD-ROM)を持っていない"))
+
+
+def test_the_jvlink_setup_dialog_is_recognised():
+    r = match(_SETUP, DEFAULT_RULES)
+    assert r is not None and r.name == "jvlink-setup"
+
+
+def test_the_setup_dialog_picks_no_start_kit_then_ok_in_that_order():
+    """★この機に DVD は無い。既定で選ばれている「持っている」のまま OK を押すと、
+       空のドライブを読みに行って進まない。ラジオが**先**であること。
+    """
+    r = match(_SETUP, DEFAULT_RULES)
+    assert pick_clicks(_SETUP, r) == [
+        "スタートキット(CD/DVD-ROM)を持っていない", "OK"]
+
+
+def test_the_setup_rule_does_not_grab_the_recommended_radio():
+    """★「持っている（推奨）」に当たると、意味が真逆になる。"""
+    r = match(_SETUP, DEFAULT_RULES)
+    assert "持っている（推奨）" not in pick_clicks(_SETUP, r)[0]
+
+
+def test_the_setup_rule_does_not_fire_on_someone_elses_dialog():
+    """★title『セットアップ』は、ありふれている。exe と class で絞る。"""
+    other = Win(hwnd=2, title="セットアップ", class_name="#32770", pid=9,
+                exe=r"C:\Program Files\Something\installer.exe", buttons=("OK",))
+    assert match(other, DEFAULT_RULES) is None
+
+
+def test_every_default_rule_was_taken_from_a_real_window():
+    """★推測で書いた規則を載せない。title/class/exe が全部埋まっていること。"""
+    for r in DEFAULT_RULES:
+        assert r.title and r.class_name and r.exe, r.name
 
 
 # --- 押すボタン ------------------------------------------------------------- #
-def test_picks_the_button_the_rule_names():
-    r = Rule(name="jv", title="お知らせ", button="^(OK|はい)$")
-    assert pick_button(_w(buttons=("キャンセル", "OK")), r) == "OK"
+def test_picks_the_buttons_the_rule_names_in_order():
+    r = Rule(name="jv", title="お知らせ", clicks=("^キャンセル$", "^OK$"))
+    assert pick_clicks(_w(buttons=("キャンセル", "OK")), r) == ["キャンセル", "OK"]
 
 
-def test_no_button_means_wm_close():
-    assert pick_button(_w(), Rule(name="jv", title="お知らせ")) is None
+def test_no_clicks_means_wm_close():
+    assert pick_clicks(_w(), Rule(name="jv", title="お知らせ")) == []
 
 
-def test_button_not_present_falls_back_to_wm_close():
-    r = Rule(name="jv", title="お知らせ", button="^はい$")
-    assert pick_button(_w(buttons=("OK",)), r) is None
+def test_a_missing_button_cancels_the_whole_sequence():
+    """★ここが肝。ラジオが見つからないまま OK だけ押すと、意図と違う
+       選択肢で先へ進む。半端に押すくらいなら、押さない。
+    """
+    r = Rule(name="jv", title="お知らせ", clicks=("^持っていない$", "^OK$"))
+    assert pick_clicks(_w(buttons=("OK",)), r) is None
 
 
 # --- 雛形 ------------------------------------------------------------------- #
@@ -98,8 +139,9 @@ def test_unknown_key_in_the_rules_file_is_an_error(tmp_path):
 
 def test_rules_round_trip(tmp_path):
     p = str(tmp_path / "sub" / "r.json")
-    dump_rules([Rule(name="jv", title="お知らせ", button="^OK$")], p)
-    assert load_rules(p)[0].button == "^OK$"
+    dump_rules([Rule(name="jv", title="お知らせ", clicks=("^A$", "^OK$"))], p)
+    mine = next(r for r in load_rules(p) if r.name == "jv")
+    assert mine.clicks == ("^A$", "^OK$")               # ★list で戻っても tuple
 
 
 def test_missing_file_gives_the_defaults(tmp_path):
@@ -125,8 +167,8 @@ def test_watch_records_but_does_not_close_by_default(capsys):
 
 
 def test_watch_closes_when_asked():
-    n, acted = _run([_w()], [Rule(name="jv", title="お知らせ", button="^OK$")], close=True)
-    assert (n, acted) == (1, [("お知らせ", "OK")])
+    n, acted = _run([_w()], [Rule(name="jv", title="お知らせ", clicks=("^OK$",))], close=True)
+    assert (n, acted) == (1, [("お知らせ", ["OK"])])
 
 
 def test_watch_leaves_unmatched_windows_alone():
@@ -194,6 +236,51 @@ def test_cli_list_hides_windows_a_rule_already_covers(monkeypatch, capsys, tmp_p
 
 
 def test_cli_watch_close_refuses_when_no_rule_is_enabled(capsys, tmp_path):
-    """★--close したのに何も閉じない、を黙って起こさない。"""
-    assert ops_main(["popups", "watch", "--close", "--rules", str(tmp_path / "none.json")]) == 1
+    """★--close したのに何も閉じない、を黙って起こさない。
+
+    ★ここは**既定ごと差し替えた規則ファイル**を渡し、--once も付ける。
+      どちらかを忘れると既定の jvlink-setup が有効なまま見張りが始まり、
+      試験が終わらない(2026-10-24 に実際に固まった)。
+    """
+    import json as _j
+    p = tmp_path / "r.json"
+    p.write_text(_j.dumps({"replace_defaults": True,
+                           "rules": [{"name": "off", "title": "x", "enabled": False}]}),
+                 encoding="utf-8")
+    assert ops_main(["popups", "watch", "--close", "--once", "--rules", str(p)]) == 1
     assert "有効な規則が1件もありません" in capsys.readouterr().out
+
+
+# --- 既定と自分の規則の関係 -------------------------------------------------- #
+def test_a_user_file_adds_to_the_defaults_instead_of_replacing_them(tmp_path):
+    """★置き換えにすると、1つ書き足した日に JV-Link の規則が黙って消える。"""
+    p = str(tmp_path / "r.json")
+    dump_rules([Rule(name="mine", title="^何か$")], p)
+    names = [r.name for r in load_rules(p)]
+    assert "jvlink-setup" in names and "mine" in names
+
+
+def test_a_same_named_rule_overrides_just_that_default(tmp_path):
+    p = str(tmp_path / "r.json")
+    dump_rules([Rule(name="jvlink-setup", title="^別の窓$", enabled=False)], p)
+    rules = load_rules(p)
+    assert [r.name for r in rules].count("jvlink-setup") == 1
+    assert match(_SETUP, rules) is None      # 差し替わっている
+
+
+def test_replace_defaults_is_available_when_you_really_mean_it(tmp_path):
+    import json as _j
+    p = tmp_path / "r.json"
+    p.write_text(_j.dumps({"replace_defaults": True,
+                           "rules": [{"name": "mine", "title": "^何か$"}]}),
+                 encoding="utf-8")
+    assert [r.name for r in load_rules(str(p))] == ["mine"]
+
+
+def test_cli_watch_supports_one_pass(monkeypatch, capsys):
+    """★`--once` が無いと、試験からも運用からも「1回だけ片付ける」ができない。
+       そして試験が止まらなくなる。
+    """
+    _fake_windows(monkeypatch, [_SETUP])
+    assert ops_main(["popups", "watch", "--once"]) == 0
+    assert "jvlink-setup" in capsys.readouterr().out
