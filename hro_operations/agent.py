@@ -967,8 +967,11 @@ def _popup_guard_loop(job_id, stop: threading.Event) -> None:
     try:
         rules = load_rules()
     except Exception as e:     # noqa: BLE001
-        _emit(f"規則を読めません({e})。見張りは動きません")
-        return
+        # ★諦めない。規則ファイルが壊れていても、確かめ済みの既定だけで見張る。
+        #   ここで降りると、ダイアログが出た日にジョブが黙って止まる。
+        from .popup_guard import DEFAULT_RULES
+        _emit(f"★規則ファイルを読めません({e})。既定の規則だけで見張ります")
+        rules = list(DEFAULT_RULES)
     try:
         # ★close=True。ここまで来たら答えるのが仕事。確かめ済みの規則しか無い。
         watch(rules=rules, interval=3.0, close=True, stop=stop.is_set,
@@ -1121,6 +1124,13 @@ def run_agent(server: str, interval: float = 5.0, concurrency: int = 3) -> int:
         sys.exit(f"--server は {list(_COMMANDS)} のいずれか")
     concurrency = max(1, concurrency)
     print(f"agent 起動 server={server} 並行数={concurrency} 対応kind={list(_COMMANDS[server])} (Ctrl-Cで停止)", flush=True)
+    # ★「git pull したのに再起動を忘れた」を一目で分かるようにする。
+    #   コードはプロセス起動時に確定するので、起動行に出すのが一番確実。
+    guarded = sorted(k for k in _COMMANDS[server] if _popup_guard_wanted(k))
+    print("  ポップアップ見張り: "
+          + (f"{guarded} のジョブ中に動きます" if guarded
+             else "無効(このエージェントには入っていないか、HRO_POPUP_GUARD=0)"),
+          flush=True)
 
     slots = threading.Semaphore(concurrency)
 

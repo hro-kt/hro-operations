@@ -91,11 +91,15 @@ if ($others.Count -gt 0) {
 # Only sync_all, because only sync-all opens JV-Link with option 3/4 (setup);
 # the other JV-Link jobs open with option 1/2 and never ask.
 #
-# This watcher is the DISCOVERY half. It records every window that appears, so
-# a dialog we have no rule for still leaves a trace. It does NOT click.
-# HRO_POPUP_CLOSE=1 makes it click too; use that only for dialogs raised
-# OUTSIDE a job (a sync you started by hand in a terminal). Leaving it on while
-# the agent runs means two processes race for the same dialog.
+# This watcher is the SECOND PAIR OF HANDS. It answers too, by default.
+# 2026-10-24: it was record-only, the in-job guard did not fire, and the dialog
+# sat unanswered for three and a half hours. "Avoid a double click" was the
+# wrong thing to optimise for; "nobody answers" is far more expensive.
+# Answering twice is safe by construction: every press is verified (the radio
+# must read back as checked, the window must actually be gone) and the whole
+# sequence is all-or-nothing, so a dialog another process already dismissed
+# just fails to resolve and is logged. Set HRO_POPUP_CLOSE=0 to make it
+# record-only again.
 $popupLog = Join-Path $env:HRO_HOME 'hro-operations\logs\popups.log'
 New-Item -ItemType Directory -Force -Path (Split-Path $popupLog) | Out-Null
 $popupRunning = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='python3.exe'" |
@@ -104,11 +108,11 @@ if ($popupRunning.Count -gt 0) {
     Write-Host "[SKIP] popup guard already running (PID $($popupRunning[0].ProcessId))."
 } else {
     $popupArgs = @('-m', 'hro_operations', 'popups', 'watch', '--log', $popupLog)
-    if ($env:HRO_POPUP_CLOSE -eq '1') {
-        $popupArgs += '--close'
-        Write-Host 'Popup guard: CLOSING windows that match popup_rules.json'
+    if ($env:HRO_POPUP_CLOSE -eq '0') {
+        Write-Host 'Popup guard: record-only (HRO_POPUP_CLOSE=0). Nobody else may be answering.'
     } else {
-        Write-Host 'Popup guard: record-only. Set HRO_POPUP_CLOSE=1 once the rules are written.'
+        $popupArgs += '--close'
+        Write-Host 'Popup guard: answering vetted dialogs. Set HRO_POPUP_CLOSE=0 to only record.'
     }
     Write-Host "Popup guard log: $popupLog"
     Start-Process -FilePath $pyexe -ArgumentList $popupArgs -WindowStyle Minimized | Out-Null

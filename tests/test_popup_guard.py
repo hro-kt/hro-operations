@@ -537,3 +537,26 @@ def test_quiet_mode_still_reports_a_dialog_with_no_rule():
     watch(rules=[], once=True, lister=lambda: [unknown], sleep=lambda s: None,
           emit=out.append, quiet_unmatched=True)
     assert any("規則なし" in line and "確認" in line for line in out)
+
+
+def test_a_broken_rules_file_does_not_disarm_the_in_job_guard(tmp_path, monkeypatch, capsys):
+    """★規則ファイルが壊れていても、確かめ済みの既定だけで見張る。
+       ここで降りると、ダイアログが出た日にジョブが黙って止まる。
+    """
+    import threading
+
+    from hro_operations import agent as A
+
+    bad = tmp_path / "r.json"
+    bad.write_text('{"rules": [{"name": "a", "titel": "x"}]}', encoding="utf-8")
+    monkeypatch.setenv("HRO_POPUP_RULES", str(bad))
+    seen = {}
+
+    def fake_watch(**kw):
+        seen.update(kw)
+
+    monkeypatch.setattr("hro_operations.popup_guard.watch", fake_watch)
+    monkeypatch.setattr(A, "_conninfo", lambda: "x")
+    A._popup_guard_loop(1, threading.Event())
+    assert [r.name for r in seen["rules"]] == [r.name for r in DEFAULT_RULES]
+    assert seen["close"] is True

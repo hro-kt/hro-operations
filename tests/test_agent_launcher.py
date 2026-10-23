@@ -115,18 +115,23 @@ def test_the_launcher_starts_the_popup_guard():
     assert "popups', 'watch'" in _PS1 or "'popups', 'watch'" in _PS1
 
 
-def test_the_popup_guard_starts_in_record_only_mode():
-    """★見ていない窓を閉じにいくのが一番危ない。既定は記録のみ。"""
-    assert "HRO_POPUP_CLOSE" in _PS1
-    assert "does NOT click" in _PS1
-
-
-def test_it_says_who_actually_answers_the_dialogs():
-    """★答えるのはジョブに寄り添う見張り(agent._run_job)。ここを書いておかないと、
-       «ランチャが記録だけなのに誰も押さない» と誤解されて二重に動かされる。
+def test_the_popup_guard_answers_by_default():
+    """★2026-10-24: 記録のみにしていたせいで、ジョブ内の見張りが動かなかった日に
+       ダイアログが3時間半放置された。「二重クリックを避ける」より
+       「誰も押さない」のほうがはるかに高くつく。
     """
+    assert "$env:HRO_POPUP_CLOSE -eq '0'" in _PS1, "既定で答えない作りに戻っている"
+    assert "'--close'" in _PS1
+
+
+def test_it_explains_why_answering_twice_is_safe():
+    """★根拠を書いておかないと、次の人がまた記録のみに戻す。"""
+    assert "Answering twice is safe" in _PS1
+    assert "all-or-nothing" in _PS1
+
+
+def test_it_says_who_else_answers_the_dialogs():
     assert "_run_job" in _PS1
-    assert "two processes race" in _PS1
 
 
 def test_the_popup_guard_refuses_to_start_twice():
