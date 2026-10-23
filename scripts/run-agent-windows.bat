@@ -15,21 +15,22 @@ chcp 65001 >nul
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
 
-rem --- DB (managed PG reachable over VNet) ---
-set "POSTGRES_HOST=hro-db-prod1.postgres.database.azure.com"
-set "POSTGRES_PORT=5432"
-set "POSTGRES_DATABASE=hro"
-set "POSTGRES_USER=hrouser"
-set "POSTGRES_PASSWORD=CHANGE_ME"
-set "POSTGRES_SSLMODE=require"
-
-rem --- repo base / JRDB credentials ---
-set "HRO_HOME=C:\hro"
-set "JRDB_USER=CHANGE_ME"
-set "JRDB_PWD=CHANGE_ME"
+rem --- machine settings -------------------------------------------------
+rem DO NOT put real values here: this file is tracked in git and a pull
+rem overwrites them (that happened 2026-10-24: HRO_HOME and the DB password
+rem were silently reset, and the agent would not start).
+rem   Put real values in %HRO_HOME%\hro-operations\.env, and set the base once:
+rem   setx /M HRO_HOME "C:\Users\kyosuke.tomoda\Documents\hro"
+rem Anything already set in the environment is kept; below are only fallbacks.
+if not defined HRO_HOME set "HRO_HOME=C:\hro"
+if not defined POSTGRES_HOST set "POSTGRES_HOST=hro-db-prod1.postgres.database.azure.com"
+if not defined POSTGRES_PORT set "POSTGRES_PORT=5432"
+if not defined POSTGRES_DATABASE set "POSTGRES_DATABASE=hro"
+if not defined POSTGRES_USER set "POSTGRES_USER=hrouser"
+if not defined POSTGRES_SSLMODE set "POSTGRES_SSLMODE=require"
 
 rem --- smart-diff sync lookback days (optional) ---
-set "SYNC_LOOKBACK_DAYS=7"
+if not defined SYNC_LOOKBACK_DAYS set "SYNC_LOOKBACK_DAYS=7"
 
 rem --- venv interpreter (some venvs ship only python3.exe). Respect a pre-set PYEXE. ---
 if not defined PYEXE set "PYEXE=%HRO_HOME%\hro-operations\.venv\Scripts\python.exe"
@@ -38,6 +39,9 @@ echo [debug] HRO_HOME=[%HRO_HOME%]
 echo [debug] PYEXE=[%PYEXE%]
 if not exist "%PYEXE%" (
   echo [ERROR] venv python not found under %HRO_HOME%\hro-operations\.venv\Scripts\
+  echo        HRO_HOME is [%HRO_HOME%]. If that path is wrong, set it once:
+  echo          setx /M HRO_HOME "C:\Users\<you>\Documents\hro"
+  echo        then open a NEW shell.
   echo Find the venv with: poetry env info --path
   pause
   exit /b 1

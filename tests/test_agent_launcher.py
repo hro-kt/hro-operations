@@ -77,3 +77,29 @@ def test_the_venv_error_names_hro_home():
     """★『venv が無い』だけでは、パスが間違っていることに気づけない。"""
     assert "HRO_HOME = $env:HRO_HOME" in _PS1
     assert "setx /M HRO_HOME" in _PS1
+
+
+# --------------------------------------------------------------------------- #
+# ★.bat にも同じ地雷があった
+# --------------------------------------------------------------------------- #
+_BAT = (Path(__file__).resolve().parents[1]
+        / "scripts" / "run-agent-windows.bat").read_text(encoding="utf-8")
+
+
+def test_bat_does_not_overwrite_machine_settings():
+    """★.ps1 だけ直しても、.bat を使っていれば同じことが起きる。"""
+    assert 'if not defined HRO_HOME set "HRO_HOME=' in _BAT
+    assert '\nset "HRO_HOME=' not in _BAT, "無条件に代入している"
+    assert "CHANGE_ME" not in _BAT, "雛形に CHANGE_ME を残さない"
+    assert "POSTGRES_PASSWORD" not in _BAT, "パスワードを雛形に残さない"
+
+
+def test_bat_error_names_hro_home():
+    assert "HRO_HOME is [%HRO_HOME%]" in _BAT
+    assert "setx /M HRO_HOME" in _BAT
+
+
+def test_bat_stays_ascii():
+    raw = (Path(__file__).resolve().parents[1]
+           / "scripts" / "run-agent-windows.bat").read_bytes()
+    assert all(b < 128 for b in raw)
