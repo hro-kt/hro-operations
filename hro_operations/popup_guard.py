@@ -542,7 +542,7 @@ def close_window(w: Win, clicks: list[str] | None, *, expect_gone: bool = True) 
 # --------------------------------------------------------------------------- #
 # 監視ループ
 # --------------------------------------------------------------------------- #
-def _log(line: str, path: str | None) -> None:
+def _log(line: str, path: str | None, emit=None) -> None:
     stamp = datetime.now(JST).strftime("%Y-%m-%d %H:%M:%S")
     msg = f"{stamp} {line}"
     print(msg, flush=True)
@@ -552,15 +552,29 @@ def _log(line: str, path: str | None) -> None:
                 f.write(msg + "\n")
         except OSError:
             pass          # ★ログが書けなくても見張りは続ける
+    if emit is not None:
+        try:
+            emit(line)
+        except Exception:  # noqa: BLE001 - 記録先が死んでも見張りは続ける
+            pass
 
 
 def watch(*, rules: list[Rule], interval: float = 3.0, close: bool = False,
-          log_path: str | None = None, once: bool = False,
+          log_path: str | None = None, once: bool = False, stop=None,
+          emit=None, quiet_unmatched: bool = False,
           lister=None, sleep=time.sleep, closer=None) -> int:
     """新しく現れたウィンドウを記録し、許可したものだけ閉じる。
 
     ★`close=False` が既定。まず**何が出るか**を一日ぶん記録してから、
       規則を書いて有効にする。見ないで閉じにいくのが一番危ない。
+
+    stop            : True を返したら止める(ジョブに寄り添わせるため)
+    emit            : 1行ごとに呼ばれる(ジョブのログへ流す)
+    quiet_unmatched : ボタンの無い窓は記録しない。★ボタンが無い窓は
+                      «答えを待っている窓» ではない(エクスプローラや端末)。
+                      ジョブのログを埋めないため。ただし規則に当たらなくても
+                      **ボタンのある窓は必ず記録する** — それが「答えを待って
+                      いるのに規則が無い」唯一の手掛かりになる。
     戻り値は閉じた件数(`once` 用)。
     """
     # ★既定値で束縛しない。def 時に固まると、呼び出し側が差し替えられない
@@ -571,12 +585,16 @@ def watch(*, rules: list[Rule], interval: float = 3.0, close: bool = False,
     closed = 0
     enabled = [r for r in rules if r.enabled]
     _log(f"popup-guard 開始: 規則 {len(enabled)}/{len(rules)} 件有効 / "
-         f"{'閉じます' if close else '記録のみ(閉じません)'} / {interval:.0f}秒ごと", log_path)
+         f"{'閉じます' if close else '記録のみ(閉じません)'} / {interval:.0f}秒ごと",
+         log_path, emit)
     while True:
+        if stop is not None and stop():
+            _log("popup-guard 終了", log_path, emit)
+            return closed
         try:
             wins = lister()
         except Exception as e:                       # noqa: BLE001
-            _log(f"✗ ウィンドウ一覧に失敗: {e}", log_path)
+            _log(f"✗ ウィンドウ一覧に失敗: {e}", log_path, emit)
             wins = []
         for w in wins:
             key = (w.hwnd, w.title)
@@ -586,23 +604,27 @@ def watch(*, rules: list[Rule], interval: float = 3.0, close: bool = False,
             if not w.title.strip():
                 continue
             r, notes = choose(w, rules)
+            if quiet_unmatched and r is None and not notes and not w.buttons:
+                continue
             tag = f"[{r.name}]" if r else ("[当たるが押せない]" if notes else "[規則なし]")
             _log(f"窓 {tag} title={w.title!r} class={w.class_name!r} "
-                 f"exe={os.path.basename(w.exe)!r} buttons={list(w.buttons)}", log_path)
+                 f"exe={os.path.basename(w.exe)!r} buttons={list(w.buttons)}",
+                 log_path, emit)
             for n in notes:
-                _log(f"  ・{n}", log_path)
+                _log(f"  ・{n}", log_path, emit)
             if r is None:
                 continue
             if not close:
-                _log(f"  → 閉じる対象ですが、記録のみの設定なので触りません({r.name})", log_path)
+                _log(f"  → 閉じる対象ですが、記録のみの設定なので触りません({r.name})",
+                     log_path, emit)
                 continue
             btn = pick_clicks(w, r)
             try:
                 how = closer(w, btn, expect_gone=r.expect_gone)
                 closed += 1
-                _log(f"  → 片付けました({r.name}, {how})", log_path)
+                _log(f"  → 片付けました({r.name}, {how})", log_path, emit)
             except Exception as e:                   # noqa: BLE001
-                _log(f"  ✗ 閉じられませんでした({r.name}): {e}", log_path)
+                _log(f"  ✗ 閉じられませんでした({r.name}): {e}", log_path, emit)
         # ★消えた窓は忘れる。同じ hwnd が再利用されても、次に出たら記録したい。
         live = {(w.hwnd, w.title) for w in wins}
         seen &= live

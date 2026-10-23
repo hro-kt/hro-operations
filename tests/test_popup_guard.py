@@ -438,3 +438,95 @@ def test_the_failure_says_what_was_tried():
         assert "BM_CLICK" in str(e) and "mouse" in str(e)
     else:
         raise AssertionError("例外にならない")
+
+
+# --- ジョブに寄り添う見張り -------------------------------------------------- #
+# ★別プロセスで起動し忘れると、無人運転がダイアログで止まる。
+#   JV-Link を開くジョブの間だけ、エージェントが連れて回る。
+from hro_operations.agent import _JVLINK_KINDS, _popup_guard_wanted
+
+
+def test_the_guard_rides_along_with_jvlink_jobs(monkeypatch):
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
+    for kind in ("sync_all", "reparse", "fetch_ts_odds", "run_odds", "fetch_race"):
+        assert _popup_guard_wanted(kind), kind
+
+
+def test_the_guard_stays_home_for_other_jobs(monkeypatch):
+    """★ダイアログを出さないジョブに連れて行かない。余計なものを押す余地を作らない。"""
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
+    for kind in ("settle", "close_day", "tax_seal", "netkeiba_odds", "race_day"):
+        assert not _popup_guard_wanted(kind), kind
+
+
+def test_the_guard_is_windows_only(monkeypatch):
+    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
+    assert not _popup_guard_wanted("sync_all")
+
+
+def test_the_guard_can_be_switched_off(monkeypatch):
+    """★押されて困る日に、コードを触らず止められること。"""
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setenv("HRO_POPUP_GUARD", "0")
+    assert not _popup_guard_wanted("sync_all")
+
+
+def test_the_jvlink_kinds_match_the_ones_that_hold_jvlink():
+    """★race_day の排他(_jvlink_busy)と同じ顔ぶれであること。
+       片方だけ増やすと「掴むのに見張られないジョブ」ができる。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
+    for kind in ("run_odds", "fetch_ts_odds", "sync_all", "reparse"):
+        assert f"'{kind}'" in src, kind
+        assert kind in _JVLINK_KINDS, kind
+
+
+# --- 止まり方 / 記録の出し方 ------------------------------------------------- #
+def test_the_watch_stops_when_the_job_ends():
+    """★ジョブが終わったら止まること。残ると、次のジョブの窓まで押しに行く。"""
+    flag = {"stop": False}
+    seen = []
+
+    def lister():
+        seen.append(1)
+        flag["stop"] = True          # 1周見たら終わらせる
+        return []
+
+    n = watch(rules=[], lister=lister, sleep=lambda s: None,
+              stop=lambda: flag["stop"])
+    assert n == 0 and len(seen) == 1
+
+
+def test_lines_go_to_the_job_log():
+    """★別ファイルに出すと、admin で「なぜ止まっているか」が見えない。"""
+    out = []
+    watch(rules=[], once=True, lister=lambda: [_SETUP], sleep=lambda s: None,
+          emit=out.append)
+    assert any("セットアップ" in line for line in out)
+
+
+def test_quiet_mode_drops_windows_with_no_buttons():
+    """★エクスプローラや端末はボタンを持たない。ジョブのログを埋めない。"""
+    out = []
+    plain = Win(hwnd=9, title="Program Manager", class_name="Progman",
+                pid=1, exe="explorer.exe", buttons=())
+    watch(rules=[], once=True, lister=lambda: [plain], sleep=lambda s: None,
+          emit=out.append, quiet_unmatched=True)
+    assert not any("Program Manager" in line for line in out)
+
+
+def test_quiet_mode_still_reports_a_dialog_with_no_rule():
+    """★ここを黙らせてはいけない。«答えを待っているのに規則が無い» の
+       唯一の手掛かりで、これが無いとジョブが黙って止まる。
+    """
+    out = []
+    unknown = Win(hwnd=9, title="確認", class_name="#32770", pid=1,
+                  exe="python.exe", buttons=("はい", "いいえ"))
+    watch(rules=[], once=True, lister=lambda: [unknown], sleep=lambda s: None,
+          emit=out.append, quiet_unmatched=True)
+    assert any("規則なし" in line and "確認" in line for line in out)

@@ -933,6 +933,63 @@ def _finish(conn, job_id, status: str, code) -> None:
     conn.commit()
 
 
+# ★JV-Link を開く kind。これらの最中だけポップアップの見張りを連れて回る。
+#   JV-Link はセットアップのダイアログを出し、人が答えるまでそこで止まる
+#   (2026-10-24 に実物を採取)。ジョブに寄り添わせれば、見張りを別に
+#   起動し忘れても無人運転が途切れない。
+_JVLINK_KINDS = frozenset({"sync_all", "reparse", "fetch_ts_odds",
+                           "run_odds", "fetch_race"})
+
+
+def _popup_guard_loop(job_id, stop: threading.Event) -> None:
+    """ジョブが走っている間だけ、JV-Link のダイアログに答える。
+
+    ★記録はジョブのログへ流す。別ファイルに出すと、admin の画面で
+      «ジョブが止まっている» の理由が見えない。
+    ★自分の接続を持つ。メインの conn は出力の取り込みで占有されている。
+    """
+    import psycopg
+
+    from .popup_guard import load_rules, watch
+
+    pg: list = [None]
+
+    def _emit(line: str) -> None:
+        try:
+            if pg[0] is None or pg[0].closed:
+                pg[0] = psycopg.connect(_conninfo(), autocommit=True)
+            _append_log(pg[0], job_id, f"[popup] {line}\n")
+        except Exception:      # noqa: BLE001 - 記録できなくても見張りは続ける
+            pg[0] = None
+
+    try:
+        rules = load_rules()
+    except Exception as e:     # noqa: BLE001
+        _emit(f"規則を読めません({e})。見張りは動きません")
+        return
+    try:
+        # ★close=True。ここまで来たら答えるのが仕事。確かめ済みの規則しか無い。
+        watch(rules=rules, interval=3.0, close=True, stop=stop.is_set,
+              emit=_emit, quiet_unmatched=True)
+    except Exception as e:     # noqa: BLE001 - 見張りの事故でジョブを殺さない
+        _emit(f"見張りが止まりました: {e}")
+    finally:
+        if pg[0] is not None:
+            try:
+                pg[0].close()
+            except Exception:
+                pass
+
+
+def _popup_guard_wanted(kind: str) -> bool:
+    """このジョブに見張りを連れて行くか。★純粋関数。"""
+    if os.environ.get("HRO_POPUP_GUARD", "1") == "0":
+        return False
+    if not sys.platform.startswith("win"):
+        return False           # ダイアログは Windows にしか出ない
+    return kind in _JVLINK_KINDS
+
+
 def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float = 5.0) -> None:
     builder = _COMMANDS.get(server, {}).get(kind)
     if builder is None:
@@ -1005,6 +1062,15 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
     proc_ref: list = []          # 起動前にキャンセルが来ても壊れないよう list で渡す
     hb_thread = threading.Thread(target=_hb_loop, daemon=True)
     hb_thread.start()
+
+    # ★JV-Link のダイアログはジョブが走っている間にしか出ない。
+    #   見張りをジョブに寄り添わせる(別に起動し忘れても止まらない)。
+    stop_guard = threading.Event()
+    if _popup_guard_wanted(kind):
+        _append_log(conn, job_id,
+                    "[agent] ポップアップ見張りを開始(JV-Link のダイアログに答えます)\n")
+        threading.Thread(target=_popup_guard_loop,
+                         args=(job_id, stop_guard), daemon=True).start()
     try:
         try:
             proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE,
@@ -1034,6 +1100,7 @@ def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float =
                 code)
     finally:
         stop_hb.set()
+        stop_guard.set()
 
 
 def run_agent(server: str, interval: float = 5.0, concurrency: int = 3) -> int:
