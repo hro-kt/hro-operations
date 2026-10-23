@@ -933,12 +933,14 @@ def _finish(conn, job_id, status: str, code) -> None:
     conn.commit()
 
 
-# ★JV-Link を開く kind。これらの最中だけポップアップの見張りを連れて回る。
-#   JV-Link はセットアップのダイアログを出し、人が答えるまでそこで止まる
-#   (2026-10-24 に実物を採取)。ジョブに寄り添わせれば、見張りを別に
-#   起動し忘れても無人運転が途切れない。
-_JVLINK_KINDS = frozenset({"sync_all", "reparse", "fetch_ts_odds",
-                           "run_odds", "fetch_race"})
+# ★見張りを連れて回る kind。**sync_all だけ**。
+#   止まるダイアログは JVOpen の option=3/4(セットアップ)が出すもので、
+#   それを使うのは sync-all だけ。run_odds / fetch_race / fetch_ts_odds は
+#   option=1/2 で開くので何も聞いてこない。
+#   «JV-Link を掴む» 顔ぶれ(race_day の _jvlink_busy)とは別の話なので、
+#   揃える必要はない。押す機会は要るところまでに絞る。
+#   足りなければ HRO_POPUP_GUARD_KINDS で広げられる(デプロイ不要)。
+_POPUP_GUARD_KINDS = frozenset({"sync_all"})
 
 
 def _popup_guard_loop(job_id, stop: threading.Event) -> None:
@@ -981,13 +983,21 @@ def _popup_guard_loop(job_id, stop: threading.Event) -> None:
                 pass
 
 
+def _popup_guard_kinds() -> frozenset[str]:
+    """見張りを連れて行く kind。HRO_POPUP_GUARD_KINDS で上書きできる。"""
+    raw = os.environ.get("HRO_POPUP_GUARD_KINDS")
+    if raw is None:
+        return _POPUP_GUARD_KINDS
+    return frozenset(x.strip() for x in raw.split(",") if x.strip())
+
+
 def _popup_guard_wanted(kind: str) -> bool:
     """このジョブに見張りを連れて行くか。★純粋関数。"""
     if os.environ.get("HRO_POPUP_GUARD", "1") == "0":
         return False
     if not sys.platform.startswith("win"):
         return False           # ダイアログは Windows にしか出ない
-    return kind in _JVLINK_KINDS
+    return kind in _popup_guard_kinds()
 
 
 def _run_job(conn, server: str, job_id, kind: str, args: dict, interval: float = 5.0) -> None:

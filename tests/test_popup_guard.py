@@ -443,47 +443,54 @@ def test_the_failure_says_what_was_tried():
 # --- ジョブに寄り添う見張り -------------------------------------------------- #
 # ★別プロセスで起動し忘れると、無人運転がダイアログで止まる。
 #   JV-Link を開くジョブの間だけ、エージェントが連れて回る。
-from hro_operations.agent import _JVLINK_KINDS, _popup_guard_wanted
+from hro_operations.agent import _POPUP_GUARD_KINDS, _popup_guard_wanted
 
 
-def test_the_guard_rides_along_with_jvlink_jobs(monkeypatch):
+@pytest.fixture
+def on_windows(monkeypatch):
     monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
-    for kind in ("sync_all", "reparse", "fetch_ts_odds", "run_odds", "fetch_race"):
-        assert _popup_guard_wanted(kind), kind
+    monkeypatch.delenv("HRO_POPUP_GUARD_KINDS", raising=False)
 
 
-def test_the_guard_stays_home_for_other_jobs(monkeypatch):
-    """★ダイアログを出さないジョブに連れて行かない。余計なものを押す余地を作らない。"""
-    monkeypatch.setattr("sys.platform", "win32")
-    monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
-    for kind in ("settle", "close_day", "tax_seal", "netkeiba_odds", "race_day"):
+def test_the_guard_rides_along_with_sync_all(on_windows):
+    assert _popup_guard_wanted("sync_all")
+
+
+def test_the_guard_stays_home_for_every_other_job(on_windows):
+    """★止まるダイアログは JVOpen の option=3/4(セットアップ)が出す。
+       それを使うのは sync-all だけ。run_odds / fetch_race / fetch_ts_odds は
+       option=1/2 で開くので何も聞いてこない。
+       押す機会は要るところまでに絞る — 余計なものを押す余地を作らない。
+    """
+    for kind in ("reparse", "fetch_ts_odds", "run_odds", "fetch_race",
+                 "settle", "close_day", "tax_seal", "netkeiba_odds", "race_day"):
         assert not _popup_guard_wanted(kind), kind
 
 
-def test_the_guard_is_windows_only(monkeypatch):
+def test_the_set_can_be_widened_without_a_deploy(monkeypatch, on_windows):
+    """★別の kind でダイアログが出た日に、その場で広げられること。"""
+    monkeypatch.setenv("HRO_POPUP_GUARD_KINDS", "sync_all,reparse")
+    assert _popup_guard_wanted("reparse")
+    assert not _popup_guard_wanted("run_odds")
+
+
+def test_the_guard_is_windows_only(monkeypatch, on_windows):
     monkeypatch.setattr("sys.platform", "linux")
-    monkeypatch.delenv("HRO_POPUP_GUARD", raising=False)
     assert not _popup_guard_wanted("sync_all")
 
 
-def test_the_guard_can_be_switched_off(monkeypatch):
+def test_the_guard_can_be_switched_off(monkeypatch, on_windows):
     """★押されて困る日に、コードを触らず止められること。"""
-    monkeypatch.setattr("sys.platform", "win32")
     monkeypatch.setenv("HRO_POPUP_GUARD", "0")
     assert not _popup_guard_wanted("sync_all")
 
 
-def test_the_jvlink_kinds_match_the_ones_that_hold_jvlink():
-    """★race_day の排他(_jvlink_busy)と同じ顔ぶれであること。
-       片方だけ増やすと「掴むのに見張られないジョブ」ができる。
-    """
-    from pathlib import Path
-    src = (Path(__file__).resolve().parents[1]
-           / "hro_operations" / "orchestrator.py").read_text(encoding="utf-8")
-    for kind in ("run_odds", "fetch_ts_odds", "sync_all", "reparse"):
-        assert f"'{kind}'" in src, kind
-        assert kind in _JVLINK_KINDS, kind
+def test_the_guarded_kind_is_a_real_job_kind():
+    """★綴りを間違えると、黙って一度も連れて行かれない。"""
+    from hro_operations.agent import _COMMANDS
+    for kind in _POPUP_GUARD_KINDS:
+        assert kind in _COMMANDS["windows"], kind
 
 
 # --- 止まり方 / 記録の出し方 ------------------------------------------------- #

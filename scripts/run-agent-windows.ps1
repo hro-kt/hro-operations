@@ -87,8 +87,9 @@ if ($others.Count -gt 0) {
 # clicks it, sync-all does not move, so an unattended race day stalls there.
 #
 # ANSWERING those dialogs is the agent's job now: _run_job starts a guard for
-# the lifetime of every JV-Link job (sync_all / reparse / fetch_ts_odds /
-# run_odds / fetch_race) and writes what it did into that job's log.
+# the lifetime of a sync_all job and writes what it did into that job's log.
+# Only sync_all, because only sync-all opens JV-Link with option 3/4 (setup);
+# the other JV-Link jobs open with option 1/2 and never ask.
 #
 # This watcher is the DISCOVERY half. It records every window that appears, so
 # a dialog we have no rule for still leaves a trace. It does NOT click.
