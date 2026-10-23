@@ -2084,6 +2084,49 @@ def _cmd_agent(args) -> int:
     return run_agent(args.server, interval=args.interval, concurrency=args.concurrency)
 
 
+def _cmd_popups(args) -> int:
+    """Windows のポップアップを見る / 許可したものだけ閉じる。
+
+    ★JV-Link まわりのモーダルが出ると、人が消すまで sync-all が止まる。
+      そこで無人運転が途切れるので、ここで面倒を見る。
+    ★ただし**閉じてよいものは実物を見てからでないと決められない**。
+      まず `popups list`(いま出ているもの)か `popups watch`(記録のみ)で
+      title/class/exe を採り、規則を書いて enabled にしてから `--close`。
+    """
+    import json as _json
+    from .popup_guard import list_windows, load_rules, match, suggest_rule, watch
+
+    rules = load_rules(args.rules)
+    if args.cmd_popups == "list":
+        wins = [w for w in list_windows() if w.title.strip()]
+        if args.all:
+            pass
+        else:
+            # ★既定は「規則に当たらないもの」だけ。当たるものは既に分かっている。
+            wins = [w for w in wins if match(w, rules) is None]
+        for w in wins:
+            r = match(w, rules)
+            print(f"- title={w.title!r} class={w.class_name!r} "
+                  f"exe={w.exe!r} buttons={list(w.buttons)} "
+                  f"規則={'(' + r.name + ')' if r else 'なし'}")
+        if args.suggest:
+            print("\n--- popup_rules.json の雛形(中身を確かめてから enabled を true に) ---")
+            print(_json.dumps({"rules": [suggest_rule(w) for w in wins]},
+                              ensure_ascii=False, indent=2))
+        if not wins:
+            print("(規則に当たらない窓はありません)")
+        return 0
+
+    enabled = [r for r in rules if r.enabled]
+    if args.close and not enabled:
+        print("★有効な規則が1件もありません。--close しても何も閉じません。")
+        print(f"   規則ファイル: {args.rules or '(既定)'}")
+        print("   先に `hro-ops popups list --suggest` で雛形を採ってください。")
+        return 1
+    watch(rules=rules, interval=args.interval, close=args.close, log_path=args.log)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     logging.basicConfig(
@@ -2556,6 +2599,23 @@ def main(argv: list[str] | None = None) -> int:
     p_sp.add_argument("--dry-run", action="store_true",
                       help="何を決済するかだけ出して終わる(ジョブを投入しない)")
     p_sp.set_defaults(func=_cmd_settle_pending)
+
+    p_pop = sub.add_parser("popups",
+                           help="★Windows のポップアップを見張る(JV-Link のモーダルで無人運転が止まるため)")
+    sub_pop = p_pop.add_subparsers(dest="cmd_popups", required=True)
+    p_pl = sub_pop.add_parser("list", help="いま出ている窓を一覧(規則を書くための採取)")
+    p_pl.add_argument("--all", action="store_true", help="規則に当たる窓も出す")
+    p_pl.add_argument("--suggest", action="store_true",
+                      help="popup_rules.json の雛形を出す(enabled は false のまま)")
+    p_pw = sub_pop.add_parser("watch", help="新しく出た窓を記録しつづける(既定は閉じない)")
+    p_pw.add_argument("--close", action="store_true",
+                      help="★規則に当たったものを実際に閉じる。先に記録で中身を確かめること")
+    p_pw.add_argument("--interval", type=float, default=3.0, help="確認周期(秒)")
+    p_pw.add_argument("--log", default="", help="記録を追記するファイル")
+    for _p in (p_pl, p_pw):
+        _p.add_argument("--rules", default="",
+                        help="規則ファイル(既定: $HRO_HOME/hro-operations/popup_rules.json)")
+    p_pop.set_defaults(func=_cmd_popups)
 
     p_agent = sub.add_parser("agent", help="ops_jobキューを処理する常駐エージェント(admin画面から実行される)")
     p_agent.add_argument("--server", required=True, choices=("vm", "windows"),

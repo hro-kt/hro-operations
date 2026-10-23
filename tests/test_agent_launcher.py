@@ -103,3 +103,31 @@ def test_bat_stays_ascii():
     raw = (Path(__file__).resolve().parents[1]
            / "scripts" / "run-agent-windows.bat").read_bytes()
     assert all(b < 128 for b in raw)
+
+
+# --------------------------------------------------------------------------- #
+# ポップアップ監視
+# --------------------------------------------------------------------------- #
+def test_the_launcher_starts_the_popup_guard():
+    """★JV-Link のモーダルが出ると、人が消すまで sync-all が止まる。
+       エージェントと同じ寿命で見張りを走らせる(タスクを増やさない)。
+    """
+    assert "popups', 'watch'" in _PS1 or "'popups', 'watch'" in _PS1
+
+
+def test_the_popup_guard_starts_in_record_only_mode():
+    """★見ていない窓を閉じにいくのが一番危ない。既定は記録のみ。"""
+    assert "HRO_POPUP_CLOSE" in _PS1
+    assert "record-only" in _PS1
+
+
+def test_the_popup_guard_refuses_to_start_twice():
+    """★二重起動すると、同じ窓に2回 click が飛ぶ。"""
+    assert "popup guard already running" in _PS1
+
+
+def test_the_popup_guard_does_not_block_the_agent():
+    """★見張りは Start-Process(別プロセス)。ここで待つとエージェントが起動しない。"""
+    i = _PS1.index("popups', 'watch'") if "popups', 'watch'" in _PS1 else _PS1.index("popups")
+    assert "Start-Process" in _PS1[i - 600:i + 600]
+    assert _PS1.index("Start-Process") < _PS1.index("agent --server windows")

@@ -82,6 +82,32 @@ if ($others.Count -gt 0) {
     exit 0
 }
 
+# --- Popup guard ----------------------------------------------------------
+# JV-Link and friends sometimes raise a modal dialog. Until somebody clicks it,
+# sync-all does not move, so an unattended race day stalls there. This watcher
+# logs every window that appears and closes ONLY the ones listed in
+# <HRO_HOME>\hro-operations\popup_rules.json.
+# It starts in RECORD-ONLY mode on purpose: closing a window you have not seen
+# is how you lose a race day. Collect titles first (the log), write the rules,
+# then set HRO_POPUP_CLOSE=1.
+$popupLog = Join-Path $env:HRO_HOME 'hro-operations\logs\popups.log'
+New-Item -ItemType Directory -Force -Path (Split-Path $popupLog) | Out-Null
+$popupRunning = @(Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='python3.exe'" |
+                  Where-Object { $_.ProcessId -ne $me -and $_.CommandLine -match 'popups\s+watch' })
+if ($popupRunning.Count -gt 0) {
+    Write-Host "[SKIP] popup guard already running (PID $($popupRunning[0].ProcessId))."
+} else {
+    $popupArgs = @('-m', 'hro_operations', 'popups', 'watch', '--log', $popupLog)
+    if ($env:HRO_POPUP_CLOSE -eq '1') {
+        $popupArgs += '--close'
+        Write-Host 'Popup guard: CLOSING windows that match popup_rules.json'
+    } else {
+        Write-Host 'Popup guard: record-only. Set HRO_POPUP_CLOSE=1 once the rules are written.'
+    }
+    Write-Host "Popup guard log: $popupLog"
+    Start-Process -FilePath $pyexe -ArgumentList $popupArgs -WindowStyle Minimized | Out-Null
+}
+
 # --- Resident loop (restart the agent if it exits) ---
 while ($true) {
     & $pyexe -m hro_operations agent --server windows --interval 5
