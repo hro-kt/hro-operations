@@ -808,7 +808,12 @@ def assign_ninki(scores: dict[str, dict]) -> None:
 # バックテストの券種名(nl_hr の bet_type)→ hro_buyer の券種名
 # ★馬単を追加(2026-10-06)。2窓OOSで 2.21/1.96 と単勝(1.67/1.69)を上回った。
 #   軸=flow候補(人気7+)を**1着に固定**し、相手=人気上位N頭と組む。
-_BET_TYPE = {"fuku": "place", "tan": "win", "umatan": "umatan"}
+BET_TYPE_CANON = {"fuku": "place", "tan": "win", "umatan": "umatan"}
+# ★別名(旧 _BET_TYPE)。**この表が唯一の変換場所**。設定の語(tan/fuku)と
+#   注文の語(win/place)が食い違ったまま別の場所で推測すると、黙って外れる
+#   (2026-10-24: preselect が別の式別を先に選び、本番は締切28.8秒の窓で
+#    画面移動をやり直していた)。
+_BET_TYPE = BET_TYPE_CANON
 
 # 軸1頭では完結せず、相手との組が要る券種
 _COMBO_BET_TYPES = {"umatan"}

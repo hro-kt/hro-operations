@@ -248,6 +248,27 @@ def bet_plan(cfg: "DayConfig") -> list[tuple[str, int]]:
     return out or [("fuku", cfg.flat_amount)]
 
 
+def first_shikibetsu(cfg: "DayConfig") -> str:
+    """最初に買う式別(hro_buyer の語)。preselect はこれを先に選んでおく。
+
+    ★ここを間違えると preselect が**効かない**。画面は式別まで進めるので、
+      違う式別を選んでおくと submit 時にキャッシュ(レース,式別)が一致せず、
+      締切直前の窓で画面移動をやり直すことになる。
+    ★flow の券種は cfg.flow_bet_type(tan/fuku/umatan)に入る。
+      cfg.bet_types は**モデル戦略**の券種(既定 place)で、別物。
+      2026-10-24 はこちらを渡していたため、flow で単勝を買う日に
+      複勝を先に選んでいた。毎レース preselect が無駄になっていた。
+    ★語も変換が要る。IPAT 側(SHIKIBETSU_CODE)の鍵は win/place/umatan で、
+      設定の tan/fuku ではない。変換を忘れると preselect は黙って何もしない。
+    """
+    if cfg.strategy == "flow":
+        from .flow_signal import BET_TYPE_CANON
+        plan = bet_plan(cfg)            # 並び順 = 購入順
+        if plan:
+            return BET_TYPE_CANON.get(plan[0][0], plan[0][0])
+    return cfg.bet_types[0] if cfg.bet_types else "place"
+
+
 def flow_config(cfg: "DayConfig"):
     """DayConfig から FlowConfig を組む。**ここが唯一の組み立て場所**。
 
@@ -954,8 +975,10 @@ def _run_races(cfg: DayConfig, races, win_b, place_b, executor, *, verify: bool,
                     lead = min(cfg.preselect_lead_seconds, max(0, wait - 5))
                     if wait > lead:
                         time.sleep(wait - lead)
-                    log.info("%s: 画面を先に進めます(T-%ds)", race_id, cfg.lead_seconds + lead)
-                    pre(race_id, cfg.bet_types[0] if cfg.bet_types else "place")
+                    shikibetsu = first_shikibetsu(cfg)
+                    log.info("%s: 画面を先に進めます(T-%ds, 式別=%s)",
+                             race_id, cfg.lead_seconds + lead, shikibetsu)
+                    pre(race_id, shikibetsu)
                     wait = (deadline - datetime.now(JST)).total_seconds()
                 log.info("%s: 発走%s の T-%ds(%s)まで %.0fs 待機",
                          race_id, hasso, cfg.lead_seconds,
