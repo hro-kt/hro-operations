@@ -71,6 +71,15 @@ class FlowConfig:
     #   最初から絞る。スコアの高い順に残す。
     #   ★本来の解は購入予定リストへの**まとめ入力**(確認・送信を1回にする)。
     max_per_race: int = 0
+    # ★そのレースで閾値を超えた頭数の下限。これ未満ならレースごと見送る。
+    #   2026-11-02 実測(20260801-1031, 単勝/人気7+/ts@T-60s, 270点):
+    #     1頭だけ 135点 0.5904 / 2頭 70点 1.4314 / 3頭 57点 2.4509 / 4頭+ 8点 4.5750
+    #   購入の半分が「1頭だけ」の帯に入り、そこが 0.59 で引いている。
+    #   ★注意: 固定閾値だと「該当頭数が多い=よく動いたレース」になりがちで、
+    #     値動き総量(race_move)と交絡しうる。必ず --axes nsig,move で一緒に見ること。
+    #   ★これは「1頭に金が集中しているほど良い」の**逆**。直感と逆なので、
+    #     2窓で確かめるまで live には出さない。
+    min_nsig: int = 0
     # ★そのレースの値動き総量で正規化するか(S/N比にする)。
     #   実測(2026-09-29, ts@T-60s を2期間): 値動きが**小さい**レースほど回収率が高い
     #     下位25% 1.182/1.235 → 下位50% 1.060/1.212 → 上位25% 0.994/0.985(単調・両期間一致)
@@ -1117,6 +1126,23 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
         ))
         _log_horse(um, d, accepted=True,
                    odds=(d["tan_odds"] if cfg.bet_type == "tan" else d["fuku_odds"]) or 0.0)
+    if cfg.min_nsig > 1 and len(orders) < cfg.min_nsig:
+        # ★レースごと見送る。「1頭だけ動いたレース」は実測で 0.59(2026-11-02)。
+        #   規則として全レースに同じ条件を当てているので、網羅性の主張は崩れない
+        #   (買わなかった理由が race_coverage に残る)。
+        log.info("%s: 該当 %d 頭 < min_nsig=%d のためレースごと見送ります",
+                 race_id, len(orders), cfg.min_nsig)
+        if logs is not None:
+            for lg in logs:
+                if lg.decision == "accepted":
+                    lg.decision = "rejected"
+                    lg.recommended_amount = 0
+                    lg.reason = (f"min_nsig={cfg.min_nsig} 未満"
+                                 f"(該当 {len(orders)} 頭。規則は通過)")
+                    lg.constraints["gates"].append(
+                        {"rule": "min_nsig", "min": cfg.min_nsig,
+                         "got": len(orders), "pass": False})
+        return []
     if cfg.max_per_race > 0 and len(orders) > cfg.max_per_race:
         log.info("%s: 候補 %d 頭のうち上位 %d 頭に絞ります"
                  "(順次処理では2件目以降が締切を超えるため)",
@@ -1328,6 +1354,22 @@ def _percentile(xs: list[float], q: float) -> float:
     return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
 
 
+def apply_min_nsig(details: list[dict], bets: list[tuple], min_nsig: int):
+    """同一レースの該当頭数が min_nsig 未満なら、そのレースごと落とす。
+
+    ★「選ばれた後」に数える。閾値で切る前に数えると母集団の頭数になってしまう。
+      分位で切る場合も同じで、切った後の残り数が該当頭数そのものになる。
+    ★details[i] と bets[i] は同じ1点。順序を崩さないこと。
+    """
+    if min_nsig <= 1:
+        return details, bets
+    from collections import Counter
+
+    n = Counter(d["rid"] for d in details)
+    keep = [i for i, d in enumerate(details) if n[d["rid"]] >= min_nsig]
+    return [details[i] for i in keep], [bets[i] for i in keep]
+
+
 def apply_quantile(details: list[dict], bets: list[tuple], quantile: float):
     """スコアの分位で切る。(details, bets, 使った閾値) を返す。
 
@@ -1495,6 +1537,8 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     used_threshold = cfg.threshold
     if quantile is not None:
         details, bets, used_threshold = apply_quantile(details, bets, quantile)
+    # ★該当頭数の下限は**最後**に当てる。分位で切った後の残りが該当頭数。
+    details, bets = apply_min_nsig(details, bets, cfg.min_nsig)
 
     rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
                          races_degenerate=n_degenerate, with_ci=with_ci)

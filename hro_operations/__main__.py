@@ -632,6 +632,7 @@ def _cmd_flow_backtest(args) -> int:
                      source=args.flow_source,
                      threshold=(-float("inf") if q is not None else args.flow_threshold),
                      score=getattr(args, "score", "flow"),
+                     min_nsig=getattr(args, "min_nsig", 0),
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
@@ -684,6 +685,7 @@ def _cmd_flow_backtest(args) -> int:
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 閾値 {thr_used:+.4f}"
           + (f" / 上位 {(1 - q) * 100:.1f}%" if q is not None else "")
+          + (f" / 同レース{args.min_nsig}頭以上" if getattr(args, "min_nsig", 0) else "")
           + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
     # ★選別率。別の尺度の閾値を渡すと、ここが桁で違う。
     #   2026-11-01: flow の閾値(+0.1221)を tstat にそのまま渡し、
@@ -708,6 +710,7 @@ def _cmd_flow_backtest(args) -> int:
               + (f" \\\n      --min-ninki {args.min_ninki}" if args.min_ninki else "")
               + (f" --max-ninki {args.max_ninki}" if args.max_ninki else "")
               + (f" --min-horses {args.min_horses}" if args.min_horses else "")
+              + (f" --min-nsig {args.min_nsig}" if getattr(args, "min_nsig", 0) else "")
               + (f" --min-tan-odds {args.min_tan_odds}" if args.min_tan_odds else "")
               + (f" --max-tan-odds {args.max_tan_odds}" if args.max_tan_odds else "")
               + (" --normalize" if getattr(args, "normalize", False) else ""))
@@ -1119,6 +1122,7 @@ def _cmd_flow_slice(args) -> int:
                      bet_type=getattr(args, "bet_type", "fuku"),
                      normalize=getattr(args, "normalize", False),
                      score=getattr(args, "score", "flow"),
+                     min_nsig=getattr(args, "min_nsig", 0),
                      min_horses=getattr(args, "min_horses", 0))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
@@ -2288,6 +2292,10 @@ def main(argv: list[str] | None = None) -> int:
                       help="出走頭数の下限。★複勝は8頭以上で3着まで/5〜7頭は2着まで")
     p_bt.add_argument("--normalize", action="store_true",
                       help="そのレースの値動き総量で割る(S/N比にする)")
+    p_bt.add_argument("--min-nsig", type=int, default=0,
+                      help="★同一レースで閾値を超えた頭数の下限。これ未満はレースごと"
+                           "見送る(2 で「1頭だけ動いたレース」を外す)。"
+                           "値動き総量と交絡しうるので --axes nsig,move で一緒に見ること")
     p_bt.add_argument("--record", metavar="LABEL",
                       help="★この検証を strategy_backtests に記録する"
                            "(戦略書の⑧に載る)。見出しを指定")
@@ -2426,6 +2434,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fs.add_argument("--normalize", action="store_true")
     p_fs.add_argument("--score", choices=("flow", "tstat"), default="flow",
                       help="★tstat = flow を票の薄さで割る(t統計量)。検証専用")
+    p_fs.add_argument("--min-nsig", type=int, default=0,
+                      help="同一レースで閾値を超えた頭数の下限(2 で「1頭だけ」を外す)")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)
