@@ -78,6 +78,24 @@ class FlowConfig:
     #   盤面が荒れている中の1頭の動きは薄く、静かな盤面で動いたら情報、という読み。
     #   ★正規化すると尺度が変わるので**閾値を必ず取り直す**こと。
     normalize: bool = False
+    # ★スコアの定義。"flow" = これまでの logit 差。
+    #   "tstat" = それを**その馬の票の薄さ**で割って t 統計量にする。
+    #
+    #   flow_tan は既に「相対変化の対数」なので、率に置き換えても何も変わらない
+    #   (logit 差 = log(p1/p0) - log((1-p1)/(1-p0))。人気薄では第2項がほぼ0)。
+    #   本当の問題は**分散が人気で違う**こと。シェアの推定誤差は
+    #       sd(log share_i) ≒ 1/√(その馬の票数)
+    #   なので、同じ +0.5 が人気2番なら 3σ、人気12番なら 0.8σ になる。
+    #   同じ数字が別の意味を持ったまま1本の閾値で切っている。
+    #
+    #       n_i(t) = N × p_i(t)                  N = そのレースの単勝総票数
+    #       se     = √(1/n_0 + 1/n_1) = √((1/p_0 + 1/p_1)/N)
+    #       tstat  = flow / se = flow × √N / √(1/p_0 + 1/p_1)
+    #
+    #   ★tstat は**バックテスト専用**。N は nl_h1(確定票数)から取るので、
+    #     締切前には存在しない。live で使うには馬連プール総額からの近似が要る
+    #     (money_signal が ts_o2 から復元している)。まず勝てるかを決めてから。
+    score: str = "flow"      # flow | tstat
     # ★買う券種。エッジは人気7番以降=中穴に集中しているので、**単勝の方が効率が
     #   良い可能性がある**(配当が大きい)。確定払戻は nl_hr に年単位で揃っているので
     #   測るだけなら安い。live の発注は現状 place 固定なので、採用するなら
@@ -276,6 +294,12 @@ def threshold_for(cfg: "FlowConfig", lead_sec: int | None) -> float | None:
 
 def flow_scores(db, race: tuple[str, ...], cfg: FlowConfig) -> dict[str, dict]:
     """{馬番: {'score','fuku_odds','tan_odds','ts_late','ts_early'}}。取れない馬は含めない。"""
+    if cfg.score != "flow":
+        # ★黙って flow として計算しない。締切前に票数(nl_h1)は存在しないので、
+        #   ここで tstat を名乗ると「検証したものと違う信号で発注する」ことになる。
+        raise ValueError(
+            f"score={cfg.score!r} は live では使えません(確定票数 nl_h1 が要る)。"
+            "バックテスト(flow-backtest / flow-slice)でのみ指定できます")
     y, m, j, k, n, r = race
     sql = {"ts": _SQL_TS, "sokuho": _SQL_SOKUHO, "netkeiba": _SQL_NETKEIBA}.get(cfg.source)
     if sql is None:
@@ -1129,6 +1153,10 @@ def flow_orders(db, race: tuple[str, ...], cfg: FlowConfig, amount: int, model_v
 _BT_TAIL = """SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_num AS rid,
        l.year||l.month_day AS ymd, l.umaban,
        l.t1, {F1}, e.t0, l.ht1, e.ht0, l.lead1, h.pay, se.i_jyo_cd,
+       -- ★単勝の確定票数(100円単位)。スコアを t 統計量にするのに使う。
+       --   votes_i × odds_i が全頭一定になることで妥当性を検証済み(17_vote_counts.sql)。
+       --   ★確定値なので**バックテスト専用**。締切前には存在しない。
+       h1.tan_vote,
        -- スライス用(すべて既に JOIN 済みのテーブルから取るので追加コストは小さい)
        se.wakuban, se.zogen_fugo, se.zogen_sa, se.ba_taijyu,
        ra2.kyori, ra2.track_cd, ra2.grade_cd,
@@ -1157,6 +1185,10 @@ _BT_TAIL = """SELECT l.year||l.month_day||l.jyo_cd||l.kaiji||l.nichiji||l.race_n
 FROM late l
 JOIN early e USING (year,month_day,jyo_cd,kaiji,nichiji,race_num,umaban)
 JOIN ra ra2 USING (year,month_day,jyo_cd,kaiji,nichiji,race_num)
+-- ★票数(H1)。無い期間/レースがあるので LEFT。欠けは黙って捨てず数える。
+LEFT JOIN nl_h1 h1
+  ON (h1.year,h1.month_day,h1.jyo_cd,h1.kaiji,h1.nichiji,h1.race_num,h1.umaban)
+   = (l.year,l.month_day,l.jyo_cd,l.kaiji,l.nichiji,l.race_num,l.umaban)
 -- ★異常区分。出走取消/発走除外/競走除外 は**返還**であって外れではない。
 --   払戻表(nl_hr)には行が立たないので、これを見ないと全損として数えてしまう。
 LEFT JOIN nl_se se
@@ -1282,14 +1314,49 @@ early AS (
 
 
 
+def _percentile(xs: list[float], q: float) -> float:
+    """昇順リストの q 分位(線形補間)。★numpy を引き込まない。"""
+    if not xs:
+        return float("inf")
+    if q <= 0:
+        return xs[0]
+    if q >= 1:
+        return xs[-1]
+    pos = q * (len(xs) - 1)
+    lo = int(pos)
+    hi = min(lo + 1, len(xs) - 1)
+    return xs[lo] + (xs[hi] - xs[lo]) * (pos - lo)
+
+
+def apply_quantile(details: list[dict], bets: list[tuple], quantile: float):
+    """スコアの分位で切る。(details, bets, 使った閾値) を返す。
+
+    ★帯(人気/オッズ/頭数)で絞った**後**の母集団で分位を取る。全馬の分位に
+      すると選別率が想定から外れる(flow-threshold が踏んだのと同じ罠)。
+    ★月ごとに分けて回したときも、分位は**期間全体で1回**取る。月ごとに切ると
+      月の良し悪しで本数が変わり、期間の成績として読めなくなる。
+    ★details[i] と bets[i] は同じ1点。順序を崩さないこと。
+    """
+    if not details:
+        return details, bets, float("inf")
+    thr = _percentile(sorted(d["score"] for d in details), quantile)
+    keep = [i for i, d in enumerate(details) if d["score"] >= thr]
+    return [details[i] for i in keep], [bets[i] for i in keep], thr
+
+
 def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
              max_odds: float | None = None, amount: int = 100,
-             with_ci: bool = True) -> dict:
+             with_ci: bool = True, quantile: float | None = None) -> dict:
     """flow_tan(複勝)の期間回収率。モデルも候補CSVも使わない。
 
     ★払戻は nl_hr の確定複勝(pay=100円あたり)。パリミュチュエルなので判断時の
     オッズでは払われない。判断に使うのはスナップのオッズ、決済は必ず確定払戻。
     レース単位でブートストラップして CI を出す(同一レース内の馬は独立でない)。
+
+    quantile を渡すと cfg.threshold を無視し、**帯で絞った後の母集団**の
+    その分位を閾値にする。★スコアの定義を変えると尺度が変わり、前の閾値は
+    意味を失う。score=tstat を試すたびに閾値を取り直すのは手間なので、
+    「窓1で分位→出た数値を窓2に絶対閾値として渡す」という2窓の手順に使う。
     """
     if cfg.bet_type not in ("fuku", "tan"):
         raise ValueError(f"不明な券種: {cfg.bet_type!r} (fuku|tan)")
@@ -1311,6 +1378,10 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     bets: list[tuple] = []                    # (rid, 賭け金, 払戻, 返還フラグ)
     details: list[dict] = []                  # 1点ずつの明細(目視確認用)
     n_races = n_scored = n_degenerate = n_refund = n_unsettled = n_small = 0
+    n_no_votes = 0                            # tstat に要る票数が欠けた頭数
+    # ★分位で切るときは、いったん全部通してから後で切る。
+    #   スコア式を2か所に書くと、片方だけ直して黙って外れる。
+    thr_floor = -float("inf") if quantile is not None else cfg.threshold
     for rid, rs in by_race.items():
         n_races += 1
         if rs[0]["ht1"] is not None and rs[0]["ht1"] == rs[0]["ht0"]:
@@ -1328,6 +1399,11 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             n_small += 1            # 複勝の払戻対象頭数が違うレースは混ぜない
             continue
         n_scored += 1
+        # ★そのレースの単勝総票数(確定)。tstat の分母に使う。
+        #   1頭でも欠けていたら総数が狂うので、**全頭そろっている時だけ**使う。
+        _v = [x.get("tan_vote") for x in rs]
+        n_votes = float(sum(int(v) for v in _v)) if all(
+            v is not None and str(v).strip() != "" for v in _v) else 0.0
         # ★そのレースで市場がどれだけ動いたか(全頭のシェア変化の総量)。
         #   ほとんど動いていないレースの flow は雑音のはずで、大きく動いたレースなら
         #   情報が入っている可能性が高い。「いつ効くのか」を切る軸として使う。
@@ -1355,10 +1431,19 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
             t1, t0, f1 = tan_of(x["t1"]), tan_of(x["t0"]), _num(x["f1"])
             if t1 is None or t0 is None or f1 is None:
                 continue
-            score = _logit((1.0 / t1) / s1) - _logit((1.0 / t0) / s0)
+            p1, p0 = (1.0 / t1) / s1, (1.0 / t0) / s0
+            score = _logit(p1) - _logit(p0)
             if cfg.normalize:
                 score = (score / race_move) if race_move > 1e-9 else 0.0
-            if score < cfg.threshold:
+            if cfg.score == "tstat":
+                # ★その馬の票の薄さで割る。人気薄が動きやすいのは情報とは限らず、
+                #   票が薄くて揺れているだけでもそうなる。同じ尺度に乗せる。
+                if n_votes <= 0 or p0 <= 0 or p1 <= 0:
+                    n_no_votes += 1
+                    continue
+                se = ((1.0 / p0 + 1.0 / p1) / n_votes) ** 0.5
+                score = score / se if se > 0 else 0.0
+            if score < thr_floor:
                 continue
             if max_odds is not None and t1 > max_odds:
                 continue
@@ -1401,11 +1486,20 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                             "amount": amount, "payout": payout,
                             "note": "的中" if payout else "外れ"})
 
+    used_threshold = cfg.threshold
+    if quantile is not None:
+        details, bets, used_threshold = apply_quantile(details, bets, quantile)
+
     rep = summarize_bets(bets, races=n_races, races_scored=n_scored,
                          races_degenerate=n_degenerate, with_ci=with_ci)
     rep["details"] = details
     rep["races_unsettled"] = n_unsettled
     rep["races_small_field"] = n_small
+    rep["score"] = cfg.score
+    rep["threshold"] = used_threshold
+    # ★欠けは隠さない。tstat で本数が減ったとき、それが «票数が無い» のか
+    #   «スコアが低い» のかを区別できないと、結論を間違える。
+    rep["horses_no_votes"] = n_no_votes
     return rep
 
 

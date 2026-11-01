@@ -623,10 +623,15 @@ def _cmd_flow_backtest(args) -> int:
 
     import time
 
-    from .flow_signal import summarize_bets
+    from .flow_signal import apply_quantile, summarize_bets
 
+    # ★分位で切るときは、いったん全部通してから期間全体で1回切る。
+    #   月ごとに切ると月の良し悪しで本数が変わり、期間の成績として読めない。
+    q = getattr(args, "quantile", None)
     cfg = FlowConfig(lead_seconds=args.flow_lead_seconds, flow_minutes=args.flow_minutes,
-                     source=args.flow_source, threshold=args.flow_threshold,
+                     source=args.flow_source,
+                     threshold=(-float("inf") if q is not None else args.flow_threshold),
+                     score=getattr(args, "score", "flow"),
                      min_tan_odds=getattr(args, "min_tan_odds", 0.0),
                      max_tan_odds=getattr(args, "max_tan_odds", 0.0),
                      min_ninki=getattr(args, "min_ninki", 0),
@@ -662,15 +667,25 @@ def _cmd_flow_backtest(args) -> int:
                   f"({time.monotonic() - t0:.0f}s)", flush=True)
     finally:
         db.close()
+    n_pop = len(details)
+    thr_used = args.flow_threshold
+    if q is not None:
+        details, bets, thr_used = apply_quantile(details, bets, q)
     r = summarize_bets(bets, races=races, races_scored=scored, races_degenerate=degen)
     r["details"] = details
     r["races_unsettled"] = unsettled
 
     ken = {"fuku": "複勝", "tan": "単勝"}[getattr(args, "bet_type", "fuku")]
-    print(f"=== flow_tan {ken} 回収率 ({args.d_from}〜{args.d_to}) ===")
+    sc = getattr(args, "score", "flow")
+    print(f"=== {'flow_tan' if sc == 'flow' else 'flow_t(票数で正規化)'} {ken} "
+          f"回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
-          f"起点 発走{args.flow_minutes}分前 / 閾値 {args.flow_threshold:+.4f}"
+          f"起点 発走{args.flow_minutes}分前 / 閾値 {thr_used:+.4f}"
+          + (f"(上位 {(1 - q) * 100:.1f}% / 母集団 {n_pop:,} 頭)" if q is not None else "")
           + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
+    if q is not None:
+        print(f"  ★この閾値({thr_used:+.4f})を**次の窓**に --flow-threshold で渡すこと。"
+              "同じ窓で分位を取って成績を見るのは in-sample です")
     print(f"  レース: {r['races']:,} (スコア可 {r['races_scored']:,} / "
           f"測れず {r['races_degenerate']:,}"
           + (f" / **結果未取込 {r['races_unsettled']:,}**" if r.get("races_unsettled") else "")
@@ -1077,6 +1092,7 @@ def _cmd_flow_slice(args) -> int:
                      max_ninki=getattr(args, "max_ninki", 0),
                      bet_type=getattr(args, "bet_type", "fuku"),
                      normalize=getattr(args, "normalize", False),
+                     score=getattr(args, "score", "flow"),
                      min_horses=getattr(args, "min_horses", 0))
     months = _month_chunks(args.d_from, args.d_to)
     details: list = []
@@ -2218,8 +2234,16 @@ def main(argv: list[str] | None = None) -> int:
                           help="flow_tan(複勝)の期間回収率。モデルも候補CSVも使わない")
     p_bt.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
     p_bt.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
-    p_bt.add_argument("--flow-threshold", type=float, required=True,
-                      help="この設定で flow-threshold を取り直した値を渡すこと")
+    p_bt.add_argument("--flow-threshold", type=float, default=0.0,
+                      help="この設定で閾値を取り直した値を渡すこと(--quantile 使用時は無視)")
+    p_bt.add_argument("--score", choices=("flow", "tstat"), default="flow",
+                      help="★tstat = flow を**その馬の票の薄さ**で割る(t統計量)。"
+                           "人気薄が動きやすいのは情報とは限らず、票が薄くて揺れている"
+                           "だけでもそうなる。確定票数(nl_h1)を使うので検証専用")
+    p_bt.add_argument("--quantile", type=float, default=None,
+                      help="絶対閾値の代わりに、帯で絞った後の母集団のこの分位で切る"
+                           "(例 0.95 = 上位5%%)。★尺度の違うスコアを比べるときに使う。"
+                           "出た閾値を次の窓へ渡すこと")
     p_bt.add_argument("--flow-lead-seconds", type=int, default=360)
     p_bt.add_argument("--flow-minutes", type=int, default=11)
     p_bt.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
@@ -2374,6 +2398,8 @@ def main(argv: list[str] | None = None) -> int:
     p_fs.add_argument("--max-ninki", type=int, default=0)
     p_fs.add_argument("--min-horses", type=int, default=0)
     p_fs.add_argument("--normalize", action="store_true")
+    p_fs.add_argument("--score", choices=("flow", "tstat"), default="flow",
+                      help="★tstat = flow を票の薄さで割る(t統計量)。検証専用")
     p_fs.add_argument("--min-bets", type=int, default=30, help="CI を出す最低本数")
     p_fs.add_argument("--min-tan-odds", type=float, default=0.0)
     p_fs.add_argument("--max-tan-odds", type=float, default=0.0)
