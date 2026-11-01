@@ -1379,6 +1379,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     details: list[dict] = []                  # 1点ずつの明細(目視確認用)
     n_races = n_scored = n_degenerate = n_refund = n_unsettled = n_small = 0
     n_no_votes = 0                            # tstat に要る票数が欠けた頭数
+    n_pop = 0                                 # 帯を通った頭数(= 閾値を当てる母集団)
     # ★分位で切るときは、いったん全部通してから後で切る。
     #   スコア式を2か所に書くと、片方だけ直して黙って外れる。
     thr_floor = -float("inf") if quantile is not None else cfg.threshold
@@ -1443,13 +1444,18 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                     continue
                 se = ((1.0 / p0 + 1.0 / p1) / n_votes) ** 0.5
                 score = score / se if se > 0 else 0.0
-            if score < thr_floor:
-                continue
+            # ★帯(オッズ/人気)を**先に**通す。閾値を先に当てると、帯に入る頭数
+            #   (= 母集団)が数えられず、選別率が出せない。選別率が見えないと、
+            #   «別の尺度の閾値を渡して29%も買っている» に気づけない
+            #   (2026-11-01: flow の閾値を tstat にそのまま渡して25倍買った)。
             if max_odds is not None and t1 > max_odds:
                 continue
             if not _in_tan_band(cfg, t1):
                 continue
             if not _in_ninki_band(cfg, ninki_of.get(x["umaban"])):
+                continue
+            n_pop += 1
+            if score < thr_floor:
                 continue
             # 異常区分 1=出走取消 2=発走除外 3=競走除外 は返還(元金が戻る)。
             # 4=競走中止 5=失格 は出走しているので外れ扱いのままでよい。
@@ -1497,6 +1503,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
     rep["races_small_field"] = n_small
     rep["score"] = cfg.score
     rep["threshold"] = used_threshold
+    rep["population"] = n_pop
     # ★欠けは隠さない。tstat で本数が減ったとき、それが «票数が無い» のか
     #   «スコアが低い» のかを区別できないと、結論を間違える。
     rep["horses_no_votes"] = n_no_votes

@@ -102,3 +102,56 @@ def test_percentile_interpolates():
     assert _percentile([0.0, 10.0], 0.5) == pytest.approx(5.0)
     assert _percentile([1.0, 2.0, 3.0], 1.0) == 3.0
     assert _percentile([1.0, 2.0, 3.0], 0.0) == 1.0
+
+
+# --- 条件の取り違えを数字で見えるようにする --------------------------------- #
+# ★2026-11-01: flow で取った閾値(+0.1221)を tstat にそのまま渡した。
+#   尺度が違う(tstat は √N/√(1/p0+1/p1) 倍)ので閾値は意味を失い、
+#   5%のつもりが29%を買っていた(本数 421 → 10,383)。
+#   さらに --bet-type と --flow-lead-seconds が既定に落ち、券種も決定時点も
+#   別物になっていた。**出力を見ても気づけなかった**のが問題。
+def test_the_bands_are_applied_before_the_threshold():
+    """★母集団(帯を通った頭数)を数えるため。閾値を先に当てると数えられず、
+       選別率が出せない。選別率が出なければ «29%買っている» に気づけない。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "flow_signal.py").read_text(encoding="utf-8")
+    body = src[src.index("def backtest("):]
+    i_band = body.index("_in_ninki_band(cfg,")
+    i_thr = body.index("if score < thr_floor:")
+    assert i_band < i_thr, "閾値を帯より先に当てている(母集団が数えられない)"
+
+
+def test_the_report_carries_the_population():
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "flow_signal.py").read_text(encoding="utf-8")
+    assert 'rep["population"] = n_pop' in src
+
+
+def test_the_cli_warns_when_the_selection_rate_is_absurd():
+    """★別の尺度の閾値を渡したことに、数字で気づけること。"""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    assert "選別率が高すぎます" in src
+    assert "score を変えたら閾値は必ず取り直して" in src
+
+
+def test_the_quantile_output_hands_over_every_condition():
+    """★次の窓へ渡すのは閾値だけでは足りない。券種・決定時点・帯が既定に
+       落ちると別物を測る(2026-11-01 は複勝/T-360s に落ちていた)。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    i = src.index("次の窓はこのまま貼ってください")
+    block = src[i:i + 1400]
+    for flag in ("--score", "--flow-threshold", "--bet-type", "--flow-source",
+                 "--flow-lead-seconds", "--flow-minutes", "--min-ninki"):
+        assert flag in block, flag

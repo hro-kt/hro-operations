@@ -645,6 +645,7 @@ def _cmd_flow_backtest(args) -> int:
     bets: list = []
     details: list = []          # 月ごとに分割するので明細も引き継ぐ
     races = scored = degen = unsettled = 0
+    population = no_votes = 0
     db = FeatureDB(load_features_config())
     t0 = time.monotonic()
     try:
@@ -656,6 +657,8 @@ def _cmd_flow_backtest(args) -> int:
             races += part["races"]; scored += part["races_scored"]
             degen += part["races_degenerate"]
             unsettled += part.get("races_unsettled", 0)
+            population += part.get("population", 0)
+            no_votes += part.get("horses_no_votes", 0)
             st = sum(x[1] for x in bets)
             roi = (sum(x[2] for x in bets) / st) if st else 0.0
             # ★その月**単体**の回収率も出す。累計だけだと「どの月が沈んでいるか」が
@@ -667,7 +670,6 @@ def _cmd_flow_backtest(args) -> int:
                   f"({time.monotonic() - t0:.0f}s)", flush=True)
     finally:
         db.close()
-    n_pop = len(details)
     thr_used = args.flow_threshold
     if q is not None:
         details, bets, thr_used = apply_quantile(details, bets, q)
@@ -681,11 +683,35 @@ def _cmd_flow_backtest(args) -> int:
           f"回収率 ({args.d_from}〜{args.d_to}) ===")
     print(f"  条件: {args.flow_source} / 決定時点 発走{args.flow_lead_seconds}秒前 / "
           f"起点 発走{args.flow_minutes}分前 / 閾値 {thr_used:+.4f}"
-          + (f"(上位 {(1 - q) * 100:.1f}% / 母集団 {n_pop:,} 頭)" if q is not None else "")
+          + (f" / 上位 {(1 - q) * 100:.1f}%" if q is not None else "")
           + (f" / 単勝上限 {args.max_odds}" if args.max_odds else ""))
+    # ★選別率。別の尺度の閾値を渡すと、ここが桁で違う。
+    #   2026-11-01: flow の閾値(+0.1221)を tstat にそのまま渡し、
+    #   5%のつもりが29%を買っていた(本数25倍)。数字で見えれば気づける。
+    if population:
+        print(f"  選別: 帯を通った {population:,} 頭 のうち {len(bets):,} 頭 "
+              f"= {len(bets) / population:.2%}"
+              + (f"(指定 {(1 - q) * 100:.1f}%)" if q is not None else ""))
+        if q is None and population and len(bets) / population > 0.15:
+            print("  ★選別率が高すぎます。閾値が**このスコアの尺度**に合っていますか。"
+                  "score を変えたら閾値は必ず取り直してください(値の意味が変わります)")
+    if no_votes:
+        print(f"  ※票数(nl_h1)が無く tstat を出せなかった: {no_votes:,} 頭")
     if q is not None:
-        print(f"  ★この閾値({thr_used:+.4f})を**次の窓**に --flow-threshold で渡すこと。"
-              "同じ窓で分位を取って成績を見るのは in-sample です")
+        print(f"\n  ★次の窓はこのまま貼ってください(条件を取り違えると比較になりません):")
+        print("    poetry run hro-ops flow-backtest --from <次の窓の開始> --to <終了> \\")
+        print(f"      --score {sc} --flow-threshold {thr_used:.4f} \\")
+        print(f"      --bet-type {getattr(args, 'bet_type', 'fuku')} "
+              f"--flow-source {args.flow_source} \\")
+        print(f"      --flow-lead-seconds {args.flow_lead_seconds} "
+              f"--flow-minutes {args.flow_minutes}"
+              + (f" \\\n      --min-ninki {args.min_ninki}" if args.min_ninki else "")
+              + (f" --max-ninki {args.max_ninki}" if args.max_ninki else "")
+              + (f" --min-horses {args.min_horses}" if args.min_horses else "")
+              + (f" --min-tan-odds {args.min_tan_odds}" if args.min_tan_odds else "")
+              + (f" --max-tan-odds {args.max_tan_odds}" if args.max_tan_odds else "")
+              + (" --normalize" if getattr(args, "normalize", False) else ""))
+        print("  ★同じ窓で分位を取って成績を見るのは in-sample です")
     print(f"  レース: {r['races']:,} (スコア可 {r['races_scored']:,} / "
           f"測れず {r['races_degenerate']:,}"
           + (f" / **結果未取込 {r['races_unsettled']:,}**" if r.get("races_unsettled") else "")
