@@ -2263,12 +2263,19 @@ def _cmd_exec_timing(args) -> int:
               f"(いまより {args.lead_seconds - b['suggested_lead_seconds']}s 遅い)")
     print("\n  ★基準は中央値ではなく上側の分位。投票は«たいてい間に合う»では駄目で、"
           "間に合わなかった日はそのレースを丸ごと落とす")
-    if partial:
-        xs = [s.total() for s in partial]
-        from .exec_timing import percentile
-        print(f"  ★receipt まで届かなかった塊が {len(partial)} 件 "
-              f"(p50 {percentile(xs, 0.5)/1000:.1f}s / max {max(xs)/1000:.1f}s)。"
+    # ★「途中で終わった塊」を一括りにしない。session_check だけの塊(窓内 0ms)は
+    #   無害で、数が多いのが普通。**投票を始めたのに receipt に届かなかった塊**
+    #   だけが本当の失敗で、そちらは窓を食う。混ぜると件数に驚くだけで読めない。
+    real = [x for x in partial if x.total() > 0]
+    print(f"  ※相のログだけの塊 {len(partial) - len(real)} 件は session_check 等で、"
+          "窓内 0ms(無害)")
+    if real:
+        xs = [x.total() for x in real]
+        print(f"  ★投票を始めたのに receipt に届かなかった塊が {len(real)} 件 "
+              f"(p50 {xs and sorted(xs)[len(xs)//2]/1000:.1f}s / max {max(xs)/1000:.1f}s)。"
               "失敗した投票も窓を食う。これを無視すると都合の良い分布になる")
+    print("  ★この見積もりは **IPAT の操作だけ**。信号の計算と DB 往復は"
+          "この前に在り、ここには入っていない。詰めるときはその分も見ること")
     return 0
 
 

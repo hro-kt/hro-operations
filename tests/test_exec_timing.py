@@ -130,3 +130,27 @@ def test_phase_table_marks_which_phases_eat_the_window():
     done, _ = parse_log(_LOG)
     t = {r["phase"]: r["in_window"] for r in phase_table(done)}
     assert t["preselect"] is False and t["execute"] is True
+
+
+def test_harmless_groups_are_not_reported_as_failures():
+    """★session_check だけの塊は窓内 0ms で無害。数が多いのが普通(実測 281件)。
+       «投票を始めたのに receipt に届かなかった» 塊だけが本当の失敗。
+       混ぜると件数に驚くだけで読めない。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    i = src.index("相のログだけの塊")
+    head = src[i - 500:i]
+    assert "x.total() > 0" in head
+
+
+def test_the_estimate_says_what_it_does_not_cover():
+    """★IPAT の操作だけ。信号の計算と DB 往復はこの前にあり入っていない。"""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    assert "IPAT の操作だけ" in src
+    assert "信号の計算と DB 往復" in src
