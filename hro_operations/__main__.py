@@ -2183,6 +2183,78 @@ def _cmd_popups(args) -> int:
     return 0
 
 
+def _cmd_exec_timing(args) -> int:
+    """★執行に何秒かかっているかを実測ログから出す(判断を遅らせてよいかの根拠)。
+
+    ログは既に ops_job.log に残っている。IPAT の各相が完了時に
+    "<相>: <ms>ms" を出しており、エージェントが子の標準出力を流し込んでいる。
+    """
+    import psycopg
+
+    from hro_buyer.postgres import PostgresConfig
+
+    from .exec_timing import IN_WINDOW, budget_advice, parse_log, phase_table
+
+    sql = ("SELECT id, kind, requested_at, log FROM ops_job "
+           " WHERE requested_at >= %s AND requested_at < %s "
+           "   AND log <> '' ORDER BY id")
+    with psycopg.connect(PostgresConfig.from_env().conninfo) as conn:
+        conn.execute("SET TIME ZONE 'Asia/Tokyo'")
+        rows = conn.execute(sql, (args.d_from, args.d_to)).fetchall()
+
+    done, partial, kinds = [], [], {}
+    for _id, kind, _at, log in rows:
+        d, p = parse_log(log or "")
+        if d or p:
+            kinds[kind] = kinds.get(kind, 0) + 1
+        done += d
+        partial += p
+
+    print(f"=== 執行の所要時間 ({args.d_from}〜{args.d_to}) ===")
+    print(f"  ジョブ: {sum(kinds.values())} 本 "
+          + (", ".join(f"{k}={v}" for k, v in sorted(kinds.items())) or "なし"))
+    print(f"  送信: 成立 {len(done)} 件 / 途中で終わった塊 {len(partial)} 件")
+    if not done:
+        print("  ★測れるログがありません。live で投票した開催日を指定してください"
+              "(paper/dry-run は IPAT を触らないので相のログが出ません)")
+        return 1
+
+    print(f"\n  --- 相ごと(ms) ---")
+    print(f"  {'相':<14} {'窓内':>4} {'n':>5} {'p50':>8} {'p90':>8} {'p95':>8} {'max':>8}")
+    for r in phase_table(done):
+        print(f"  {r['phase']:<14} {'●' if r['in_window'] else '-':>4} {r['n']:>5,} "
+              f"{r['p50']:>8,.0f} {r['p90']:>8,.0f} {r['p95']:>8,.0f} {r['max']:>8,.0f}")
+    print(f"  ※窓内● = 締切までの持ち時間に乗る相({'/'.join(IN_WINDOW)})。"
+          "preselect は判断の2分前に終わっている前提なので含めない")
+
+    b = budget_advice(done, lead_seconds=args.lead_seconds,
+                      deadline_lead_seconds=args.deadline_lead_seconds,
+                      safety=args.safety)
+    print(f"\n  --- 1投票に要る時間(窓内の相の合計) ---")
+    print(f"    p50 {b['p50']/1000:.1f}s / p90 {b['p90']/1000:.1f}s / "
+          f"p95 {b['p95']/1000:.1f}s / max {b['max_ms']/1000:.1f}s")
+    print(f"\n  --- いまの設定 ---")
+    print(f"    発注開始 発走-{args.lead_seconds}s / 締切 発走-{args.deadline_lead_seconds}s "
+          f"→ 持ち時間 {b['have_ms']/1000:.1f}s")
+    print(f"    p{b['safety']*100:.0f} で要る時間 {b['need_ms']/1000:.1f}s "
+          f"→ 余り {b['slack_ms']/1000:+.1f}s")
+    if b["slack_ms"] < 0:
+        print(f"    ★足りていません。発注開始を**早める**(--lead-seconds を"
+              f" {b['suggested_lead_seconds']} 以上に)")
+    else:
+        print(f"    → 発注開始を 発走-{b['suggested_lead_seconds']}s まで遅らせられます"
+              f"(いまより {args.lead_seconds - b['suggested_lead_seconds']}s 遅い)")
+    print("\n  ★基準は中央値ではなく上側の分位。投票は«たいてい間に合う»では駄目で、"
+          "間に合わなかった日はそのレースを丸ごと落とす")
+    if partial:
+        xs = [s.total() for s in partial]
+        from .exec_timing import percentile
+        print(f"  ★receipt まで届かなかった塊が {len(partial)} 件 "
+              f"(p50 {percentile(xs, 0.5)/1000:.1f}s / max {max(xs)/1000:.1f}s)。"
+              "失敗した投票も窓を食う。これを無視すると都合の良い分布になる")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     _load_env()
     logging.basicConfig(
@@ -2694,6 +2766,18 @@ def main(argv: list[str] | None = None) -> int:
         _p.add_argument("--rules", default="",
                         help="規則ファイル(既定: $HRO_HOME/hro-operations/popup_rules.json)")
     p_pop.set_defaults(func=_cmd_popups)
+
+    p_et = sub.add_parser("exec-timing",
+                          help="★執行の所要時間を実測ログから出す(判断を遅らせてよいか)")
+    p_et.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
+    p_et.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD(この日を含まない)")
+    p_et.add_argument("--lead-seconds", type=int, default=90,
+                      help="いまの発注開始(発走-これ秒)")
+    p_et.add_argument("--deadline-lead-seconds", type=int, default=60,
+                      help="締切(発走-これ秒)。実測では発走の1分前")
+    p_et.add_argument("--safety", type=float, default=0.99,
+                      help="この分位で間に合う前提にする(既定 0.99)")
+    p_et.set_defaults(func=_cmd_exec_timing)
 
     p_agent = sub.add_parser("agent", help="ops_jobキューを処理する常駐エージェント(admin画面から実行される)")
     p_agent.add_argument("--server", required=True, choices=("vm", "windows"),
