@@ -2330,7 +2330,10 @@ def main(argv: list[str] | None = None) -> int:
     p_th.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
     p_th.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
     p_th.add_argument("--quantile", type=float, default=0.95)
-    p_th.add_argument("--flow-lead-seconds", type=int, default=120)
+    # ★live と同じ既定にする。閾値の尺度は決定時点で変わる(T-60s +0.1675 /
+    #   T-360s +0.0691)。ここが 120 のままだと、明示し忘れた1回で
+    #   «T-120 の閾値を T-60 の本番に渡す» ことになる(2026-11-03 に是正)。
+    p_th.add_argument("--flow-lead-seconds", type=int, default=60)
     p_th.add_argument("--leads", default=None,
                       help="複数のリードをまとめて取る(カンマ区切り, 例 120,180,240)。"
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
@@ -2363,8 +2366,11 @@ def main(argv: list[str] | None = None) -> int:
                       help="絶対閾値の代わりに、帯で絞った後の母集団のこの分位で切る"
                            "(例 0.95 = 上位5%%)。★尺度の違うスコアを比べるときに使う。"
                            "出た閾値を次の窓へ渡すこと")
-    p_bt.add_argument("--flow-lead-seconds", type=int, default=360)
-    p_bt.add_argument("--flow-minutes", type=int, default=11)
+    # ★既定は FlowConfig と揃える。ここだけ 360/11 になっていて、
+    #   «検証は起点11分、本番は起点6分» という別物を比べていた(2026-11-03 発覚)。
+    #   既定がずれていると、明示し忘れた1回が黙って別の設定になる。
+    p_bt.add_argument("--flow-lead-seconds", type=int, default=60)
+    p_bt.add_argument("--flow-minutes", type=int, default=6)
     p_bt.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="ts")
     p_bt.add_argument("--max-odds", type=float, default=None, help="単勝オッズ上限(既定 無し)")
     p_bt.add_argument("--min-tan-odds", type=float, default=0.0,
