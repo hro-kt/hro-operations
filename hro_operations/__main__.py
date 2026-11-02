@@ -111,6 +111,12 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--flow-min-ninki", type=int, default=0,
                    help="決定時点の単勝人気の下限(オッズ順から導出)")
     p.add_argument("--flow-max-ninki", type=int, default=0)
+    p.add_argument("--flow-min-tan-odds", type=float, default=0.0,
+                   help="決定時点の単勝オッズ下限。★2窓OOSで 20 が最良"
+                        "(窓2 1.9069 P=0.000 / 全帯 1.5772)。外れる7-20倍は"
+                        "窓1 1.31・窓2 0.90 で当てにならない帯")
+    p.add_argument("--flow-max-tan-odds", type=float, default=0.0,
+                   help="同 上限(0=無制限)")
     p.add_argument("--flow-max-per-race", type=int, default=0,
                    help="1レースで買う上限(0=無制限)。★順次処理では2件目以降が"
                         "締切を超えて捨てられる。スコア上位から残す")
@@ -197,6 +203,8 @@ def _cfg(args):
         flow_partners=getattr(args, "flow_partners", 3),
         flow_min_ninki=getattr(args, "flow_min_ninki", 0),
         flow_max_ninki=getattr(args, "flow_max_ninki", 0),
+        flow_min_tan_odds=getattr(args, "flow_min_tan_odds", 0.0),
+        flow_max_tan_odds=getattr(args, "flow_max_tan_odds", 0.0),
         flow_min_horses=getattr(args, "flow_min_horses", 0),
         flow_max_per_race=getattr(args, "flow_max_per_race", 0),
         flow_lead_seconds=args.flow_lead_seconds,
@@ -666,9 +674,18 @@ def _cmd_flow_backtest(args) -> int:
             #   見えず、安定して1を超えているのかを判断できない(累積から逆算させない)。
             pst = sum(x[1] for x in part["_bets"])
             proi = (sum(x[2] for x in part["_bets"]) / pst) if pst else 0.0
-            print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
-                  f"購入{part['bets']:>5,}  当月 {proi:.4f}  累計 {roi:.4f}  "
-                  f"({time.monotonic() - t0:.0f}s)", flush=True)
+            if q is not None:
+                # ★分位は期間全体で1回取るので、途中経過は**まだ切っていない**
+                #   母集団そのもの。回収率を出すと「0.41 しかない」と読めてしまう
+                #   (2026-11-02 に実際そう見えた)。進捗だけ出す。
+                print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
+                      f"母集団{part.get('population', 0):>6,}頭  "
+                      f"(分位は期間全体で最後に1回)  "
+                      f"({time.monotonic() - t0:.0f}s)", flush=True)
+            else:
+                print(f"  [{i}/{len(months)}] {a[:6]}  レース{part['races']:>5,}  "
+                      f"購入{part['bets']:>5,}  当月 {proi:.4f}  累計 {roi:.4f}  "
+                      f"({time.monotonic() - t0:.0f}s)", flush=True)
     finally:
         db.close()
     thr_used = args.flow_threshold

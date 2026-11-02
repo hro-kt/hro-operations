@@ -103,6 +103,15 @@ class DayConfig:
     flow_partners: int = 3           # 馬単の相手に使う人気上位の頭数
     flow_min_ninki: int = 0
     flow_max_ninki: int = 0
+    # ★決定時点の単勝オッズ帯。人気帯と近いが**頭数で正規化されていない**ので別物。
+    #   2026-11-02 の2窓OOS(単勝/人気7+/ts@T-60s/上位5%):
+    #     全帯          窓1 1.4583(774本) / 窓2 1.5772(690本)
+    #     20倍以上      窓1 1.4980(710本) / 窓2 **1.9069**(641本) P=0.000
+    #   外れる 7-20倍 だけを取り出すと 窓1 1.31 / 窓2 0.90 で、
+    #   «負ける帯» ではなく **«当てにならない帯»**。3期間の過去記録
+    #   (4.0-20倍「前後で入れ替わり一貫性なし」)と5窓ぶん一致した。
+    flow_min_tan_odds: float = 0.0
+    flow_max_tan_odds: float = 0.0
     # ★複勝は出走8頭以上で3着まで、5〜7頭は2着まで、4頭以下は発売なし。
     #   複勝を買うなら 8 を指定して条件を揃える。
     flow_min_horses: int = 0
@@ -284,6 +293,7 @@ def flow_config(cfg: "DayConfig"):
         bet_type=bet_plan(cfg)[0][0],
         partners=cfg.flow_partners,
         min_ninki=cfg.flow_min_ninki, max_ninki=cfg.flow_max_ninki,
+        min_tan_odds=cfg.flow_min_tan_odds, max_tan_odds=cfg.flow_max_tan_odds,
         min_horses=cfg.flow_min_horses,
         max_per_race=cfg.flow_max_per_race,
         max_odds=cfg.max_odds or 0.0)

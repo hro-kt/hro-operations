@@ -320,6 +320,8 @@ def _flow_day_params(a: dict) -> dict:
         "partners": _int(a.get("partners"), 3),
         "min_ninki": _int(a.get("min_ninki"), 0),
         "max_ninki": _int(a.get("max_ninki"), 0),
+        "min_tan_odds": _float(a.get("min_tan_odds"), 0.0),
+        "max_tan_odds": _float(a.get("max_tan_odds"), 0.0),
         "min_horses": _int(a.get("min_horses"), 0),
         "mode": "live" if a.get("mode") == "live" else "paper",
         "no_wait": bool(a.get("no_wait")),
@@ -390,6 +392,7 @@ def _b_flow_day(a: dict):
         "BET_TYPE": p["bet_type"], "PARTNERS": str(p["partners"]),
         "MIN_NINKI": str(p["min_ninki"]),
         "MAX_NINKI": str(p["max_ninki"]), "MIN_HORSES": str(p["min_horses"]),
+        "MIN_TAN_ODDS": str(p["min_tan_odds"]), "MAX_TAN_ODDS": str(p["max_tan_odds"]),
     }
     if p["thresholds"]:
         import json
@@ -444,6 +447,8 @@ def _b_flow_day_windows(a: dict):
            "--flow-partners", str(p["partners"]),
            "--flow-min-ninki", str(p["min_ninki"]),
            "--flow-max-ninki", str(p["max_ninki"]),
+           "--flow-min-tan-odds", str(p["min_tan_odds"]),
+           "--flow-max-tan-odds", str(p["max_tan_odds"]),
            "--flow-min-horses", str(p["min_horses"]),
            "--deadline-lead-seconds", str(p["deadline_lead"]), "--mode", p["mode"]]
     if p["thresholds"]:
@@ -481,7 +486,8 @@ def _b_race_day(a: dict):
     flow_keys = ("threshold", "thresholds", "source", "lead_seconds", "flow_minutes",
                  "act_lead_seconds", "act_before_deadline_seconds",
                  "deadline_lead_seconds", "flat_amount", "max_per_race", "bet_type",
-                 "partners", "min_ninki", "max_ninki", "min_horses", "mode",
+                 "partners", "min_ninki", "max_ninki", "min_tan_odds", "max_tan_odds",
+                 "min_horses", "mode",
                  "confirm_live", "max_amount_per_order", "max_amount_per_day", "date")
     flow_args = {k: a[k] for k in flow_keys if k in a}
     flow_args["date"] = p["date"]

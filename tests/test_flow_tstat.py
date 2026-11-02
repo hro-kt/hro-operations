@@ -155,3 +155,17 @@ def test_the_quantile_output_hands_over_every_condition():
     for flag in ("--score", "--flow-threshold", "--bet-type", "--flow-source",
                  "--flow-lead-seconds", "--flow-minutes", "--min-ninki"):
         assert flag in block, flag
+
+
+def test_the_monthly_progress_is_not_misleading_under_quantile():
+    """★分位は期間全体で1回取るので、途中経過は**まだ切っていない**母集団。
+       そこに回収率を出すと「0.41 しかない」と読めてしまう(2026-11-02 に実際そう見えた)。
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "__main__.py").read_text(encoding="utf-8")
+    i = src.index("分位は期間全体で最後に1回")
+    head = src[i - 700:i]
+    assert "if q is not None:" in head
+    assert "母集団" in src[i - 300:i + 100]
