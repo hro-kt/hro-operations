@@ -90,3 +90,23 @@ def test_the_threshold_command_matches_what_production_runs():
         assert mins[who] == live["flow_min"], (who, mins[who], live["flow_min"])
     src = re.search(r'p_th\.add_argument\("--flow-source".*?default="(\w+)"', _SRC)
     assert src and src.group(1) == live["source"], "flow-threshold の信号源が本番と違う"
+
+
+def test_the_threshold_command_takes_the_bet_type():
+    """★券種で «複勝オッズが必須か» が変わる(flow_scores の need_fk)。
+       以前は渡しておらず常に複勝扱いで、単勝で買う本番なら使えたレースを
+       閾値の計算からだけ落としていた(2026-11-07、netkeiba@T-80 で8レース)。
+    """
+    assert re.search(r'p_th\.add_argument\("--bet-type"', _SRC), "flow-threshold に --bet-type が無い"
+    i = _SRC.index("def _cmd_flow_threshold(")
+    body = _SRC[i:_SRC.index("\ndef ", i + 10)]
+    assert 'bet_type=getattr(args, "bet_type"' in body, "券種を FlowConfig に渡していない"
+
+
+def test_tan_does_not_require_place_odds():
+    """★単勝を買うなら複勝オッズの欠けで馬を落とさない(flow_scores の規則)。"""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[1]
+           / "hro_operations" / "flow_signal.py").read_text(encoding="utf-8")
+    assert 'need_fk = cfg.bet_type == "fuku" or cfg.max_odds > 0' in src

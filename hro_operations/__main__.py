@@ -523,6 +523,10 @@ def _cmd_flow_threshold(args) -> int:
             cfg = FlowConfig(lead_seconds=lead, flow_minutes=args.flow_minutes,
                              normalize=getattr(args, "normalize", False),
                              source=args.flow_source,
+                             # ★券種で「複勝オッズが必須か」が変わる。以前は渡しておらず
+                             #   常に複勝扱いで、単勝で買う本番なら使えたレースを、
+                             #   閾値の計算からだけ落としていた(2026-11-07 発覚)。
+                             bet_type=getattr(args, "bet_type", "fuku"),
                              # ★買う側と同じ母集団で分位を取る。人気帯で絞って買うなら
                              #   閾値も**その部分集合**で取らないと選別率がずれる。
                              min_ninki=getattr(args, "min_ninki", 0),
@@ -2348,6 +2352,10 @@ def main(argv: list[str] | None = None) -> int:
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
     p_th.add_argument("--flow-minutes", type=int, default=6)
     p_th.add_argument("--flow-source", choices=("ts", "sokuho", "netkeiba"), default="sokuho")
+    p_th.add_argument("--bet-type", choices=("fuku", "tan", "umatan"), default="fuku",
+                      help="★買う券種。複勝なら複勝オッズ(JV-Link 速報)が必須になり、"
+                           "速報が止まっていたレースを丸ごと除外する。単勝/馬単を買うなら "
+                           "tan を指定すること(本番と母集団を揃える)")
     p_th.add_argument("--min-ninki", type=int, default=0,
                       help="人気の下限(例 7)。買う側で絞るなら**ここでも同じ値**を指定する"
                            "(指定しないと全馬の分位になり、選別率が想定から外れる)")
