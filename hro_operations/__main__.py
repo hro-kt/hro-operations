@@ -2337,10 +2337,12 @@ def main(argv: list[str] | None = None) -> int:
     p_th.add_argument("--from", dest="d_from", required=True, help="YYYYMMDD")
     p_th.add_argument("--to", dest="d_to", required=True, help="YYYYMMDD")
     p_th.add_argument("--quantile", type=float, default=0.95)
-    # ★live と同じ既定にする。閾値の尺度は決定時点で変わる(T-60s +0.1675 /
-    #   T-360s +0.0691)。ここが 120 のままだと、明示し忘れた1回で
-    #   «T-120 の閾値を T-60 の本番に渡す» ことになる(2026-11-03 に是正)。
-    p_th.add_argument("--flow-lead-seconds", type=int, default=60)
+    # ★本番(エージェント/管理画面)と同じ既定にする: sokuho / 決定 T-120 / 起点6分。
+    #   このコマンドは**本番へ渡す閾値を作る**ので、比べる相手は FlowConfig(研究用の
+    #   ts@T-60)ではなく agent._flow_day_params の既定。2026-11-03 に «live = T-60» と
+    #   取り違えて 60 に変えてしまい、11-07 に 120 へ戻した。
+    #   閾値の尺度は決定時点で変わる(T-120 と T-60 で 2.29倍)ので、ずれると事故る。
+    p_th.add_argument("--flow-lead-seconds", type=int, default=120)
     p_th.add_argument("--leads", default=None,
                       help="複数のリードをまとめて取る(カンマ区切り, 例 120,180,240)。"
                            "配信遅れで決定時点がレースごとに変わるため、リード別に閾値が要る")
