@@ -124,6 +124,34 @@ def _bucket_chokyo(d) -> str:
     return "3 7位以下"
 
 
+def _bucket_fav(d) -> str:
+    """1番人気の決定時点の単勝オッズ。低いほど「人気馬で決まりそう」なレース。"""
+    v = d.get("fav_tan")
+    if v is None:
+        return "0 不明"
+    v = float(v)
+    for hi, label in ((1.5, "1 〜1.5倍"), (2.0, "2 1.5-2.0"), (2.5, "3 2.0-2.5"),
+                      (3.5, "4 2.5-3.5")):
+        if v < hi:
+            return label
+    return "5 3.5倍〜(混戦)"
+
+
+def _bucket_favflow(d) -> str:
+    """1番人気自身の終盤フロー。正 = 締切直前に人気馬へさらに金が入った。"""
+    v = d.get("fav_flow")
+    if v is None:
+        return "0 不明"
+    v = float(v)
+    if v < -0.05:
+        return "1 人気馬から金が抜けた(<-0.05)"
+    if v < 0.0:
+        return "2 やや抜けた(-0.05〜0)"
+    if v < 0.05:
+        return "3 やや入った(0〜+0.05)"
+    return "4 人気馬に金が入った(>=+0.05)"
+
+
 AXES = {
     "tan": ("決定時点の単勝オッズ", lambda d: _bucket_odds(float(d["tan"]))),
     "fuku": ("決定時点の複勝オッズ", lambda d: _bucket_odds(float(d["fuku"]))),
@@ -148,6 +176,9 @@ AXES = {
     "we": ("その開催の天候/馬場変更",
            lambda d: "1 変更あり" if d.get("has_we") else "2 なし"),
     "gradecd": ("グレード", lambda d: (str(d.get("grade_cd") or "").strip() or "(条件)")),
+    # ★レースの属性(全頭共通)。「人気馬で決まりそうなレース」を見送れるか
+    "fav": ("1番人気の単勝オッズ(決定時点)", _bucket_fav),
+    "favflow": ("1番人気自身の終盤フロー", _bucket_favflow),
     "score": ("スコアの大きさ(閾値からの超過)", None),   # 閾値相対なので別扱い
 }
 

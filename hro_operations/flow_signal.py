@@ -1469,6 +1469,16 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
         ninki_of = {r["umaban"]: i for i, r in enumerate(
             sorted((r for r in rs if tan_of(r["t1"])),
                    key=lambda r: (tan_of(r["t1"]), r["umaban"])), 1)}
+        # ★レースの属性: 1番人気の強さ。「明らかに人気馬が勝つレース」を見送れるかを
+        #   測る軸。fav_tan = 決定時点の1番人気の単勝オッズ、fav_flow = その馬自身の
+        #   終盤フロー(人気馬に締切直前の金が入っているか)。スコアと同じ式で計算する。
+        fav_tan = fav_flow = None
+        _fav = next((r for r in rs if ninki_of.get(r["umaban"]) == 1), None)
+        if _fav is not None:
+            _ft1, _ft0 = tan_of(_fav["t1"]), tan_of(_fav["t0"])
+            if _ft1 and _ft0:
+                fav_tan = _ft1
+                fav_flow = _logit((1.0 / _ft1) / s1) - _logit((1.0 / _ft0) / s0)
         for x in rs:
             # ★複勝(f1)は JV 由来なので常に _num。単勝だけソース別に読む
             t1, t0, f1 = tan_of(x["t1"]), tan_of(x["t0"]), _num(x["f1"])
@@ -1516,6 +1526,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                                 "has_we": x.get("has_we"),
                                 "chokyo_rank": chokyo_rank.get(x["umaban"]),
                                 "chokyo_n": len(chokyo_rank),
+                                "fav_tan": fav_tan, "fav_flow": fav_flow,
                                 "amount": amount, "payout": amount, "note": "返還"})
                 continue
             pay = x["pay"]
@@ -1531,6 +1542,7 @@ def backtest(db, d_from: str, d_to: str, cfg: FlowConfig, *,
                             "has_we": x.get("has_we"),
                             "chokyo_rank": chokyo_rank.get(x["umaban"]),
                             "chokyo_n": len(chokyo_rank),
+                            "fav_tan": fav_tan, "fav_flow": fav_flow,
                             "amount": amount, "payout": payout,
                             "note": "的中" if payout else "外れ"})
 
